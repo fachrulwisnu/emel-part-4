@@ -428,7 +428,7 @@ async function startServer() {
         return;
       }
 
-      const BATCH_SIZE = 2;
+      const BATCH_SIZE = 5;
       let completed_count = 0;
 
       for (let i = 0; i < total; i += BATCH_SIZE) {
@@ -465,10 +465,10 @@ async function startServer() {
           }
         }));
 
-        // Delay 3 detik (3000ms) di akhir setiap iterasi batch sebelum memproses kloter email selanjutnya
+        // Delay 15 detik (15000ms) di akhir setiap iterasi batch sebelum memproses kloter email selanjutnya
         if (i + BATCH_SIZE < total && !req.closed) {
-          console.log(`[SSE Bulk AI] Batch completed. Waiting 3000ms to prevent overload...`);
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          console.log(`[SSE Bulk AI] Batch completed. Waiting 15000ms to prevent overload...`);
+          await new Promise(resolve => setTimeout(resolve, 15000));
         }
       }
 
@@ -494,7 +494,7 @@ async function startServer() {
 
       // Process in background asynchronously
       (async () => {
-        const BATCH_SIZE = 2;
+        const BATCH_SIZE = 5;
         for (let i = 0; i < total; i += BATCH_SIZE) {
           const batch = pending.slice(i, i + BATCH_SIZE);
           await Promise.all(batch.map(async (email) => {
@@ -506,7 +506,7 @@ async function startServer() {
           }));
           
           if (i + BATCH_SIZE < total) {
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            await new Promise(resolve => setTimeout(resolve, 15000));
           }
         }
       })().catch(err => {

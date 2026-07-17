@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
+import { executeWithBackoff } from './aiProcessingService';
 
 // Load environment variables
 dotenv.config();
@@ -38,25 +39,28 @@ export async function getAiCompletion(prompt: string | any[]): Promise<string> {
         throw new Error(`API Key for model ${model.name} is not configured.`);
       }
 
-      const openai = new OpenAI({
-        apiKey: model.apiKey,
-        baseURL: 'https://integrate.api.nvidia.com/v1',
-        timeout: 60000,
-      });
+      const rawContent = await executeWithBackoff(async () => {
+        const openai = new OpenAI({
+          apiKey: model.apiKey,
+          baseURL: 'https://integrate.api.nvidia.com/v1',
+          timeout: 60000,
+        });
 
-      const completion = await openai.chat.completions.create({
-        model: model.id,
-        messages: messages,
-        temperature: 1,
-        top_p: 0.95,
-        max_tokens: 4096,
-        stream: false
-      });
+        const completion = await openai.chat.completions.create({
+          model: model.id,
+          messages: messages,
+          temperature: 1,
+          top_p: 0.95,
+          max_tokens: 4096,
+          stream: false
+        });
 
-      const rawContent = completion.choices[0]?.message?.content || '';
-      if (!rawContent) {
-        throw new Error(`Empty response from model: ${model.name}`);
-      }
+        const content = completion.choices[0]?.message?.content || '';
+        if (!content) {
+          throw new Error(`Empty response from model: ${model.name}`);
+        }
+        return content;
+      });
 
       console.log(`[AI Rotator] Success with model: ${model.name}`);
       return rawContent;

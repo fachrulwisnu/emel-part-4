@@ -93,6 +93,18 @@ export default function CitOrderModal({
                               currencies.find(c => String(c.id) === selectedCurrencyId)?.currency_code || 
                               'IDR';
 
+  const mataUang = currentCurrencyCode;
+  const [options, setOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    const getDenominations = (currency: string) => {
+      return currency === 'USD' 
+          ? ['USD 1', 'USD 2', 'USD 5', 'USD 10', 'USD 20', 'USD 50', 'USD 100']
+          : ['IDR 1000', 'IDR 2000', 'IDR 5000', 'IDR 10000', 'IDR 20000', 'IDR 50000', 'IDR 100000'];
+    };
+    setOptions(getDenominations(mataUang));
+  }, [mataUang]);
+
   const availableDenoms = getDenominationsForCurrency(currentCurrencyCode);
 
   // Load API metadata (branches, currencies)
@@ -250,7 +262,8 @@ export default function CitOrderModal({
   }, [selectedCurrencyId, currencies, isOpen]);
 
   // Recalculate calculated total
-  const calculatedTotal = denomRows.reduce((sum, r) => sum + (r.denomination * r.quantity), 0);
+  const totalHitung = denomRows.reduce((sum, r) => sum + (r.denomination * r.quantity), 0);
+  const calculatedTotal = totalHitung;
 
   const resetForm = () => {
     setSelectedCurrencyId('');
@@ -274,14 +287,20 @@ export default function CitOrderModal({
     setDenomRows(prev => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleDenomChange = (index: number, field: keyof DenomRow, value: number) => {
+  const handleDenominationChange = (index: number, field: keyof DenomRow, value: any) => {
+    let parsedValue = value;
+    if (field === 'denomination' && typeof value === 'string') {
+      parsedValue = Number(value.replace(/[^0-9]/g, ''));
+    }
     setDenomRows(prev => prev.map((row, idx) => {
       if (idx === index) {
-        return { ...row, [field]: value };
+        return { ...row, [field]: parsedValue };
       }
       return row;
     }));
   };
+
+  const handleDenomChange = handleDenominationChange;
 
   const handleSyncCalculatedTotal = () => {
     setAmount(String(calculatedTotal));
@@ -326,7 +345,7 @@ export default function CitOrderModal({
             delivery_id: res.data.id,
             currency_id: Number(selectedCurrencyId),
             amount: row.denomination * row.quantity,
-            item_name: `Pecahan Rp ${row.denomination.toLocaleString('id-ID')} (${row.quantity} Lembar)`,
+            item_name: `Pecahan ${mataUang} ${row.denomination.toLocaleString()} (${row.quantity} Lembar)`,
             quantity: row.quantity
           });
         }
@@ -337,8 +356,8 @@ export default function CitOrderModal({
             `Order ID: ${res.data.id}\n` +
             `Branch: ${branches.find(b => String(b.id) === selectedBranchId)?.name || 'N/A'}\n` +
             `Notes: ${extractedNotes}\n` +
-            `Total: Rp ${calculatedTotal.toLocaleString('id-ID')}\n` +
-            `Denominations: ${denomRows.map(r => `Rp ${r.denomination} x ${r.quantity} lembar`).join(', ')}`;
+            `Total: ${mataUang} ${calculatedTotal.toLocaleString()}\n` +
+            `Denominations: ${denomRows.map(r => `${mataUang} ${r.denomination} x ${r.quantity} lembar`).join(', ')}`;
 
           await fetch('/api/emails/update-fields', {
             method: 'POST',
@@ -516,7 +535,7 @@ export default function CitOrderModal({
             <div className="flex items-center justify-between mb-3 border-b border-slate-200/60 pb-2">
               <span className="font-bold text-[11px] text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
                 <Coins className="h-4 w-4 text-amber-500" />
-                Pecahan & Denominasi Dynamic Uang ({currentCurrencyCode})
+                Pecahan & Denominasi Dynamic Uang ({mataUang})
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -553,29 +572,29 @@ export default function CitOrderModal({
                     <div className="col-span-4">
                       {isManualMode ? (
                         <div className="relative">
-                          <span className="absolute left-2.5 top-2 text-[10px] text-slate-400 font-bold">{currentCurrencyCode}</span>
+                          <span className="absolute left-2.5 top-2 text-[10px] text-slate-400 font-bold">{mataUang}</span>
                           <input
                             type="number"
                             value={row.denomination}
-                            onChange={(e) => handleDenomChange(index, 'denomination', Number(e.target.value))}
+                            onChange={(e) => handleDenominationChange(index, 'denomination', Number(e.target.value))}
                             placeholder="Nominal"
                             className="w-full p-2 pl-10 bg-slate-50 border border-slate-200 focus:border-blue-500 rounded-md outline-none font-bold"
                           />
                         </div>
                       ) : (
                         <select
-                          value={row.denomination}
-                          onChange={(e) => handleDenomChange(index, 'denomination', Number(e.target.value))}
+                          value={`${mataUang} ${row.denomination}`}
+                          onChange={(e) => handleDenominationChange(index, 'denomination', e.target.value)}
                           className="w-full p-2 bg-slate-50 border border-slate-200 focus:border-blue-500 rounded-md outline-none font-bold"
                         >
-                          {availableDenoms.map(d => (
-                            <option key={d} value={d}>
-                              {currentCurrencyCode} {d.toLocaleString()}
+                          {options.map(opt => (
+                            <option key={opt} value={opt}>
+                              {opt}
                             </option>
                           ))}
-                          {!availableDenoms.includes(row.denomination) && (
-                            <option value={row.denomination}>
-                              {currentCurrencyCode} {row.denomination.toLocaleString()}
+                          {!options.some(opt => Number(opt.replace(/[^0-9]/g, '')) === row.denomination) && (
+                            <option value={`${mataUang} ${row.denomination}`}>
+                              {mataUang} {row.denomination.toLocaleString()}
                             </option>
                           )}
                         </select>
@@ -602,7 +621,7 @@ export default function CitOrderModal({
 
                     {/* Calculated Subtotal */}
                     <div className="col-span-3 font-mono font-bold text-slate-900 text-right pr-2">
-                      {currentCurrencyCode} {(row.denomination * row.quantity).toLocaleString()}
+                      {mataUang} {(row.denomination * row.quantity).toLocaleString()}
                     </div>
 
                     {/* Delete button */}
@@ -626,7 +645,7 @@ export default function CitOrderModal({
               <div className="text-left">
                 <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Total Hasil Hitung Pecahan</p>
                 <p className="text-lg font-black text-blue-600 font-mono mt-0.5">
-                  {currentCurrencyCode} {calculatedTotal.toLocaleString()}
+                  {mataUang} {totalHitung.toLocaleString()}
                 </p>
               </div>
 
@@ -642,7 +661,7 @@ export default function CitOrderModal({
                     <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-1.5 px-3 flex items-center gap-1.5 font-medium text-[10px]">
                       <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 animate-pulse" />
                       <div>
-                        <span>Selisih: {currentCurrencyCode} {totalDiff.toLocaleString()}</span>
+                        <span>Selisih: {mataUang} {totalDiff.toLocaleString()}</span>
                         <span className="block text-[9px] text-amber-600 font-normal">
                           {totalDiff > 0 ? 'Pecahan kurang' : 'Pecahan berlebih'}
                         </span>
@@ -706,7 +725,7 @@ export default function CitOrderModal({
               <div>
                 <p className="font-bold">Peringatan Selisih Nominal!</p>
                 <p className="text-slate-600 mt-0.5">
-                  Total nominal form ({currentCurrencyCode} {Number(amount || 0).toLocaleString()}) tidak sama dengan hasil hitung pecahan ({currentCurrencyCode} {calculatedTotal.toLocaleString()}).
+                  Total nominal form ({mataUang} {Number(amount || 0).toLocaleString()}) tidak sama dengan hasil hitung pecahan ({mataUang} {totalHitung.toLocaleString()}).
                 </p>
                 <p className="text-[10px] text-amber-700 font-semibold mt-1">
                   * Operator diperbolehkan menekan tombol submit di bawah untuk melakukan Manual Override dan tetap mengirim order.

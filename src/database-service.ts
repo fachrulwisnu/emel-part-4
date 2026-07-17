@@ -7,6 +7,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
 import { classifyEmail, classifyFolder } from './sqlite-db';
 import { getAiCompletion } from './services/aiService';
+import { executeWithBackoff } from './services/aiProcessingService';
 
 const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
 const SQLITE_DB_PATH = path.join(process.cwd(), 'emails.db');
@@ -485,8 +486,9 @@ function parseCleanJson(text: string): any {
 // --- CORE PARALLEL FUNCTIONS ---
 
 async function getSummaryNemotron(emailText: string): Promise<any> {
-  const apiKey = process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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';
-  const systemContent = `Anda adalah asisten data operasional cerdas berbasis model nvidia/nemotron-3-ultra-550b-a55b. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+  return executeWithBackoff(async () => {
+    const apiKey = process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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';
+    const systemContent = `Anda adalah asisten data operasional cerdas berbasis model nvidia/nemotron-3-ultra-550b-a55b. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
 {
@@ -500,36 +502,38 @@ JSON schema:
   "extracted_notes": "Instruksi khusus atau catatan operasional"
 }`;
 
-  const payload = {
-    model: "nvidia/nemotron-3-ultra-550b-a55b",
-    messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: emailText }
-    ],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 16384,
-    chat_template_kwargs: { enable_thinking: true },
-    reasoning_budget: 16384,
-    stream: false
-  };
+    const payload = {
+      model: "nvidia/nemotron-3-ultra-550b-a55b",
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: emailText }
+      ],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 16384,
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 16384,
+      stream: false
+    };
 
-  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    },
-    timeout: 60000
+    const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      timeout: 60000
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    return parseCleanJson(content);
   });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  return parseCleanJson(content);
 }
 
 async function getTaggingInkling(emailText: string): Promise<any> {
-  const apiKey = process.env.NVIDIA_API_KEY_INKLING || process.env.NVIDIA_API_KEY || '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';
-  const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model thinkingmachines/inkling. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
+  return executeWithBackoff(async () => {
+    const apiKey = process.env.NVIDIA_API_KEY_INKLING || process.env.NVIDIA_API_KEY || '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';
+    const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model thinkingmachines/inkling. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
 
 JSON schema:
 {
@@ -538,29 +542,30 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const payload = {
-    model: "thinkingmachines/inkling",
-    messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: emailText }
-    ],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 8192,
-    stream: false
-  };
+    const payload = {
+      model: "thinkingmachines/inkling",
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: emailText }
+      ],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 8192,
+      stream: false
+    };
 
-  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    },
-    timeout: 60000
+    const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      timeout: 60000
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    return parseCleanJson(content);
   });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  return parseCleanJson(content);
 }
 
 // --- FALLBACK FUNCTIONS ---
@@ -571,41 +576,46 @@ const openaiDeepseek = new OpenAI({
 });
 
 async function fallbackDeepseek(emailText: string): Promise<any> {
-  const completion = await openaiDeepseek.chat.completions.create({
-    model: "deepseek-ai/deepseek-v4-pro",
-    messages: [{"role":"user","content": emailText}],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 16384,
-    chat_template_kwargs: {"thinking":false},
-    stream: false
-  } as any);
-  return parseCleanJson(completion.choices[0]?.message?.content || '{}');
+  return executeWithBackoff(async () => {
+    const completion = await openaiDeepseek.chat.completions.create({
+      model: "deepseek-ai/deepseek-v4-pro",
+      messages: [{"role":"user","content": emailText}],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 16384,
+      chat_template_kwargs: {"thinking":false},
+      stream: false
+    } as any);
+    return parseCleanJson(completion.choices[0]?.message?.content || '{}');
+  });
 }
 
 async function fallbackGemma4(emailText: string): Promise<any> {
-  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
-  const headers = {
-    "Authorization": "Bearer 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",
-    "Accept": "application/json"
-  };
-  const payload = {
-    "messages": [{"role":"user","content": emailText}],
-    "model": "google/gemma-4-31b-it",
-    "chat_template_kwargs": {"enable_thinking":true},
-    "max_tokens": 16384,
-    "stream": false,
-    "temperature": 1,
-    "top_p": 0.95
-  };
+  return executeWithBackoff(async () => {
+    const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+    const headers = {
+      "Authorization": "Bearer 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",
+      "Accept": "application/json"
+    };
+    const payload = {
+      "messages": [{"role":"user","content": emailText}],
+      "model": "google/gemma-4-31b-it",
+      "chat_template_kwargs": {"enable_thinking":true},
+      "max_tokens": 16384,
+      "stream": false,
+      "temperature": 1,
+      "top_p": 0.95
+    };
 
-  const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
-  return parseCleanJson(response.data?.choices?.[0]?.message?.content || '{}');
+    const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
+    return parseCleanJson(response.data?.choices?.[0]?.message?.content || '{}');
+  });
 }
 
 async function fallbackMinimax(emailText: string): Promise<any> {
-  const apiKey = process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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';
-  const systemContent = `Anda adalah asisten data operasional cerdas berbasis minimaxai/minimax-m3. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+  return executeWithBackoff(async () => {
+    const apiKey = process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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';
+    const systemContent = `Anda adalah asisten data operasional cerdas berbasis minimaxai/minimax-m3. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
 JSON schema:
 {
@@ -622,29 +632,30 @@ JSON schema:
   "action_required": true | false
 }`;
 
-  const payload = {
-    model: "minimaxai/minimax-m3",
-    messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: emailText }
-    ],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 8192,
-    stream: false
-  };
+    const payload = {
+      model: "minimaxai/minimax-m3",
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: emailText }
+      ],
+      temperature: 1,
+      top_p: 0.95,
+      max_tokens: 8192,
+      stream: false
+    };
 
-  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Accept": "application/json",
-      "Content-Type": "application/json"
-    },
-    timeout: 60000
+    const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      timeout: 60000
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    return parseCleanJson(content);
   });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  return parseCleanJson(content);
 }
 
 /**
@@ -1043,7 +1054,7 @@ export async function processEmailQueue(): Promise<void> {
     return;
   }
 
-  const BATCH_SIZE = 2;
+  const BATCH_SIZE = 5;
   console.log(`[Queue Worker] Processing ${pendingEmails.length} pending emails in batches of ${BATCH_SIZE}...`);
 
   for (let i = 0; i < pendingEmails.length; i += BATCH_SIZE) {
@@ -1057,8 +1068,8 @@ export async function processEmailQueue(): Promise<void> {
     }));
 
     if (i + BATCH_SIZE < pendingEmails.length) {
-      console.log(`[Queue Worker] Batch completed. Waiting 3000ms to prevent overload...`);
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log(`[Queue Worker] Batch completed. Waiting 15000ms to prevent overload...`);
+      await new Promise(resolve => setTimeout(resolve, 15000));
     }
   }
 }
@@ -2000,9 +2011,9 @@ async function _runHistoricalBackfillAsync(): Promise<void> {
       }
     }));
 
-    // Wait 3-5 seconds between batches to avoid 429 rate limits of NVIDIA API
+    // Wait 15-20 seconds between batches to avoid 429 rate limits of NVIDIA API
     if (i + BATCH_SIZE < oldEmails.length) {
-      const waitTime = 3000 + Math.random() * 2000;
+      const waitTime = 15000 + Math.random() * 5000;
       console.log(`[Backfill Background] Waiting ${(waitTime / 1000).toFixed(1)} seconds before next batch...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
