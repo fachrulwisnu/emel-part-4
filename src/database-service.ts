@@ -46,6 +46,7 @@ export interface Email {
   denomination_suggestion?: number;
   total_amount?: number;
   ai_status?: string;
+  is_summarized?: boolean;
 }
 
 export interface CustomFilter {
@@ -198,6 +199,7 @@ export async function initDatabaseService(): Promise<void> {
       db.run('ALTER TABLE emails ADD COLUMN denomination_suggestion INTEGER', () => {});
       db.run('ALTER TABLE emails ADD COLUMN total_amount INTEGER', () => {});
       db.run('ALTER TABLE emails ADD COLUMN ai_status TEXT DEFAULT "PENDING"', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_summarized INTEGER DEFAULT 0', () => {});
 
       // Initialize real-time listener in a non-blocking way
       setTimeout(() => {
@@ -258,7 +260,8 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           currency: row.currency || 'IDR',
           denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
           total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
-          ai_status: row.ai_status || 'PENDING'
+          ai_status: row.ai_status || 'PENDING',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         }));
       }
       console.warn('Supabase emails query failed, falling back to SQLite:', error);
@@ -315,7 +318,8 @@ export async function dbGetAllEmails(): Promise<Email[]> {
           currency: row.currency || 'IDR',
           denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
           total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
-          ai_status: row.ai_status || 'PENDING'
+          ai_status: row.ai_status || 'PENDING',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         };
       });
       resolve(mapped);
@@ -941,7 +945,8 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         currency,
         denomination_suggestion,
         total_amount,
-        ai_status: 'COMPLETED'
+        ai_status: 'COMPLETED',
+        is_summarized: true
       });
     } catch (aiError) {
       console.log('[AI Copilot] AI sedang tidak tersedia, falling back to rule-based...', aiError);
@@ -973,7 +978,8 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         suggested_bank,
         extracted_notes,
         currency,
-        ai_status: 'FAILED'
+        ai_status: 'FAILED',
+        is_summarized: false
       });
     }
 
@@ -996,7 +1002,7 @@ export async function analyzeEmail(messageId: string): Promise<void> {
 }
 
 /**
- * Main worker queue that processes up to 5 pending emails in parallel with Promise.all
+ * Main worker queue that processes pending emails in small batches with delays
  */
 export async function processEmailQueue(): Promise<void> {
   const supabase = getSupabaseClient();
@@ -1008,7 +1014,7 @@ export async function processEmailQueue(): Promise<void> {
         .from('emails')
         .select('*')
         .eq('ai_status', 'PENDING')
-        .limit(5);
+        .limit(10);
       
       if (!error && data) {
         pendingEmails = data;
@@ -1023,7 +1029,7 @@ export async function processEmailQueue(): Promise<void> {
     const db = getSqliteDb();
     pendingEmails = await new Promise((resolve) => {
       db.all(
-        "SELECT * FROM emails WHERE ai_status = 'PENDING' LIMIT 5",
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' LIMIT 10",
         [],
         (err, rows: any[]) => {
           if (err) resolve([]);
@@ -1037,19 +1043,34 @@ export async function processEmailQueue(): Promise<void> {
     return;
   }
 
-  console.log(`[Queue Worker] Processing ${pendingEmails.length} pending emails in parallel...`);
+  const BATCH_SIZE = 2;
+  console.log(`[Queue Worker] Processing ${pendingEmails.length} pending emails in batches of ${BATCH_SIZE}...`);
 
-  await Promise.all(pendingEmails.map(async (email) => {
-    await analyzeEmail(email.message_id);
-  }));
+  for (let i = 0; i < pendingEmails.length; i += BATCH_SIZE) {
+    const batch = pendingEmails.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map(async (email) => {
+      try {
+        await analyzeEmail(email.message_id);
+      } catch (err) {
+        console.error(`[Queue Worker Error] Failed to process email ${email.message_id}:`, err);
+      }
+    }));
+
+    if (i + BATCH_SIZE < pendingEmails.length) {
+      console.log(`[Queue Worker] Batch completed. Waiting 3000ms to prevent overload...`);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+  }
 }
 
 /**
- * Retrieve a single email by its message_id from SQLite
+ * Retrieve a single email by its message_id from SQLite with a fallback to Supabase
  */
 export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
+  console.log(`Mencari data dengan message_id: ${messageId}`);
   const db = getSqliteDb();
-  return new Promise((resolve) => {
+  
+  const localEmail = await new Promise<Email | null>((resolve) => {
     db.get('SELECT * FROM emails WHERE message_id = ?', [messageId], (err, row: any) => {
       if (row) {
         let parsedTags: string[] = [];
@@ -1066,12 +1087,55 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
           action_required: row.action_required === 1,
           is_important: row.is_important === 1,
           is_cit_order: row.is_cit_order === 1,
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         });
       } else {
         resolve(null);
       }
     });
   });
+
+  if (localEmail) {
+    return localEmail;
+  }
+
+  // Fallback to Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      console.log(`[Supabase Fallback] Mencari data dengan message_id: ${messageId}`);
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('message_id', messageId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('[Supabase Fallback Error]:', error);
+      } else if (data) {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = typeof data.tags === 'string' ? JSON.parse(data.tags || '[]') : (data.tags || []);
+        } catch {
+          parsedTags = data.tags ? data.tags.split(',') : [];
+        }
+        return {
+          ...data,
+          tags: parsedTags,
+          attachments: typeof data.attachments === 'string' ? JSON.parse(data.attachments || '[]') : (data.attachments || []),
+          is_read: data.is_read === true || data.is_read === 1 || String(data.is_read) === 'true',
+          action_required: data.action_required === true || data.action_required === 1 || String(data.action_required) === 'true',
+          is_important: data.is_important === true || data.is_important === 1 || String(data.is_important) === 'true',
+          is_cit_order: data.is_cit_order === true || data.is_cit_order === 1 || String(data.is_cit_order) === 'true',
+          is_summarized: data.is_summarized === 1 || data.is_summarized === true || data.ai_status === 'COMPLETED' || (!!data.summary && data.summary.trim().length > 0)
+        };
+      }
+    } catch (err) {
+      console.error('[Supabase Fallback Exception]:', err);
+    }
+  }
+
+  return null;
 }
 
 // Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
@@ -1626,6 +1690,7 @@ export async function dbUpdateEmailFields(
     currency?: string;
     denomination_suggestion?: number;
     total_amount?: number;
+    is_summarized?: boolean;
   }
 ): Promise<void> {
   // SQLite update
@@ -1649,6 +1714,7 @@ export async function dbUpdateEmailFields(
   if (fields.currency !== undefined) { sets.push('currency = ?'); params.push(fields.currency); }
   if (fields.denomination_suggestion !== undefined) { sets.push('denomination_suggestion = ?'); params.push(fields.denomination_suggestion); }
   if (fields.total_amount !== undefined) { sets.push('total_amount = ?'); params.push(fields.total_amount); }
+  if (fields.is_summarized !== undefined) { sets.push('is_summarized = ?'); params.push(fields.is_summarized ? 1 : 0); }
   
   if (sets.length > 0) {
     params.push(message_id);
@@ -1684,6 +1750,7 @@ export async function dbUpdateEmailFields(
       if (fields.currency !== undefined) updatePayload.currency = fields.currency;
       if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
       if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
+      if (fields.is_summarized !== undefined) updatePayload.is_summarized = fields.is_summarized;
       
       if (Object.keys(updatePayload).length > 0) {
         const { error } = await supabase
@@ -2107,6 +2174,63 @@ export interface DailyReportData {
     bank_name: string;
     count: number;
   }>;
+  ai_status?: string;
+  pending_sync?: number;
+  ai_conclusion?: string;
+}
+
+export async function generateAIExecutiveConclusion(emails: Email[]): Promise<string> {
+  const topEmails = emails.slice(0, 10);
+  if (topEmails.length === 0) {
+    return "Tidak ada email masuk hari ini untuk dianalisis.";
+  }
+
+  const subjectsList = topEmails.map((e, index) => `${index + 1}. [Folder: ${e.folder_parent || 'Uncategorized'}] Subject: ${e.subject}`).join('\n');
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return generateRuleBasedConclusion(topEmails);
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Berikut adalah daftar 5-10 subjek email operasional teratas hari ini beserta foldernya:\n${subjectsList}\n\nBerikan satu paragraf kesimpulan eksekutif (AI Executive Conclusion) yang menganalisis tren tiket hari ini dalam Bahasa Indonesia yang profesional dan ringkas (maksimal 3 kalimat). Jangan gunakan format markdown, kembalikan teks biasa saja. Contoh kesimpulan: "Beban kerja tinggi di Operation dan Region 4, mohon prioritaskan koordinasi delivery untuk esok hari."`
+    });
+
+    const resultText = response.text;
+    if (resultText && resultText.trim()) {
+      return resultText.trim();
+    }
+  } catch (err) {
+    console.error('[AI Executive Conclusion] Error with Gemini API:', err);
+  }
+
+  return generateRuleBasedConclusion(topEmails);
+}
+
+function generateRuleBasedConclusion(emails: Email[]): string {
+  const folderCounts: { [key: string]: number } = {};
+  emails.forEach(e => {
+    const folder = e.folder_parent || 'Operation';
+    folderCounts[folder] = (folderCounts[folder] || 0) + 1;
+  });
+
+  const sortedFolders = Object.entries(folderCounts).sort((a, b) => b[1] - a[1]);
+  if (sortedFolders.length > 0) {
+    const topFolder = sortedFolders[0][0];
+    return `Beban kerja terpantau dominan pada area ${topFolder} hari ini dengan volume tiket tertinggi. Koordinasi intensif untuk distribusi delivery sangat direkomendasikan guna kelancaran operasional.`;
+  }
+  return "Seluruh aktivitas operasional harian terpantau stabil dan berjalan dengan kapasitas normal.";
 }
 
 export async function dbGetDailyReportData(): Promise<DailyReportData> {
@@ -2127,7 +2251,8 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
           action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
           is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
           is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
-          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true'
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         }));
       }
     } catch (e) {
@@ -2148,12 +2273,20 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
           action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
           is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
           is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
-          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true'
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         }));
         resolve(mapped);
       });
     });
   }
+
+  // Sort emails by date desc to get newest 5-10 for AI Executive Conclusion
+  const sortedEmails = [...emails].sort((a, b) => {
+    const dateA = a.date ? new Date(a.date).getTime() : 0;
+    const dateB = b.date ? new Date(b.date).getTime() : 0;
+    return (dateB - dateA) || ((b.id || 0) - (a.id || 0));
+  });
 
   // Format Date in Indonesian locale (locale: id-ID)
   const todayStr = new Date().toLocaleDateString('id-ID', {
@@ -2167,6 +2300,13 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
   const total = emails.length;
   const cit_count = emails.filter(e => e.cit_type === 'CIT' || e.suggested_tag === 'CIT').length;
   const atm_count = emails.filter(e => e.cit_type === 'ATM' || e.suggested_tag === 'ATM').length;
+
+  // AI Healthcheck calculation
+  const ai_status = (process.env.GEMINI_API_KEY || process.env.NVIDIA_API_KEY) ? 'Operational' : 'Degraded';
+  const pending_sync = emails.filter(e => !e.is_summarized).length;
+
+  // AI Executive Conclusion
+  const ai_conclusion = await generateAIExecutiveConclusion(sortedEmails);
 
   // Detailed CIT & ATM banks breakdown
   const citBanks: { [key: string]: number } = {};
@@ -2194,14 +2334,8 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
   // 2. TIKET URGENT (Action Required):
   // - Query tiket dengan urgency_level = 'Urgent' ATAU action_required = true.
   // - Ambil 5 tiket teratas dengan field: subject, folder_parent, summary.
-  const urgentTickets = emails
+  const urgentTickets = sortedEmails
     .filter(e => e.urgency_level === 'Urgent' || e.action_required === true)
-    // Order by date desc or id desc to get latest
-    .sort((a, b) => {
-      const dateA = a.date ? new Date(a.date).getTime() : 0;
-      const dateB = b.date ? new Date(b.date).getTime() : 0;
-      return (dateB - dateA) || ((b.id || 0) - (a.id || 0));
-    })
     .slice(0, 5)
     .map(e => ({
       subject: e.subject || 'Tanpa Subjek',
@@ -2239,7 +2373,10 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
     data_cit,
     data_atm,
     urgent_tickets: urgentTickets,
-    top_banks
+    top_banks,
+    ai_status,
+    pending_sync,
+    ai_conclusion
   };
 }
 

@@ -23,7 +23,7 @@ import {
   analyzeEmail,
   dbGetDailyReportData
 } from "./src/database-service";
-import { initWhatsApp, sendMessage, getWhatsAppStatus } from "./src/services/waService";
+import { initWhatsApp, sendMessage, getWhatsAppStatus, forceInitWhatsApp } from "./src/services/waService";
 import { 
   performBackgroundSync, 
   startAutoSyncCron, 
@@ -235,15 +235,16 @@ async function startServer() {
       const latency = Date.now() - start;
       let errMsg = err.message || String(err);
       let is503 = false;
-      if (err.response) {
+      
+      if (err.status === 503 || err.statusCode === 503 || (err.response && err.response.status === 503)) {
+        is503 = true;
+        errMsg = "Server Penuh/Sibuk (503)";
+      } else if (err.response) {
         const errorData = err.response.data;
         const errorString = typeof errorData === 'object' ? JSON.stringify(errorData) : String(errorData);
         errMsg = `HTTP ${err.response.status}: ${errorString}`;
-        if (err.response.status === 503) {
-          is503 = true;
-          errMsg = "Server Penuh/Sibuk (503)";
-        }
       }
+      
       return {
         model: modelName,
         status: is503 ? "Warning" : (latency >= 60000 ? "Timeout" : "Error"),
@@ -736,13 +737,13 @@ async function startServer() {
   app.get("/api/import-eml-dir", importEmlDirHandler);
 
   // CIT Proxy API Routes
-  const CIT_BASE = "https://api-activeatm.adv.my.id/api/v1/CIT";
+  const CIT_BASE = "https://api-activeatm.adv.my.id/api/v1";
 
   app.get("/api/cit/currencies", async (req, res) => {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/read_currencies`, {
+      const response = await axios.get(`${CIT_BASE}/currencies`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -769,7 +770,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/read_scitems`, {
+      const response = await axios.get(`${CIT_BASE}/scitems`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -783,7 +784,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/read_entity_master_details`, {
+      const response = await axios.get(`${CIT_BASE}/entity-master-details`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -810,7 +811,7 @@ async function startServer() {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/read_vault_trips`, {
+      const response = await axios.get(`${CIT_BASE}/vault-trips`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       });
       res.json(response.data);
@@ -842,12 +843,12 @@ async function startServer() {
       });
       steps.push(`Base URL merespons dengan HTTP Status: ${baseResponse.status}`);
 
-      steps.push(`2. Menguji endpoint read_vault_trips di: ${CIT_BASE}/read_vault_trips`);
-      const tripsResponse = await axios.get(`${CIT_BASE}/read_vault_trips`, {
+      steps.push(`2. Menguji endpoint vault-trips di: ${CIT_BASE}/vault-trips`);
+      const tripsResponse = await axios.get(`${CIT_BASE}/vault-trips`, {
         headers,
         timeout: 5000
       });
-      steps.push(`Endpoint read_vault_trips berhasil diakses! Status: ${tripsResponse.status}`);
+      steps.push(`Endpoint vault-trips berhasil diakses! Status: ${tripsResponse.status}`);
       
       res.json({
         success: true,
@@ -876,8 +877,12 @@ async function startServer() {
       let urgentSection = "";
       if (data.urgent_tickets && data.urgent_tickets.length > 0) {
         urgentSection = data.urgent_tickets.map((t: any) => {
-          const bank = (t.folder_parent || 'Lainnya').toUpperCase().replace(/^BANK\s+/i, '').trim();
-          return `- [${bank}] ${t.subject} - *${t.summary}*`;
+          const folder = t.folder_parent || 'Lainnya';
+          let cleanedSubject = t.subject || 'Tanpa Subjek';
+          // Remove "Email from..." or "Email dari..." case-insensitive
+          cleanedSubject = cleanedSubject.replace(/^(Email from|Email dari)\s+/i, '');
+          const shortSummary = t.summary ? ` - *${t.summary.substring(0, 100)}${t.summary.length > 100 ? '...' : ''}*` : '';
+          return `- *${folder}*: ${cleanedSubject}${shortSummary}`;
         }).join('\n');
       } else {
         urgentSection = "- Aman, tidak ada tiket mendesak.";
@@ -891,9 +896,16 @@ async function startServer() {
       }
 
       const formattedMessage = `📊 *LAPORAN OPERASIONAL HARIAN*
-📅 Tanggal: ${data.tanggal}
+📅 ${data.tanggal}
 
-🚨 *TINDAKAN SEGERA (Perlu Respon):*
+🤖 *SISTEM & AI HEALTHCHECK*
+✅ AI Status: ${data.ai_status || 'Operational'}
+⏳ Pending Summary: ${data.pending_sync ?? 0} Email
+
+🧠 *AI EXECUTIVE SUMMARY*
+${data.ai_conclusion || 'Tidak ada analisis tren hari ini.'}
+
+🚨 *TINDAKAN SEGERA (Perlu Respon)*
 ${urgentSection}
 
 📌 *RINGKASAN GLOBAL*
@@ -948,11 +960,36 @@ ${topBanksSection}`;
     }
   });
 
+  app.get("/api/whatsapp/qr", (req, res) => {
+    try {
+      const status = getWhatsAppStatus();
+      if (status.isConnected) {
+        return res.json({ status: "connected" });
+      }
+      return res.json({
+        status: "pending",
+        qr: status.qrBase64 || ""
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/whatsapp/reset", async (req, res) => {
+    try {
+      await forceInitWhatsApp();
+      res.json({ success: true, message: "Koneksi WhatsApp berhasil diinisialisasi ulang." });
+    } catch (err: any) {
+      console.error("[WhatsApp Reset Route Error]:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   app.post("/api/cit/create-delivery", async (req, res) => {
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/create_delivery`, req.body, {
+      const response = await axios.post(`${CIT_BASE}/create-delivery`, req.body, {
         headers: { 
           'Authorization': token ? `Bearer ${token}` : '',
           'Content-Type': 'application/json'
@@ -969,7 +1006,7 @@ ${topBanksSection}`;
     try {
       const settings = getAppSettings();
       const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/create_delivery_detail`, req.body, {
+      const response = await axios.post(`${CIT_BASE}/create-delivery-detail`, req.body, {
         headers: { 
           'Authorization': token ? `Bearer ${token}` : '',
           'Content-Type': 'application/json'

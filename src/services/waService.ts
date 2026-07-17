@@ -3,16 +3,46 @@ import pino from 'pino';
 import path from 'path';
 import fs from 'fs';
 import qrcodeTerminal from 'qrcode-terminal';
+import { toDataURL } from 'qrcode';
 
 let sock: WASocket | null = null;
 let isConnected = false;
 let qrCodeString = '';
+let latestQrBase64 = '';
 
 export function getWhatsAppStatus() {
   return {
     isConnected,
     qrCode: qrCodeString,
+    qrBase64: latestQrBase64,
   };
+}
+
+export async function forceInitWhatsApp(): Promise<void> {
+  console.log('[WhatsApp] Menghubungkan ulang / Refresh QR...');
+  if (sock) {
+    try {
+      sock.end(undefined);
+    } catch (e) {}
+    sock = null;
+  }
+  isConnected = false;
+  qrCodeString = '';
+  latestQrBase64 = '';
+
+  const authFolder = path.join(process.cwd(), 'auth_info');
+  if (fs.existsSync(authFolder)) {
+    try {
+      const files = fs.readdirSync(authFolder);
+      for (const file of files) {
+        fs.unlinkSync(path.join(authFolder, file));
+      }
+    } catch (e) {
+      console.error('[WhatsApp] Gagal menghapus file sesi lama:', e);
+    }
+  }
+
+  await initWhatsApp();
 }
 
 export async function initWhatsApp(): Promise<void> {
@@ -35,11 +65,16 @@ export async function initWhatsApp(): Promise<void> {
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
       qrCodeString = qr;
+      try {
+        latestQrBase64 = await toDataURL(qr);
+      } catch (err) {
+        console.error('[WhatsApp] Gagal mengonversi QR ke Base64:', err);
+      }
       console.log('\n==================================================');
       console.log('🚨 SILAKAN SCAN QR CODE BERIKUT UNTUK LOGIN WHATSAPP:');
       console.log('==================================================\n');
@@ -63,10 +98,12 @@ export async function initWhatsApp(): Promise<void> {
         console.log('[WhatsApp] Sesi logged out. Silakan scan ulang.');
         sock = null;
         qrCodeString = '';
+        latestQrBase64 = '';
       }
     } else if (connection === 'open') {
       isConnected = true;
       qrCodeString = '';
+      latestQrBase64 = '';
       console.log('==================================================');
       console.log('✅ WHATSAPP BERHASIL TERHUBUNG!');
       console.log('==================================================');

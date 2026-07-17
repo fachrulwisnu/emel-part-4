@@ -44,6 +44,7 @@ import CitOrderModal from './components/CitOrderModal';
 import HtmlEmailViewer from './components/HtmlEmailViewer';
 import PlainTextTree from './components/PlainTextTree';
 import AttachmentGallery from './components/AttachmentGallery';
+import WhatsAppQrModal from './components/WhatsAppQrModal';
 
 interface Email {
   id?: number;
@@ -155,6 +156,7 @@ export default function App() {
   const [waTargetNumber, setWaTargetNumber] = useState('');
   const [waCustomMessage, setWaCustomMessage] = useState('');
   const [isSendingWa, setIsSendingWa] = useState(false);
+  const [isWaQrModalOpen, setIsWaQrModalOpen] = useState(false);
 
   const fetchWhatsAppStatus = async () => {
     try {
@@ -663,6 +665,7 @@ export default function App() {
 
   // Explicitly requested loadFilterRules helper to fetch filter rules in ASC order from Supabase
   const loadFilterRules = async (providedSettings?: AppSettings) => {
+    setIsLoadingRules(true);
     const activeSettings = providedSettings || appSettings;
     const url = activeSettings.supabaseUrl;
     const key = activeSettings.supabaseKey;
@@ -679,6 +682,7 @@ export default function App() {
           setFilterRules(data);
           setCustomFilters(data);
           setConfiguredRules(data);
+          setIsLoadingRules(false);
           return;
         } else if (error) {
           console.warn('Direct Supabase custom_filters fetch failed for filterRules, falling back to local API', error);
@@ -698,6 +702,8 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to load filters:', err);
+    } finally {
+      setIsLoadingRules(false);
     }
   };
 
@@ -3053,14 +3059,24 @@ export default function App() {
 
                       {!waStatus.isConnected && (
                         <div className="p-3.5 bg-amber-50 border border-amber-100 rounded-lg text-[11px] text-amber-800 space-y-1">
-                          <p className="font-semibold">⚠️ Scan QR Code pada Server Terminal</p>
+                          <p className="font-semibold">⚠️ Scan QR Code untuk Menghubungkan</p>
                           <p className="text-slate-600 leading-normal">
-                            WhatsApp belum login atau koneksi terputus. Silakan periksa output log terminal server/kontainer Anda untuk melihat dan memindai QR Code menggunakan fitur WhatsApp Linked Devices pada smartphone Anda. Sesi akan tetap aktif di folder <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">auth_info</code>.
+                            WhatsApp belum login atau koneksi terputus. Klik tombol <strong className="text-amber-950">"Scan QR Code"</strong> di bawah ini untuk melihat dan memindai QR Code langsung dari dashboard web Anda. Sesi Anda akan tetap aktif di folder <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">auth_info</code>.
                           </p>
                         </div>
                       )}
 
-                      <div className="flex justify-end">
+                      <div className="flex justify-end gap-2">
+                        {!waStatus.isConnected && (
+                          <button
+                            type="button"
+                            onClick={() => setIsWaQrModalOpen(true)}
+                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer text-[11px] font-bold shadow-xs transition-all flex items-center gap-1.5"
+                          >
+                            <MessageSquare className="h-3.5 w-3.5" />
+                            <span>Scan QR Code</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={fetchWhatsAppStatus}
@@ -3111,6 +3127,29 @@ export default function App() {
                               <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">ATM Orders</p>
                               <p className="text-lg font-bold text-indigo-700 mt-1">{dailyReport.atm_count}</p>
                             </div>
+                          </div>
+
+                          {/* AI Healthcheck & Executive Summary */}
+                          <div className="p-3 bg-indigo-50/30 border border-indigo-100/40 rounded-lg space-y-1.5 text-xs">
+                            <div className="font-bold text-indigo-800 flex items-center justify-between">
+                              <span className="flex items-center gap-1">🤖 Sistem & AI Healthcheck</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${dailyReport.ai_status === 'Operational' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                {dailyReport.ai_status || 'Operational'}
+                              </span>
+                            </div>
+                            <p className="text-slate-600 font-medium">
+                              ⏳ Pending Summary: <span className="font-bold text-indigo-700">{dailyReport.pending_sync ?? 0} Email</span>
+                            </p>
+                            {dailyReport.ai_conclusion && (
+                              <div className="mt-2 pt-2 border-t border-indigo-100/40">
+                                <p className="font-bold text-indigo-800 mb-1 flex items-center gap-1">
+                                  <span>🧠</span> AI Executive Summary:
+                                </p>
+                                <p className="text-slate-700 leading-normal italic text-[11px]">
+                                  "{dailyReport.ai_conclusion}"
+                                </p>
+                              </div>
+                            )}
                           </div>
 
                           <div className="space-y-2 text-xs">
@@ -3606,6 +3645,16 @@ export default function App() {
           setIsCitOrderModalOpen(false);
           setCitOrderPrefillEmail(null);
           await loadEmails(); // Reload emails to show updated state
+        }}
+      />
+
+      {/* WhatsApp QR Scan Modal Overlay */}
+      <WhatsAppQrModal
+        isOpen={isWaQrModalOpen}
+        onClose={() => setIsWaQrModalOpen(false)}
+        onConnected={() => {
+          addToast('WhatsApp Terhubung!', 'Sesi WhatsApp Anda telah aktif.');
+          fetchWhatsAppStatus();
         }}
       />
 
