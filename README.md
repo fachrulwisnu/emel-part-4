@@ -3,9 +3,9 @@
 [![React Version](https://img.shields.io/badge/Frontend-React%2018%20%2B%20Vite-blue?style=for-the-badge&logo=react)](https://react.dev/)
 [![Node.js Version](https://img.shields.io/badge/Backend-Node.js%20Express-green?style=for-the-badge&logo=node.js)](https://nodejs.org/)
 [![Database Cloud](https://img.shields.io/badge/Database-Supabase%20%2B%20SQLite-darkgreen?style=for-the-badge&logo=supabase)](https://supabase.com/)
-[![LLM Models](https://img.shields.io/badge/AI%20Core-NVIDIA%20NIM%20%2B%20Moonshot-orange?style=for-the-badge&logo=nvidia)](https://www.nvidia.com/)
+[![LLM Models](https://img.shields.io/badge/AI%20Core-NVIDIA%20NIM-orange?style=for-the-badge&logo=nvidia)](https://www.nvidia.com/)
 
-Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus untuk memproses pesanan **Cash In Transit (CIT)** dan pengisian uang tunai **ATM** secara cerdas, asinkron, dan real-time menggunakan arsitektur AI hibrida berkinerja tinggi.
+Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus untuk memproses pesanan **Cash In Transit (CIT)** dan pengisian uang tunai **ATM** secara cerdas, asinkron, dan real-time menggunakan arsitektur AI hibrida berkinerja tinggi serta ketahanan tingkat tinggi terhadap pembatasan rate limit API.
 
 ---
 
@@ -13,15 +13,15 @@ Sistem automasi ticketing berbasis email tingkat lanjut yang dirancang khusus un
 
 **AI Operational Assistant Copilot** mengautomasi alur kerja manual pengolahan email operasional bernilai tinggi. Sistem secara otomatis menguping, membaca, dan menganalisis email masuk yang berisi instruksi rumit, mengekstraksi parameter operasional penting seperti **Bank Tujuan**, **Mata Uang**, **Total Nominal**, serta **Pecahan/Denominasi**, lalu mempresentasikannya ke dalam antarmuka dashboard operasional yang interaktif dan dinamis.
 
-Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data manual dari beberapa menit menjadi dalam hitungan detik secara aman dan presisi tinggi.
+Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data manual dari beberapa menit menjadi dalam hitungan detik secara aman, presisi tinggi, dan bebas hambatan API.
 
 ---
 
-## 🤖 2. Arsitektur AI Baru: Parallel Core & Mekanisme Fallback Terstruktur
+## 🤖 2. Arsitektur AI & Mekanisme Pengendalian Rate-Limit
 
-Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit (HTTP 429).
+Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit ketat (NVIDIA NIM 40 RPM).
 
-### Alur Flow Pemrosesan AI
+### Alur Pemrosesan AI & Mekanisme Throttling
 ```
                     +------------------------------------+
                     |       Email Masuk Terdeteksi       |
@@ -49,7 +49,14 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
                        | Sukses? -> Simpan ke DB     |
                        +-----------------------------+
                                       |
-                                      | (Jika Core Gagal)
+                                      | (Jika Core Gagal / Limit 429)
+                                      v
+                       +-----------------------------+
+                       | EXPONENTIAL BACKOFF ACTIVE  |
+                       | Deteksi 429 -> Delay 30s    |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Tetap Gagal)
                                       v
                        +-----------------------------+
                        | FALLBACK TIER 1             |
@@ -62,7 +69,7 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
                        +-----------------------------+
                        | FALLBACK TIER 2             |
                        | Model: Gemma 4 31B          |
-                       | Engine: Axios (Hardcoded)   |
+                       | Engine: Axios Murni         |
                        +-----------------------------+
                                       |
                                       | (Jika Tier 2 Gagal)
@@ -80,35 +87,36 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
                        +-----------------------------+
 ```
 
-### ⚙️ Detail Arsitektur AI
-1. **Parallel Execution Core:** 
-   * **Nemotron 3 Ultra (nvidia/nemotron-3-ultra-550b-a55b):** Ditugaskan secara khusus untuk mengekstrak ringkasan operasional (`summary`), mata uang (`currency`), nominal (`total_amount`), bank tujuan (`suggested_bank`), wilayah cabang (`suggested_folder_parent`), serta instruksi khusus (`extracted_notes`). Dipanggil menggunakan **Axios murni** dengan parameter `chat_template_kwargs: { "enable_thinking": true }` dan `reasoning_budget: 16384` untuk kualitas penalaran tertinggi.
-   * **Inkling (thinkingmachines/inkling):** Ditugaskan khusus untuk mengekstrak tipe tag (`suggested_tag`), tingkat urgensi (`urgency_level`), dan keputusan tindakan (`action_required`). Dipanggil menggunakan **Axios murni** dengan parameter `max_tokens: 8192`.
-   * Panggilan ini dieksekusi secara konkuren (`Promise.all`) guna meminimalkan latency pemrosesan keseluruhan.
-2. **Fallback Tier 1 (DeepSeek V4 Pro):** Jika eksekusi paralel core mengalami kendala, sistem akan jatuh ke **deepseek-ai/deepseek-v4-pro** menggunakan **OpenAI SDK** dengan parameter `chat_template_kwargs: { "thinking": false }` guna menjamin keandalan data ekstraksi tanpa overhead berlebih.
-3. **Fallback Tier 2 (Gemma 4 31B):** Jika Fallback Tier 1 gagal, sistem secara otomatis merujuk ke **google/gemma-4-31b-it** dengan menggunakan pemanggilan **Axios murni** yang terisolasi secara kokoh dengan kredensial ter-hardcode di dalam fungsinya untuk keandalan eksekusi mutlak.
-4. **Absolute Last Resort (Minimax M3):** Sebagai jaring pengaman AI terakhir, model **minimaxai/minimax-m3** dipanggil menggunakan Axios murni untuk memproses dan merestorasi seluruh data operasional dari teks email.
-5. **Rule-Based Fallback:** Jika semua model AI di atas mengalami kegagalan total, sistem menggunakan algoritma reguler ekspresi (Regex) cerdas untuk menghindari hilangnya data transaksi.
+### ⚡ Proteksi Throttling & Anti-Timeout NVIDIA NIM
+Untuk mencegah kegagalan akibat batas **40 RPM (Requests Per Minute)** pada NVIDIA NIM, sistem mengadopsi taktik berikut:
+1. **Dynamic Queue Batching**: Pemrosesan massal email (*Bulk AI* / *Data Backfill* / *Queue Workers*) dipangkas dari ukuran besar menjadi maksimal **5 email saja per batch**.
+2. **Strict Time Throttling**: Ditambahkan jeda waktu aman (**15 hingga 20 detik**) antar batch pemrosesan untuk memberikan waktu regenerasi rate limit NVIDIA NIM secara berkala.
+3. **Exponential Backoff**: Jaringan interseptor otomatis mendeteksi HTTP `429 Too Many Requests`. Saat limit tercapai, sistem akan otomatis melakukan jeda tunggu aman selama **30 detik** sebelum mengulangi permintaan secara cerdas.
 
 ---
 
-## ✨ 3. Fitur Utama Secara Detail
+## ✨ 3. Fitur Unggulan Terbaru
 
-* **🤖 Smart Split-Task JSON Extraction:** Memilah tugas pemrosesan email yang rumit menjadi sub-tugas paralel ke beberapa model AI terbaik di kelasnya untuk menghasilkan data terstruktur dengan format JSON yang sangat akurat.
-* **🟢 Sistem AI Health Check & Diagnostics:** Endpoint `/api/settings/ai-health` mendiagnosis kesehatan masing-masing model AI secara real-time. Ping payload dioptimalkan tanpa streaming (`stream: false`) untuk mencegah deadlock atau hanging. Jika terjadi kegagalan atau timeout, pesan error detail dari API ditangkap dan dikirim ke dashboard untuk kemudahan debugging.
-* **📧 UI Dasbor Tiket Interaktif (Gmail-Style):** Desain antarmuka modern yang nyaman dipandang. Menampilkan indikator status model AI yang memproses (misalnya Nemotron/Inkling, DeepSeek, Gemma, Minimax) secara dinamis.
-* **📎 Dukungan Base64 Attachments:** File lampiran dikodekan langsung menjadi Base64 string terkompresi (maksimal 3MB) dan disimpan di database, meniadakan ketergantungan pada penyimpanan cloud eksternal yang rawan kebocoran data.
-* **🔄 Event-Driven Real-time Updates:** Perubahan status analisis AI, sinkronisasi email, dan log penayangan disinkronkan secara instan ke frontend melalui log bergaya terminal yang elegan.
-* **🗺️ Regional Branch Routing:** Email diklasifikasikan secara otomatis ke struktur regional (Region 1-10) dan kantor cabang pembantu berdasarkan kriteria pengirim atau subjek email secara instan.
+* **💵 Pecahan & Denominasi Dynamic (IDR/USD)**:
+  * Antarmuka entri pecahan kini berubah secara dinamis berdasarkan state mata uang (`mataUang`) aktif yang dipilih.
+  * Opsi pecahan diperbarui secara dinamis:
+    * **USD**: `[USD 1, USD 2, USD 5, USD 10, USD 20, USD 50, USD 100]`
+    * **IDR**: `[IDR 1000, IDR 2000, IDR 5000, IDR 10000, IDR 20000, IDR 50000, IDR 100000]`
+  * Seluruh perhitungan subtotal, fungsi `handleDenominationChange`, dan visualisasi selisih (`totalHitung`) didesain adaptif terhadap simbol mata uang aktif (bebas dari hardcode label "IDR/Rp").
+* **🤖 Smart Split-Task JSON Extraction**: Memilah tugas pemrosesan email yang rumit menjadi sub-tugas paralel ke beberapa model AI terbaik di kelasnya untuk menghasilkan data terstruktur dengan format JSON yang sangat akurat.
+* **🟢 Sistem AI Health Check & Diagnostics**: Endpoint `/api/settings/ai-health` mendiagnosis kesehatan masing-masing model AI secara real-time. Jika terjadi kegagalan, timeout, atau status 503 (Server Penuh/Sibuk), sistem memberikan respons informatif yang mendetail pada dasbor.
+* **📧 UI Dasbor Tiket Interaktif (Gmail-Style)**: Desain antarmuka modern yang nyaman dipandang. Menampilkan indikator status model AI yang memproses (misalnya Nemotron/Inkling, DeepSeek, Gemma, Minimax) secara dinamis.
+* **💬 WhatsApp Dispatch Dispatcher**: Notifikasi otomatis siap kirim ke pihak ketiga dan pengawal melalui WhatsApp Gateway dengan template yang telah disesuaikan dengan nilai pecahan dari denominasi dinamis.
+* **📎 Dukungan Base64 Attachments**: File lampiran dikodekan langsung menjadi Base64 string terkompresi (maksimal 3MB) dan disimpan di database, meniadakan ketergantungan pada penyimpanan cloud eksternal yang rawan kebocoran data.
 
 ---
 
 ## 🛠️ 4. Tech Stack (Spesifikasi Teknologi)
 
-* **Frontend Framework:** React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
-* **Backend Runtime:** Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
-* **Databases:** Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
-* **AI & Integration:** Axios murni & SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
+* **Frontend Framework**: React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
+* **Backend Runtime**: Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
+* **Databases**: Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
+* **AI & Integration**: Axios murni & SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
 
 ---
 
@@ -156,13 +164,16 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
 5. **Kompilasi Produksi (Production Build):**
    ```bash
    npm run build
+   ```
+   Server produksi dapat dijalankan langsung dengan:
+   ```bash
    npm run start
    ```
 
 ---
 
-## 🛡️ 6. Penanganan Kesalahan (Error Handling & Robustness)
+## 🛡️ 6. Penanganan Kesalahan & Ketahanan Sistem
 
-* **API Timeout Protection:** Seluruh permintaan eksternal AI dipasangi batas waktu (timeout) 60 detik menggunakan Axios untuk meminimalkan penumpukan proses hanging.
-* **Diagnostic Exception Capture:** Jika Health Check mengalami kendala, UI menampilkan status detail kesalahan (misal: `HTTP 400: Unsupported parameter` atau pesan asli server) untuk ketepatan diagnosis operasional.
-* **Double-Write Fallback:** Jika koneksi Supabase terputus, data tetap aman tersimpan di SQLite lokal dan siap digunakan secara independen tanpa disrupsi.
+* **API Timeout Protection**: Seluruh permintaan eksternal AI dipasangi batas waktu (timeout) 60 detik menggunakan Axios untuk meminimalkan penumpukan proses hanging.
+* **Server 503 Detection**: Jendela Health Check mendeteksi status server sibuk (HTTP 503) pada model AI secara akurat dan menampilkan label "Server Penuh/Sibuk (503)" daripada crash senyap.
+* **Double-Write Fallback**: Jika koneksi Supabase terputus, data tetap aman tersimpan di SQLite lokal dan siap digunakan secara independen tanpa disrupsi.
