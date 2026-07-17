@@ -1,0 +1,3634 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  Mail, 
+  Folder, 
+  FolderOpen, 
+  ChevronDown, 
+  ChevronRight, 
+  Search, 
+  RefreshCw, 
+  CheckCircle2, 
+  AlertCircle, 
+  Calendar, 
+  User, 
+  Inbox, 
+  SlidersHorizontal, 
+  Settings, 
+  Eye, 
+  EyeOff,
+  Trash2,
+  Pencil,
+  Info,
+  Clock,
+  ArrowRight,
+  Database,
+  Plus,
+  Server,
+  Link,
+  Activity,
+  Check,
+  Zap,
+  ChevronUp,
+  Sparkles,
+  History,
+  Coins,
+  MoreVertical,
+  Download,
+  MessageSquare,
+  FileText,
+  Send
+} from 'lucide-react';
+import CitDashboard from './components/CitDashboard';
+import CitOrderModal from './components/CitOrderModal';
+import HtmlEmailViewer from './components/HtmlEmailViewer';
+import PlainTextTree from './components/PlainTextTree';
+import AttachmentGallery from './components/AttachmentGallery';
+
+interface Email {
+  id?: number;
+  message_id: string;
+  subject: string;
+  sender: string;
+  receiver: string;
+  date: string;
+  body_text: string;
+  html_body: string;
+  tags: string[];
+  category?: string;
+  sub_category?: string;
+  folder_parent?: string;
+  folder_child?: string;
+  api_workflow_status?: string;
+  api_workflow_log?: string;
+
+  // Frontend map fallbacks
+  fromName?: string;
+  fromAddress?: string;
+
+  // AI fields
+  is_read?: boolean;
+  tag_type?: string;
+  summary?: string;
+  action_required?: boolean;
+  suggested_tag?: string;
+  is_important?: boolean;
+  urgency_level?: string;
+  is_cit_order?: boolean;
+  cit_type?: string;
+  suggested_bank?: string;
+  extracted_notes?: string;
+  ai_status?: string;
+}
+
+interface CustomFilter {
+  id?: number;
+  name: string;
+  match_from: string;
+  match_subject: string;
+  match_body: string;
+  action_parent: string;
+  action_child: string;
+  trigger_api?: boolean;
+}
+
+interface AppSettings {
+  pop3Host: string;
+  pop3Port: number;
+  pop3User: string;
+  pop3Pass: string;
+  citApiToken: string;
+  supabaseUrl: string;
+  supabaseKey: string;
+}
+
+const stringToColor = (str: string) => {
+  if (!str) return '#64748b';
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  let color = '#';
+  for (let i = 0; i < 3; i++) {
+    const value = (hash >> (i * 8)) & 0xFF;
+    color += ('00' + value.toString(16)).slice(-2);
+  }
+  return color;
+};
+
+const getBadge = (tag: string | undefined) => {
+  if (tag === 'CIT') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[9px] font-bold shadow-xs badge-cit">CIT 💰</span>;
+  if (tag === 'ATM') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shadow-xs badge-atm">ATM 💳</span>;
+  return null;
+};
+
+const getTagBadgeStyle = (str: string) => {
+  const color = stringToColor(str);
+  return {
+    backgroundColor: `${color}15`,
+    color: color,
+    borderColor: `${color}30`
+  };
+};
+
+export default function App() {
+  // Navigation
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard'>('inbox');
+  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
+  const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
+
+  // Loaders and State
+  const [tickets, setTickets] = useState<Email[]>([]);
+  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<string>('all');
+  const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
+  
+  // Custom Filters State
+  const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
+
+  // WhatsApp & Daily Report integration state
+  const [waStatus, setWaStatus] = useState<{ isConnected: boolean; qrCode: string }>({ isConnected: false, qrCode: '' });
+  const [isFetchingWaStatus, setIsFetchingWaStatus] = useState(false);
+  const [dailyReport, setDailyReport] = useState<any>(null);
+  const [isFetchingReport, setIsFetchingReport] = useState(false);
+  const [waTargetNumber, setWaTargetNumber] = useState('');
+  const [waCustomMessage, setWaCustomMessage] = useState('');
+  const [isSendingWa, setIsSendingWa] = useState(false);
+
+  const fetchWhatsAppStatus = async () => {
+    try {
+      setIsFetchingWaStatus(true);
+      const res = await fetch('/api/whatsapp/status');
+      const json = await res.json();
+      if (json.success) {
+        setWaStatus(json.status);
+      }
+    } catch (err) {
+      console.error('Failed to fetch WhatsApp status:', err);
+    } finally {
+      setIsFetchingWaStatus(false);
+    }
+  };
+
+  const fetchDailyReport = async () => {
+    try {
+      setIsFetchingReport(true);
+      const res = await fetch('/api/reports/daily');
+      const json = await res.json();
+      if (json.success) {
+        setDailyReport(json.data);
+        setWaCustomMessage(json.data.formattedMessage || '');
+      } else {
+        addToast('Laporan Gagal Dimuat', json.message || 'Gagal memproses metrik harian.');
+      }
+    } catch (err: any) {
+      addToast('Laporan Gagal Dimuat', err.message || String(err));
+    } finally {
+      setIsFetchingReport(false);
+    }
+  };
+
+  const handleSendWhatsApp = async () => {
+    if (!waTargetNumber) {
+      addToast('Error', 'Nomor tujuan wajib diisi!');
+      return;
+    }
+    try {
+      setIsSendingWa(true);
+      const res = await fetch('/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetNumber: waTargetNumber,
+          message: waCustomMessage
+        })
+      });
+      const json = await res.json();
+      if (json.success) {
+        addToast('Sukses', 'Laporan Operasional berhasil dikirim via WhatsApp!');
+      } else {
+        addToast('Gagal Mengirim', json.message || 'Pastikan WhatsApp Anda sudah terhubung.');
+      }
+    } catch (err: any) {
+      addToast('Gagal Mengirim', err.message || String(err));
+    } finally {
+      setIsSendingWa(false);
+    }
+  };
+
+  useEffect(() => {
+    if (settingsTab === 'whatsapp') {
+      fetchWhatsAppStatus();
+      fetchDailyReport();
+    }
+  }, [settingsTab]);
+  const [filterRules, setFilterRules] = useState<CustomFilter[]>([]);
+  const [configuredRules, setConfiguredRules] = useState<CustomFilter[]>([]);
+  const [isLoadingRules, setIsLoadingRules] = useState(false);
+  const [filterMsg, setFilterMsg] = useState('');
+  const [editingFilterId, setEditingFilterId] = useState<number | null>(null);
+  const [filterForm, setFilterForm] = useState<CustomFilter>({
+    name: '',
+    match_from: '',
+    match_subject: '',
+    match_body: '',
+    action_parent: '',
+    action_child: '',
+    trigger_api: false
+  });
+
+  // Global Config Settings
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    pop3Host: 'mail.advantagescm.com',
+    pop3Port: 995,
+    pop3User: '',
+    pop3Pass: '',
+    citApiToken: '',
+    supabaseUrl: '',
+    supabaseKey: ''
+  });
+  const [saveStatus, setSaveStatus] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Connection/Manual sync states
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isBackfilling, setIsBackfilling] = useState(false);
+  const [backfillLogs, setBackfillLogs] = useState<string[]>([]);
+  const [backfillProgress, setBackfillProgress] = useState<number>(0);
+  const [isBackfillStreaming, setIsBackfillStreaming] = useState(false);
+
+  // AI Pending Queue Management States
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [pendingEmails, setPendingEmails] = useState<any[]>([]);
+  const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [bulkLogs, setBulkLogs] = useState<string[]>([]);
+  const [isBulkStreaming, setIsBulkStreaming] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // AI Health Check States
+  interface AiModelHealth {
+    model: string;
+    status: string;
+    latency?: string;
+    message?: string;
+  }
+  const [healthData, setHealthData] = useState<AiModelHealth[]>([]);
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+  const [healthError, setHealthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [backfillLogs]);
+
+  // Floating Toasts
+  const [toasts, setToasts] = useState<{ id: number; title: string; message: string }[]>([]);
+
+  // Simple search filter state
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Smart Apply and Edit Suggestion Modal State
+  const [isEditSuggestionOpen, setIsEditSuggestionOpen] = useState(false);
+  const [suggestionForm, setSuggestionForm] = useState({
+    message_id: '',
+    folder_parent: '',
+    folder_child: '',
+    suggested_tag: '',
+    urgency_level: 'Routine',
+    is_important: false,
+    summary: '',
+    action_required: false,
+    create_filter_rule: false,
+    filter_rule_name: '',
+    filter_rule_match_from: '',
+    filter_rule_match_subject: '',
+    filter_rule_match_body: '',
+    filter_rule_trigger_api: false
+  });
+
+  const [isCitOrderModalOpen, setIsCitOrderModalOpen] = useState(false);
+  const [citOrderPrefillEmail, setCitOrderPrefillEmail] = useState<Email | null>(null);
+  const [activeContextMenuId, setActiveContextMenuId] = useState<string | null>(null);
+
+  const toggleCitOrderMark = async (email: Email) => {
+    try {
+      const nextIsCitOrder = !email.is_cit_order;
+      // Optimistically update local state first
+      setTickets(prev => prev.map(t => t.message_id === email.message_id ? { 
+        ...t, 
+        is_cit_order: nextIsCitOrder,
+        cit_type: nextIsCitOrder ? (t.cit_type === 'None' || !t.cit_type ? 'CIT' : t.cit_type) : 'None'
+      } : t));
+      
+      if (selectedEmail?.message_id === email.message_id) {
+        setSelectedEmail(prev => prev ? {
+          ...prev,
+          is_cit_order: nextIsCitOrder,
+          cit_type: nextIsCitOrder ? (prev.cit_type === 'None' || !prev.cit_type ? 'CIT' : prev.cit_type) : 'None'
+        } : null);
+      }
+
+      // API call to update the fields
+      const response = await fetch('/api/emails/update-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message_id: email.message_id,
+          fields: {
+            is_cit_order: nextIsCitOrder,
+            cit_type: nextIsCitOrder ? (email.cit_type === 'None' || !email.cit_type ? 'CIT' : email.cit_type) : 'None'
+          }
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        addToast(
+          nextIsCitOrder ? 'Marked as CIT Order' : 'Unmarked as CIT Order', 
+          `Email "${email.subject}" successfully updated.`
+        );
+        await loadEmails(); // Refresh list to get all synced data
+      } else {
+        addToast('Error Updating CIT Mark', data.message || 'Unknown error occurred.');
+      }
+    } catch (err: any) {
+      console.error('Failed to toggle CIT order status:', err);
+      addToast('Error', err.message || 'Failed to update CIT order status.');
+    }
+  };
+
+  const handleSmartApply = async (
+    emailId: string, 
+    payload: {
+      folder_parent: string;
+      folder_child: string;
+      tags: string[];
+      suggested_tag: string;
+      is_important: boolean;
+      urgency_level: string;
+      summary: string;
+      action_required: boolean;
+      create_filter_rule: boolean;
+      filter_rule?: {
+        name: string;
+        match_from: string;
+        match_subject: string;
+        match_body: string;
+        action_parent: string;
+        action_child: string;
+        trigger_api: boolean;
+      }
+    }
+  ) => {
+    try {
+      const response = await fetch('/api/emails/smart-apply', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message_id: emailId,
+          folder_parent: payload.folder_parent,
+          folder_child: payload.folder_child,
+          tags: payload.tags,
+          suggested_tag: payload.suggested_tag,
+          is_important: payload.is_important,
+          urgency_level: payload.urgency_level,
+          summary: payload.summary,
+          action_required: payload.action_required,
+          create_filter_rule: payload.create_filter_rule,
+          filter_rule: payload.filter_rule
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        addToast('Smart Apply Successful', `Suggestion applied successfully. Email routed to ${payload.folder_parent} / ${payload.folder_child}.`);
+        await loadEmails();
+      } else {
+        addToast('Smart Apply Failed', data.message || 'Unknown error occurred.');
+      }
+    } catch (err: any) {
+      console.error('Failed to apply suggestion:', err);
+      addToast('Error', err.message || 'Failed to apply AI suggestion.');
+    }
+  };
+
+  const addToast = (title: string, message: string) => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, title, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 6000);
+  };
+
+  const selectedEmailRef = React.useRef(selectedEmail);
+  useEffect(() => {
+    selectedEmailRef.current = selectedEmail;
+  }, [selectedEmail]);
+
+  // Connect to SSE Events for Background Auto-Sync Notifications
+  useEffect(() => {
+    const eventSource = new EventSource('/api/events');
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.event === 'email_synced' || payload.event === 'email_added') {
+          addToast('Email Terbaca', payload.data.message || 'Email baru telah masuk.');
+          loadEmails();
+        } else if (payload.event === 'email_analyzing') {
+          const targetMsgId = payload.data.message_id;
+          setTickets(prev => prev.map(t => t.message_id === targetMsgId ? { ...t, ai_status: 'ANALYZING' } : t));
+          if (selectedEmailRef.current && selectedEmailRef.current.message_id === targetMsgId) {
+            setSelectedEmail(prev => prev ? { ...prev, ai_status: 'ANALYZING' } : null);
+          }
+        } else if (payload.event === 'email_updated') {
+          const updatedEmail = payload.data.email;
+          if (updatedEmail) {
+            let fromName = '';
+            let fromAddress = updatedEmail.sender || '';
+            if (updatedEmail.sender && updatedEmail.sender.includes('<')) {
+              const match = updatedEmail.sender.match(/^(.*?)\s*<(.*?)>/);
+              if (match) {
+                fromName = match[1].trim();
+                fromAddress = match[2].trim();
+              }
+            }
+            const mappedEmail = {
+              ...updatedEmail,
+              fromName: fromName || fromAddress,
+              fromAddress: fromAddress,
+              tags: Array.isArray(updatedEmail.tags) ? updatedEmail.tags : []
+            };
+
+            setTickets(prev => prev.map(t => t.message_id === mappedEmail.message_id ? mappedEmail : t));
+            if (selectedEmailRef.current && selectedEmailRef.current.message_id === mappedEmail.message_id) {
+              setSelectedEmail(mappedEmail);
+            }
+            addToast('Analisis AI Selesai', `Analisis untuk email "${mappedEmail.subject}" telah selesai.`);
+          } else {
+            loadEmails();
+          }
+        }
+      } catch (err) {
+        console.error('Error parsing SSE event:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.warn('SSE connection disconnected. Retrying...');
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [appSettings]);
+
+  // Fetch Settings
+  const loadSettings = async () => {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      if (data.success && data.settings) {
+        setAppSettings(data.settings);
+      }
+    } catch (err) {
+      console.error('Failed to load settings:', err);
+    }
+  };
+
+  // Fetch Emails
+  const loadEmails = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
+        if (!error && data) {
+          const mapped: Email[] = data.map((email: any) => {
+            let fromName = '';
+            let fromAddress = email.sender || '';
+            if (email.sender && email.sender.includes('<')) {
+              const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+              if (match) {
+                fromName = match[1].trim();
+                fromAddress = match[2].trim();
+              }
+            }
+            return {
+              ...email,
+              fromName: fromName || fromAddress,
+              fromAddress: fromAddress,
+              tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
+            };
+          });
+
+          setTickets(mapped);
+
+          // Retain selection if valid, otherwise select the first email
+          if (mapped.length > 0) {
+            setSelectedEmail(prev => {
+              if (prev) {
+                const current = mapped.find(e => e.message_id === prev.message_id);
+                if (current) return current;
+              }
+              return mapped[0];
+            });
+          } else {
+            setSelectedEmail(null);
+          }
+          await loadFolders();
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase fetch failed, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase fetch exception:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/emails');
+      const data = await res.json();
+      if (data.success && data.emails) {
+        // Map raw database emails to frontend schema (e.g. fromName, fromAddress)
+        const mapped: Email[] = data.emails.map((email: any) => {
+          let fromName = '';
+          let fromAddress = email.sender || '';
+          if (email.sender && email.sender.includes('<')) {
+            const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+            if (match) {
+              fromName = match[1].trim();
+              fromAddress = match[2].trim();
+            }
+          }
+          return {
+            ...email,
+            fromName: fromName || fromAddress,
+            fromAddress: fromAddress,
+            tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
+          };
+        });
+
+        setTickets(mapped);
+
+        // Retain selection if valid, otherwise select the first email
+        if (mapped.length > 0) {
+          setSelectedEmail(prev => {
+            if (prev) {
+              const current = mapped.find(e => e.message_id === prev.message_id);
+              if (current) return current;
+            }
+            return mapped[0];
+          });
+        } else {
+          setSelectedEmail(null);
+        }
+      }
+      await loadFolders();
+    } catch (err) {
+      console.error('Failed to load emails:', err);
+    }
+  };
+
+  // Load dynamic folder list
+  const loadFolders = async () => {
+    try {
+      const res = await fetch('/api/folders');
+      const data = await res.json();
+      if (data.success && data.folders) {
+        setDynamicFolders(data.folders);
+        setExpandedParents(prev => {
+          const next = { ...prev };
+          data.folders.forEach((f: any) => {
+            const parent = f.folder_parent || 'Lainnya';
+            if (next[parent] === undefined) {
+              next[parent] = true; // expanded by default
+            }
+          });
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to load folders:', err);
+    }
+  };
+
+  // Load custom filters
+  const loadCustomFilters = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase.from('custom_filters').select('*');
+        if (!error && data) {
+          setCustomFilters(data);
+          setFilterRules(data);
+          setConfiguredRules(data);
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase custom_filters fetch failed, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase custom_filters fetch exception:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/custom-filters');
+      const data = await res.json();
+      if (data.success && data.filters) {
+        setCustomFilters(data.filters);
+        setFilterRules(data.filters);
+        setConfiguredRules(data.filters);
+      }
+    } catch (err) {
+      console.error('Failed to load filters:', err);
+    }
+  };
+
+  // Explicitly requested loadFilterRules helper to fetch filter rules in ASC order from Supabase
+  const loadFilterRules = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase
+          .from('custom_filters')
+          .select('*')
+          .order('created_at', { ascending: true });
+        
+        if (!error && data) {
+          setFilterRules(data);
+          setCustomFilters(data);
+          setConfiguredRules(data);
+          return;
+        } else if (error) {
+          console.warn('Direct Supabase custom_filters fetch failed for filterRules, falling back to local API', error);
+        }
+      } catch (err) {
+        console.error('Direct Supabase custom_filters fetch for filterRules exception:', err);
+      }
+    }
+
+    try {
+      const res = await fetch('/api/custom-filters');
+      const data = await res.json();
+      if (data.success && data.filters) {
+        setFilterRules(data.filters);
+        setCustomFilters(data.filters);
+        setConfiguredRules(data.filters);
+      }
+    } catch (err) {
+      console.error('Failed to load filters:', err);
+    }
+  };
+
+  // Hook specifically requested for 'Automation Rule & Mail Config' (Dynamic Filters)
+  // Fetch rules from Supabase/SQLite when component mounts
+  useEffect(() => {
+    const fetchConfiguredRules = async () => {
+      setIsLoadingRules(true);
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const settingsData = await settingsRes.json();
+        let url = '';
+        let key = '';
+        if (settingsData.success && settingsData.settings) {
+          url = settingsData.settings.supabaseUrl;
+          key = settingsData.settings.supabaseKey;
+        }
+
+        if (url && key) {
+          const supabase = createClient(url, key);
+          const { data, error } = await supabase
+            .from('custom_filters')
+            .select('*')
+            .order('id', { ascending: true });
+          
+          if (!error && data) {
+            setConfiguredRules(data);
+            setFilterRules(data);
+            setCustomFilters(data);
+            setIsLoadingRules(false);
+            return;
+          } else if (error) {
+            console.warn('Direct Supabase fetch for configuredRules failed, falling back:', error);
+          }
+        }
+      } catch (err) {
+        console.error('Exception in direct Supabase fetch for configuredRules:', err);
+      }
+
+      // Fallback local API
+      try {
+        const res = await fetch('/api/custom-filters');
+        const data = await res.json();
+        if (data.success && data.filters) {
+          setConfiguredRules(data.filters);
+          setFilterRules(data.filters);
+          setCustomFilters(data.filters);
+        }
+      } catch (err) {
+        console.error('Local API fetch for configuredRules failed:', err);
+      } finally {
+        setIsLoadingRules(false);
+      }
+    };
+
+    fetchConfiguredRules();
+  }, []);
+
+  // Initial Fetch & State Update from Supabase on Mount
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const settingsData = await settingsRes.json();
+        let finalUrl = '';
+        let finalKey = '';
+        let finalSettings = null;
+        
+        if (settingsData.success && settingsData.settings) {
+          setAppSettings(settingsData.settings);
+          finalUrl = settingsData.settings.supabaseUrl;
+          finalKey = settingsData.settings.supabaseKey;
+          finalSettings = settingsData.settings;
+        }
+
+        if (finalUrl && finalKey) {
+          // Mount initial fetch to Supabase
+          const supabase = createClient(finalUrl, finalKey);
+          const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
+          if (!error && data) {
+            const mapped: Email[] = data.map((email: any) => {
+              let fromName = '';
+              let fromAddress = email.sender || '';
+              if (email.sender && email.sender.includes('<')) {
+                const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
+                if (match) {
+                  fromName = match[1].trim();
+                  fromAddress = match[2].trim();
+                }
+              }
+              return {
+                ...email,
+                fromName: fromName || fromAddress,
+                fromAddress: fromAddress,
+                tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
+              };
+            });
+            setTickets(mapped);
+            if (mapped.length > 0) {
+              setSelectedEmail(mapped[0]);
+            }
+            await loadFolders();
+          } else {
+            console.error('Supabase initial fetch error, using local fallback:', error);
+            await loadEmails(settingsData.settings);
+          }
+        } else {
+          await loadEmails(settingsData.settings);
+        }
+        await loadFilterRules(finalSettings || undefined);
+      } catch (err) {
+        console.error('Error in initial mount fetch:', err);
+        await loadEmails();
+        await loadFilterRules();
+      }
+      await loadFilterRules();
+    };
+
+    fetchInitialData();
+  }, []);
+
+  // Save Config Settings
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaveStatus('Saving config...');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(appSettings)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSaveStatus('Settings updated successfully!');
+        addToast('Settings Updated', 'Email Server and API settings saved securely.');
+        setTimeout(() => setSaveStatus(''), 4000);
+      } else {
+        setSaveStatus('Failed to update: ' + data.message);
+      }
+    } catch (err: any) {
+      setSaveStatus('Save Error: ' + err.message);
+    }
+  };
+
+  // POP3 connection diagnostic
+  const handleTestConnection = async () => {
+    setIsTestingConn(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: appSettings.pop3Host,
+          port: appSettings.pop3Port,
+          username: appSettings.pop3User,
+          password: appSettings.pop3Pass
+        })
+      });
+      const data = await res.json();
+      setTestResult({
+        success: data.success,
+        message: data.message
+      });
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: 'Network connection failed: ' + err.message
+      });
+    } finally {
+      setIsTestingConn(false);
+    }
+  };
+
+  const handleRunHealthCheck = async () => {
+    setIsCheckingHealth(true);
+    setHealthError(null);
+    try {
+      const res = await fetch('/api/settings/ai-health');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.health)) {
+        setHealthData(data.health);
+        addToast('AI Health Check Complete', 'Successfully retrieved latency and status for all active AI models.');
+      } else {
+        setHealthError(data.message || 'Failed to fetch AI health status');
+        addToast('Health Check Failed', 'An error occurred while connecting to the health diagnostic service.');
+      }
+    } catch (err: any) {
+      setHealthError(err.message || String(err));
+      addToast('Health Check Error', 'Could not establish connection to the health diagnostic server.');
+    } finally {
+      setIsCheckingHealth(false);
+    }
+  };
+
+  // Historical Backfill Trigger with Server Sent Events (SSE) and Moonshot AI
+  const handleFetchHistoricalData = () => {
+    if (!confirm("Proses ini akan merangkum seluruh email historis kosong menggunakan model Moonshot Kimi-k2.6 secara real-time. Yakin ingin melanjutkan?")) return;
+
+    setIsBackfilling(true);
+    setBackfillProgress(0);
+    setBackfillLogs(["[System] Memulai koneksi real-time Stream ke backend..."]);
+    setIsBackfillStreaming(true);
+
+    const eventSource = new EventSource('/api/backfill-stream');
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'start') {
+          setBackfillLogs(prev => [...prev, `[System] ${data.message}`]);
+        } else if (data.type === 'progress') {
+          const percent = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+          setBackfillProgress(percent);
+          setBackfillLogs(prev => [...prev, `[Progress ${percent}%] ${data.message}`]);
+        } else if (data.type === 'complete') {
+          setBackfillProgress(100);
+          setBackfillLogs(prev => [...prev, `[Selesai] ${data.message}`]);
+          addToast('Backfill Selesai', data.message || 'Semua data historis selesai di-backfill.');
+          eventSource.close();
+          setIsBackfillStreaming(false);
+          setIsBackfilling(false);
+          loadEmails(); // Refresh emails list
+        } else if (data.type === 'error') {
+          setBackfillLogs(prev => [...prev, `[Error] ${data.message}`]);
+          addToast('Backfill Error', data.message);
+          eventSource.close();
+          setIsBackfillStreaming(false);
+          setIsBackfilling(false);
+        }
+      } catch (err: any) {
+        console.error("Gagal parsing data SSE:", err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE EventSource error:", err);
+      setBackfillLogs(prev => [...prev, "[Error] Koneksi stream terputus atau terjadi kesalahan server."]);
+      addToast('Stream Error', 'Koneksi real-time ke server terputus.');
+      eventSource.close();
+      setIsBackfillStreaming(false);
+      setIsBackfilling(false);
+    };
+  };
+
+  // AI Pending Queue: Fetch and Process
+  const fetchPendingQueue = async (providedSettings?: AppSettings) => {
+    const activeSettings = providedSettings || appSettings;
+    const url = activeSettings.supabaseUrl;
+    const key = activeSettings.supabaseKey;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { data, error } = await supabase
+          .from('emails')
+          .select('message_id, sender, subject, date, ai_status')
+          .eq('ai_status', 'PENDING')
+          .order('date', { ascending: false });
+
+        if (!error && data) {
+          setPendingEmails(data);
+          setPendingCount(data.length);
+          return;
+        } else if (error) {
+          console.warn('[Supabase Fetch Pending Queue Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Fetch Pending Queue Exception]:', err);
+      }
+    }
+
+    // Fallback SQLite
+    try {
+      const res = await fetch('/api/ai/pending-queue');
+      const data = await res.json();
+      if (data.success && data.emails) {
+        setPendingEmails(data.emails);
+        setPendingCount(data.emails.length);
+      }
+    } catch (err) {
+      console.error('[SQLite Fetch Pending Queue Failed]:', err);
+    }
+  };
+
+  const handleBulkProcessAI = () => {
+    if (pendingCount === 0) {
+      addToast('Antrean Kosong', 'Tidak ada email pending di antrean.');
+      return;
+    }
+
+    setIsBulkProcessing(true);
+    setBulkProgress({ current: 0, total: pendingCount });
+    setBulkLogs(["[System] Menghubungkan ke real-time stream bulk process..."]);
+    setIsBulkStreaming(true);
+
+    const eventSource = new EventSource('/api/ai/bulk-process-stream');
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'start') {
+          setBulkLogs(prev => [...prev, `[System] ${data.message}`]);
+          setBulkProgress({ current: 0, total: data.total });
+        } else if (data.type === 'progress') {
+          setBulkProgress({ current: data.current, total: data.total });
+          setBulkLogs(prev => [...prev, `[Progress ${data.current}/${data.total}] ${data.message}`]);
+        } else if (data.type === 'complete') {
+          setBulkProgress({ current: pendingCount, total: pendingCount });
+          setBulkLogs(prev => [...prev, `[Selesai] ${data.message}`]);
+          addToast('Bulk AI Selesai', data.message || 'Semua email pending berhasil diproses.');
+          eventSource.close();
+          setIsBulkStreaming(false);
+          setIsBulkProcessing(false);
+          fetchPendingQueue();
+          loadEmails(); // Refresh emails list
+        } else if (data.type === 'error') {
+          setBulkLogs(prev => [...prev, `[Error] ${data.message}`]);
+          addToast('Bulk AI Error', data.message);
+          eventSource.close();
+          setIsBulkStreaming(false);
+          setIsBulkProcessing(false);
+          fetchPendingQueue();
+        }
+      } catch (err: any) {
+        console.error("Gagal parsing data SSE:", err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE EventSource error:", err);
+      setBulkLogs(prev => [...prev, "[Error] Koneksi stream terputus atau terjadi kesalahan server."]);
+      addToast('Stream Error', 'Koneksi real-time ke server terputus.');
+      eventSource.close();
+      setIsBulkStreaming(false);
+      setIsBulkProcessing(false);
+      fetchPendingQueue();
+    };
+  };
+
+  // Poll pending queue count to keep the badge dynamic
+  useEffect(() => {
+    fetchPendingQueue();
+    const interval = setInterval(() => {
+      fetchPendingQueue();
+    }, isQueueModalOpen ? 4000 : 12000);
+    return () => clearInterval(interval);
+  }, [appSettings.supabaseUrl, appSettings.supabaseKey, isQueueModalOpen]);
+
+  // Manual Trigger Sync
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    setSyncStatus('Connecting to POP3 Server...');
+    try {
+      const res = await fetch('/api/fetch-emails', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setSyncStatus(`Sync successful! Imported ${data.count} new emails.`);
+        addToast('POP3 Sync Finished', `Found and cataloged ${data.count} new items.`);
+        await loadEmails();
+      } else {
+        setSyncStatus('Sync Alert: ' + data.message);
+        addToast('Sync Alert', data.message);
+      }
+    } catch (err: any) {
+      setSyncStatus('Network Error: ' + err.message);
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus(null), 8000);
+    }
+  };
+
+  // Handle email selection and mark as read reactively
+  const handleSelectEmail = async (email: Email) => {
+    setSelectedEmail(email);
+    if (!email.is_read) {
+      // Optimistically update local tickets state
+      setTickets(prev => prev.map(t => t.message_id === email.message_id ? { ...t, is_read: true } : t));
+      
+      // Update selected email state as well
+      setSelectedEmail({ ...email, is_read: true });
+
+      // Non-blocking api call
+      try {
+        await fetch('/api/emails/mark-read', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_id: email.message_id, is_read: true })
+        });
+        await loadFolders(); // Refresh folders count since unread state counts might be updated
+      } catch (err) {
+        console.error('Failed to update read state on backend:', err);
+      }
+    }
+  };
+
+  // Apply retroactive filter to existing 'Lainnya' emails
+  const applyFilterToExistingEmails = async (newFilter: CustomFilter) => {
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+
+    if (!url || !key) {
+      console.warn('Supabase not fully configured. Skipping retroactive filter execution.');
+      return;
+    }
+
+    try {
+      const supabase = createClient(url, key);
+      // 1. Fetch emails with folder_parent = 'Lainnya'
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('folder_parent', 'Lainnya');
+
+      if (error) {
+        console.error('Failed to fetch retroactive emails from Supabase:', error);
+        return;
+      }
+
+      if (!data || data.length === 0) {
+        console.log('No existing emails in "Lainnya" folder for retroactive filtering.');
+        return;
+      }
+
+      // 2. Filter matching ones
+      const matchedIds = data.filter((email: any) => {
+        let isMatch = true;
+        const senderLower = (email.sender || '').toLowerCase();
+        const subjectLower = (email.subject || '').toLowerCase();
+        const bodyLower = (email.body_text || '').toLowerCase();
+
+        if (!newFilter.match_from && !newFilter.match_subject && !newFilter.match_body) {
+          return false;
+        }
+
+        if (newFilter.match_from && !senderLower.includes(newFilter.match_from.toLowerCase())) {
+          isMatch = false;
+        }
+        if (newFilter.match_subject && !subjectLower.includes(newFilter.match_subject.toLowerCase())) {
+          isMatch = false;
+        }
+        if (newFilter.match_body && !bodyLower.includes(newFilter.match_body.toLowerCase())) {
+          isMatch = false;
+        }
+
+        return isMatch;
+      }).map((email: any) => email.message_id);
+
+      // 3. Update Supabase
+      if (matchedIds.length > 0) {
+        const { error: updateErr } = await supabase
+          .from('emails')
+          .update({
+            folder_parent: newFilter.action_parent,
+            folder_child: newFilter.action_child
+          })
+          .in('message_id', matchedIds);
+
+        if (updateErr) {
+          console.error('Failed to perform retroactive bulk update in Supabase:', updateErr);
+          addToast('Retroactive Sync Error', 'Failed to update matched tickets in Supabase.');
+        } else {
+          addToast('Retroactive Filter Applied', `Successfully re-classified ${matchedIds.length} ticket(s) to "${newFilter.action_parent} > ${newFilter.action_child}".`);
+        }
+      } else {
+        console.log('No matches found for retroactive filtering.');
+      }
+
+      // Also call local endpoint to sync SQLite
+      try {
+        await fetch('/api/retroactive-filter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filter: newFilter })
+        });
+      } catch (localErr) {
+        console.error('Failed to sync retroactive updates to SQLite:', localErr);
+      }
+
+      // 4. Refresh state list email in Inbox
+      await loadEmails();
+    } catch (err) {
+      console.error('Error during retroactive filtering:', err);
+    }
+  };
+
+  // Add/Edit Filter Rule
+  const handleSaveFilter = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!filterForm.name.trim() || !filterForm.action_parent.trim() || !filterForm.action_child.trim()) {
+      setFilterMsg('Name, Action Folder Parent, and Action Folder Child are required.');
+      return;
+    }
+
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+    let savedToSupabase = false;
+    let newFilterObj: any = null;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const payload: any = {
+          name: filterForm.name.trim(),
+          match_from: filterForm.match_from?.trim() || null,
+          match_subject: filterForm.match_subject?.trim() || null,
+          match_body: filterForm.match_body?.trim() || null,
+          action_parent: filterForm.action_parent.trim(),
+          action_child: filterForm.action_child.trim(),
+          trigger_api: filterForm.trigger_api
+        };
+        if (editingFilterId !== null) {
+          payload.id = editingFilterId;
+        }
+
+        const { data, error } = editingFilterId !== null
+          ? await supabase.from('custom_filters').upsert([payload]).select()
+          : await supabase.from('custom_filters').insert([payload]).select();
+
+        if (!error && data && data[0]) {
+          newFilterObj = data[0];
+          savedToSupabase = true;
+        } else if (error) {
+          console.error('[Supabase Save Filter Error]:', error);
+          setFilterMsg('Supabase Save Error: ' + error.message);
+          return;
+        }
+      } catch (err: any) {
+        console.error('[Supabase Save Filter Exception]:', err);
+        setFilterMsg('Supabase Exception: ' + err.message);
+        return;
+      }
+    }
+
+    try {
+      const localPayload = {
+        ...filterForm,
+        id: editingFilterId || undefined
+      };
+      const res = await fetch('/api/custom-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: localPayload })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setFilterMsg(editingFilterId !== null ? 'Filter rule updated successfully!' : 'Filter rule saved successfully!');
+        
+        const filterToApply: CustomFilter = {
+          name: filterForm.name.trim(),
+          match_from: filterForm.match_from?.trim() || '',
+          match_subject: filterForm.match_subject?.trim() || '',
+          match_body: filterForm.match_body?.trim() || '',
+          action_parent: filterForm.action_parent.trim(),
+          action_child: filterForm.action_child.trim(),
+          trigger_api: filterForm.trigger_api
+        };
+
+        setFilterForm({
+          name: '',
+          match_from: '',
+          match_subject: '',
+          match_body: '',
+          action_parent: '',
+          action_child: '',
+          trigger_api: false
+        });
+        const prevEditingId = editingFilterId;
+        setEditingFilterId(null);
+
+        addToast(prevEditingId !== null ? 'Rule Updated' : 'Rule Saved', prevEditingId !== null ? 'Dynamic workflow tag filter updated.' : 'Dynamic workflow tag filter registered.');
+        
+        if (savedToSupabase && newFilterObj) {
+          if (prevEditingId !== null) {
+            setFilterRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
+            setCustomFilters(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
+            setConfiguredRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
+          } else {
+            setFilterRules(prev => [...prev, newFilterObj]);
+            setCustomFilters(prev => [...prev, newFilterObj]);
+            setConfiguredRules(prev => [...prev, newFilterObj]);
+          }
+        } else {
+          await loadFilterRules();
+        }
+
+        // Apply retroactive filter!
+        await applyFilterToExistingEmails(filterToApply);
+        
+      } else {
+        if (!savedToSupabase) {
+          setFilterMsg('Failed to save: ' + data.message);
+        } else {
+          setFilterMsg('Filter rule saved to Supabase!');
+          setFilterForm({
+            name: '',
+            match_from: '',
+            match_subject: '',
+            match_body: '',
+            action_parent: '',
+            action_child: '',
+            trigger_api: false
+          });
+          setEditingFilterId(null);
+          await loadFilterRules();
+          await loadEmails();
+        }
+      }
+    } catch (err: any) {
+      if (!savedToSupabase) {
+        setFilterMsg('Error: ' + err.message);
+      } else {
+        setFilterMsg('Saved to Supabase. Local sync error: ' + err.message);
+      }
+    }
+  };
+
+  // Delete Filter Rule
+  const handleDeleteFilter = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this custom routing filter?')) return;
+    
+    const url = appSettings.supabaseUrl;
+    const key = appSettings.supabaseKey;
+    let deletedFromSupabase = false;
+
+    if (url && key) {
+      try {
+        const supabase = createClient(url, key);
+        const { error } = await supabase.from('custom_filters').delete().eq('id', id);
+        if (!error) {
+          deletedFromSupabase = true;
+          setFilterRules(prev => prev.filter(f => f.id !== id));
+          setCustomFilters(prev => prev.filter(f => f.id !== id));
+          setConfiguredRules(prev => prev.filter(f => f.id !== id));
+        } else {
+          console.error('[Supabase Delete Filter Error]:', error);
+          addToast('Delete Error', 'Failed to delete from Supabase: ' + error.message);
+          return;
+        }
+      } catch (err: any) {
+        console.error('[Supabase Delete Filter Exception]:', err);
+        addToast('Delete Error', 'Supabase exception: ' + err.message);
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch('/api/custom-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', id })
+      });
+      const data = await res.json();
+      if (data.success) {
+        addToast('Rule Deleted', 'Dynamic filter removed.');
+        if (!deletedFromSupabase) {
+          setFilterRules(prev => prev.filter(f => f.id !== id));
+          setCustomFilters(prev => prev.filter(f => f.id !== id));
+          setConfiguredRules(prev => prev.filter(f => f.id !== id));
+        }
+      } else {
+        if (!deletedFromSupabase) {
+          addToast('Delete Alert', 'Failed to delete locally: ' + data.message);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete rule:', err);
+      if (!deletedFromSupabase) {
+        addToast('Delete Error', 'Network error deleting rule.');
+      }
+    }
+  };
+
+  // Soft clear emails view state (Flush Inbox)
+  const handleClearDatabase = async () => {
+    setTickets([]);
+    setSelectedEmail(null);
+    addToast('Inbox Flushed', 'Inbox view cleared. Select any folder in the sidebar to re-fetch tickets.');
+  };
+
+  // Filters logic helper
+  const getFilteredEmails = () => {
+    return tickets.filter(email => {
+      // 1. Folder filter
+      if (selectedFolder === 'all') {
+        // Show all
+      } else if (selectedFolder.startsWith('parent:')) {
+        const parent = selectedFolder.substring('parent:'.length);
+        if ((email.folder_parent || 'Lainnya') !== parent) return false;
+      } else if (selectedFolder.startsWith('child:')) {
+        const parts = selectedFolder.substring('child:'.length).split('|||');
+        const parent = parts[0];
+        const child = parts[1];
+        if ((email.folder_parent || 'Lainnya') !== parent || (email.folder_child || 'Uncategorized') !== child) return false;
+      }
+
+      // 2. Search Query filter
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        const subMatch = (email.subject || '').toLowerCase().includes(query);
+        const fromMatch = (email.sender || '').toLowerCase().includes(query);
+        const textMatch = (email.body_text || '').toLowerCase().includes(query);
+        if (!subMatch && !fromMatch && !textMatch) return false;
+      }
+
+      return true;
+    });
+  };
+
+  const filteredEmails = getFilteredEmails();
+
+  const formatTimestamp = (isoString: string) => {
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric', 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+    } catch (e) {
+      return isoString;
+    }
+  };
+
+  const getInitials = (name: string) => {
+    if (!name) return 'EM';
+    const clean = name.replace(/<.*?>/, '').trim();
+    const parts = clean.split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return clean.slice(0, 2).toUpperCase();
+  };
+
+  return (
+    <div className="flex h-screen w-full bg-[#FAFBFD] font-sans text-slate-800 overflow-hidden" id="applet_canvas">
+      
+      {/* 1. LEFT-MOST NAVIGATION RAIL (Inbox vs Settings) */}
+      <aside className="w-[72px] bg-slate-900 flex flex-col items-center py-6 justify-between text-white shrink-0 z-10" id="nav_rail">
+        <div className="flex flex-col items-center space-y-6 w-full">
+          <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white cursor-pointer hover:scale-105 transition-transform">
+            <Zap className="h-6 w-6 text-white" />
+          </div>
+          
+          <div className="w-8 border-b border-slate-800 my-1"></div>
+
+          {/* Inbox Nav button */}
+          <button 
+            onClick={() => setCurrentMenu('inbox')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'inbox' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Inbox"
+          >
+            <Inbox className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Tickets Inbox
+            </span>
+          </button>
+
+          {/* CIT Dispatch Dashboard button */}
+          <button 
+            onClick={() => setCurrentMenu('cit-dashboard')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'cit-dashboard' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="CIT Dashboard"
+          >
+            <Coins className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              CIT Dispatch Control
+            </span>
+          </button>
+
+          {/* Settings Nav button */}
+          <button 
+            onClick={() => setCurrentMenu('settings')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'settings' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Settings"
+          >
+            <Settings className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Workflow Settings
+            </span>
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center space-y-4 w-full text-slate-500 font-mono text-[9px]">
+          <span className="font-bold">v2.0</span>
+        </div>
+      </aside>
+
+      {/* 2. MAIN WORKSPACE */}
+      <main className="flex flex-col flex-1 overflow-hidden" id="workspace_container">
+        
+        {/* TOP SYSTEM & ACTIONS BAR */}
+        <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0" id="workspace_header">
+          <div className="flex items-center space-x-3">
+            <h1 className="text-base font-bold text-slate-800 tracking-tight">
+              {currentMenu === 'inbox' ? 'Workflow Email Ticketing System' : 'Automation Rule & Mail Config'}
+            </h1>
+            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-600 rounded-full font-mono font-medium flex items-center gap-1.5 border border-slate-200">
+              <span className={`h-2 w-2 rounded-full ${appSettings.supabaseUrl ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+              {appSettings.supabaseUrl ? 'Supabase Active' : 'SQLite Standalone'}
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2.5">
+            {currentMenu === 'inbox' && (
+              <>
+                <div className="relative w-64 text-xs">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search sender, subject..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-8.5 pr-3 py-1.5 bg-slate-100 hover:bg-slate-150 border border-transparent hover:border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg focus:outline-none transition-all leading-normal"
+                  />
+                </div>
+
+                <button
+                  onClick={handleManualSync}
+                  disabled={isSyncing}
+                  className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
+                </button>
+
+                <button
+                  onClick={handleClearDatabase}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold rounded-lg text-xs transition-colors cursor-pointer"
+                  title="Flush cached inbox data"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Flush Inbox</span>
+                </button>
+              </>
+            )}
+          </div>
+        </header>
+
+        {syncStatus && (
+          <div className="px-6 py-2 bg-blue-50 text-blue-800 border-b border-blue-100 text-xs font-medium flex items-center justify-between animate-fade-in animate-pulse">
+            <span className="flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5" />
+              {syncStatus}
+            </span>
+          </div>
+        )}
+
+        {/* 3. INBOX: THREE-PANE LAYOUT */}
+        {currentMenu === 'inbox' && (
+          <div className="flex flex-row flex-1 overflow-hidden w-full" id="inbox_three_pane">
+            
+            {/* PANE 1: VIRTUAL FOLDERS TREE (LEFT) */}
+            <aside className="w-64 border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto" id="pane_folders">
+              <div className="p-4 space-y-2.5">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-2.5">Virtual Folders</p>
+                
+                <nav className="space-y-1 text-xs">
+                  {/* All Folders selection */}
+                  <button
+                    onClick={async () => {
+                      setSelectedFolder('all');
+                      await loadEmails();
+                    }}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all cursor-pointer ${
+                      selectedFolder === 'all' 
+                        ? 'bg-blue-50 text-blue-700 font-semibold' 
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2.5">
+                      <Inbox className={`h-4 w-4 ${selectedFolder === 'all' ? 'text-blue-600' : 'text-slate-400'}`} />
+                      <span>All Tickets</span>
+                    </div>
+                    <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold font-mono">
+                      {tickets.length}
+                    </span>
+                  </button>
+
+                  <div className="border-b border-slate-100 my-2"></div>
+
+                  {/* Grouped Dynamic folder tree */}
+                  {(() => {
+                    const grouped: Record<string, { child: string; count: number }[]> = {};
+                    dynamicFolders.forEach(item => {
+                      const parent = item.folder_parent || 'Lainnya';
+                      if (!grouped[parent]) grouped[parent] = [];
+                      grouped[parent].push({ child: item.folder_child || 'Uncategorized', count: item.count });
+                    });
+
+                    return Object.keys(grouped).map(parent => {
+                      const children = grouped[parent];
+                      const totalCount = children.reduce((sum, c) => sum + c.count, 0);
+                      const isExpanded = expandedParents[parent] !== false;
+
+                      return (
+                        <div key={parent} className="space-y-0.5">
+                          {/* Parent Category Row */}
+                          <div
+                            onClick={async () => {
+                              setSelectedFolder(`parent:${parent}`);
+                              await loadEmails();
+                            }}
+                            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all cursor-pointer group ${
+                              selectedFolder === `parent:${parent}`
+                                ? 'bg-slate-100 text-slate-900 font-bold'
+                                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-center space-x-2">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedParents(prev => ({ ...prev, [parent]: !isExpanded }));
+                                }}
+                                className="p-0.5 hover:bg-slate-200 rounded text-slate-400 cursor-pointer"
+                              >
+                                {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                              </button>
+                              <Folder className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-600" />
+                              <span className="truncate">{parent}</span>
+                            </div>
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border" style={getTagBadgeStyle(parent)}>
+                              {totalCount}
+                            </span>
+                          </div>
+
+                          {/* Children List */}
+                          {isExpanded && (
+                            <div className="pl-6 space-y-0.5 border-l border-slate-100 ml-5.5 py-0.5">
+                              {children.map(ch => {
+                                const isSelected = selectedFolder === `child:${parent}|||${ch.child}`;
+                                return (
+                                  <button
+                                    key={ch.child}
+                                    onClick={async () => {
+                                      setSelectedFolder(`child:${parent}|||${ch.child}`);
+                                      await loadEmails();
+                                    }}
+                                    className={`w-full flex items-center justify-between py-1.5 px-2.5 rounded transition-all text-left truncate cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-blue-50 text-blue-700 font-semibold'
+                                        : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    <span className="truncate text-[11px]">{ch.child}</span>
+                                    <span className="text-[8px] px-1 py-0.1 font-bold rounded border" style={getTagBadgeStyle(ch.child)}>
+                                      {ch.count}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                </nav>
+              </div>
+            </aside>
+
+            {/* PANE 2: TICKETS EMAIL LIST (MIDDLE) */}
+            <section className="w-[380px] border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto" id="pane_email_list">
+              <div className="p-4 border-b border-slate-100 bg-slate-50 shrink-0 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                    Tickets List ({filteredEmails.length})
+                  </span>
+                  <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
+                </div>
+                {pendingCount > 0 && (
+                  <button
+                    onClick={() => setIsQueueModalOpen(true)}
+                    className="flex items-center justify-between px-3 py-2 bg-amber-50 border border-amber-200 hover:border-amber-300 text-amber-800 rounded-lg text-[11px] font-medium hover:bg-amber-100/80 transition-all cursor-pointer w-full shadow-xs"
+                  >
+                    <span className="flex items-center gap-1.5 font-bold">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                      </span>
+                      {pendingCount} Email Menunggu AI
+                    </span>
+                    <span className="text-[10px] font-semibold underline hover:text-amber-950 flex items-center gap-0.5">
+                      Kelola Antrean &rarr;
+                    </span>
+                  </button>
+                )}
+              </div>
+
+              {filteredEmails.length === 0 ? (
+                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400">
+                  <Mail className="h-8 w-8 text-slate-200 mb-2" />
+                  <p className="text-xs font-semibold">No tickets found</p>
+                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[200px]">
+                    No emails match the selected folder or search query.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 overflow-y-auto flex-1 select-none">
+                  {filteredEmails.map(email => {
+                    const isSelected = selectedEmail?.message_id === email.message_id;
+                    const isBankOrder = email.folder_parent === 'Bank Order';
+
+                    return (
+                      <div
+                        key={email.message_id}
+                        onClick={() => handleSelectEmail(email)}
+                        className={`p-4 transition-all cursor-pointer border-l-4 text-left relative group ${
+                          isSelected 
+                            ? 'bg-blue-50/70 border-blue-600' 
+                            : 'hover:bg-slate-50 border-transparent'
+                        }`}
+                      >
+                        {/* Context Action Menu (Three dots) */}
+                        <div className="absolute right-3 top-3.5 z-10">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveContextMenuId(activeContextMenuId === email.message_id ? null : email.message_id);
+                            }}
+                            className="p-1 hover:bg-slate-200/80 rounded-full text-slate-400 hover:text-slate-700 transition-all cursor-pointer inline-flex items-center justify-center"
+                            title="CIT Actions"
+                          >
+                            <MoreVertical className="h-3.5 w-3.5" />
+                          </button>
+                          
+                          {activeContextMenuId === email.message_id && (
+                            <>
+                              <div 
+                                className="fixed inset-0 z-10" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveContextMenuId(null);
+                                }}
+                              />
+                              <div 
+                                className="absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-xl z-20 overflow-hidden text-xs py-1 animate-fade-in text-left font-sans"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCitOrderPrefillEmail(email);
+                                    setIsCitOrderModalOpen(true);
+                                    setActiveContextMenuId(null);
+                                  }}
+                                  className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-slate-700 hover:text-blue-700 font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                                >
+                                  <Coins className="h-4 w-4 text-blue-600 shrink-0" />
+                                  <span>Create CIT/ATM Order</span>
+                                </button>
+                                
+                                <div className="border-t border-slate-100 my-1" />
+                                
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    toggleCitOrderMark(email);
+                                    setActiveContextMenuId(null);
+                                  }}
+                                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-50 text-slate-700 hover:text-slate-900 font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                                >
+                                  <Zap className="h-4 w-4 text-amber-500 shrink-0" />
+                                  <span>{email.is_cit_order ? 'Unmark as CIT Order' : 'Mark as CIT Order'}</span>
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-between mb-1.5 pr-6">
+                          <span className="font-bold text-slate-800 text-xs truncate max-w-[140px] flex items-center gap-1.5">
+                            {!email.is_read && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0 inline-block" title="Unread" />
+                            )}
+                            {email.fromName}
+                          </span>
+                          <span className="text-[9px] text-slate-400 shrink-0 font-mono">
+                            {formatTimestamp(email.date)}
+                          </span>
+                        </div>
+
+                        <p className={`text-xs font-semibold leading-snug truncate mb-1 pr-4 ${
+                          isSelected ? 'text-blue-800' : 'text-slate-700'
+                        }`}>
+                          {email.subject}
+                        </p>
+
+                        <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed mb-2 pr-2">
+                          {email.body_text}
+                        </p>
+
+                        {/* Folder tags */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {getBadge(email.suggested_tag)}
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_parent || 'Lainnya')}>
+                            {email.folder_parent || 'Lainnya'}
+                          </span>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_child || 'Uncategorized')}>
+                            {email.folder_child || 'Uncategorized'}
+                          </span>
+
+                          {email.is_cit_order && (
+                            <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border shadow-xs flex items-center gap-1 ${
+                              email.cit_type === 'ATM' 
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200' 
+                                : 'bg-amber-50 text-amber-700 border-amber-200'
+                            }`}>
+                              <Coins className="h-2.5 w-2.5 shrink-0" />
+                              <span>{email.cit_type || 'CIT'} {email.suggested_bank ? `(${email.suggested_bank})` : 'Order'}</span>
+                            </span>
+                          )}
+
+                          {email.tag_type && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                              email.tag_type === 'Penugasan' 
+                                ? 'bg-amber-50/60 text-amber-700 border-amber-200' 
+                                : email.tag_type === 'Peringatan'
+                                ? 'bg-rose-50/60 text-rose-700 border-rose-200'
+                                : 'bg-indigo-50/60 text-indigo-700 border-indigo-200'
+                            }`}>
+                              {email.tag_type}
+                            </span>
+                          )}
+
+                          {email.api_workflow_status && email.api_workflow_status !== 'none' && (
+                            <span className={`text-[8px] font-bold uppercase px-1.5 py-0.2 rounded-full border flex items-center gap-1 ${
+                              email.api_workflow_status === 'triggered' 
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                                : email.api_workflow_status === 'failed'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-amber-50 text-amber-700 border-amber-200 animate-pulse'
+                            }`}>
+                              <Zap className="h-2 w-2 fill-current" />
+                              CIT {email.api_workflow_status}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            {/* PANE 3: DETAILED EMAIL & AUTOMATION STATUS VIEW (RIGHT) */}
+            <section className="flex-1 bg-white flex flex-col overflow-y-auto" id="pane_email_detail">
+              {selectedEmail ? (
+                <div className="flex flex-col h-full overflow-y-auto">
+                  
+                  {/* AI Analysis Status Banner */}
+                  {selectedEmail.ai_status === 'ANALYZING' && (
+                    <div className="bg-sky-50 border-b border-sky-100 px-6 py-2.5 flex items-center justify-between shrink-0">
+                      <div className="flex items-center space-x-2 text-sky-700">
+                        <Sparkles className="h-4 w-4 animate-spin shrink-0" />
+                        <span className="text-xs font-semibold">AI Operasional sedang mengekstrak detail CIT/ATM...</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">Nemotron / Inkling ACTIVATED</span>
+                    </div>
+                  )}
+                  {selectedEmail.ai_status === 'FAILED' && (
+                    <div className="bg-rose-50 border-b border-rose-100 px-6 py-2.5 flex items-center justify-between shrink-0">
+                      <div className="flex items-center space-x-2 text-rose-700">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        <span className="text-xs font-semibold">Analisis AI gagal atau mengalami timeout.</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-rose-600 bg-rose-100/80 px-2 py-0.5 rounded-md font-mono">FAILED</span>
+                    </div>
+                  )}
+                  
+                  {/* Email Detail Header */}
+                  <div className="p-6 border-b border-slate-100 bg-slate-50/50 shrink-0">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center space-x-3.5 select-text">
+                        <div className="h-10 w-10 bg-gradient-to-tr from-slate-200 to-slate-100 rounded-full flex items-center justify-center font-bold text-slate-600 text-sm shadow-inner border border-slate-200 shrink-0">
+                          {getInitials(selectedEmail.fromName || '')}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-800 text-sm leading-none flex items-center gap-1.5">
+                            <span>{selectedEmail.fromName}</span>
+                            <span className="text-[10px] font-normal text-slate-400 font-mono">({selectedEmail.fromAddress})</span>
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                            <Clock className="h-3 w-3 shrink-0" />
+                            <span>Received: {new Date(selectedEmail.date).toLocaleString()}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 justify-end">
+                        {selectedEmail.is_cit_order && (
+                          <span className={`text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1 shadow-xs ${
+                            selectedEmail.cit_type === 'ATM' 
+                              ? 'bg-indigo-50 text-indigo-700 border-indigo-200' 
+                              : 'bg-amber-50 text-amber-700 border-amber-200'
+                          }`}>
+                            <Coins className="h-3 w-3 shrink-0" />
+                            <span>{selectedEmail.cit_type || 'CIT'} {selectedEmail.suggested_bank ? `(${selectedEmail.suggested_bank})` : 'Order'}</span>
+                          </span>
+                        )}
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border inline-block" style={getTagBadgeStyle(selectedEmail.folder_parent || 'Lainnya')}>
+                          Folder: {selectedEmail.folder_parent || 'Lainnya'}
+                        </span>
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border inline-block" style={getTagBadgeStyle(selectedEmail.folder_child || 'Uncategorized')}>
+                          Sub: {selectedEmail.folder_child || 'Uncategorized'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 border-t border-slate-200/50 pt-4">
+                      <h2 className="text-sm font-bold text-slate-800 leading-snug select-text">
+                        {selectedEmail.subject}
+                      </h2>
+                    </div>
+                  </div>
+
+                  {/* Body Viewer */}
+                  <div className="p-6 flex-1 select-text border-b border-slate-100">
+                    {selectedEmail.html_body ? (
+                      <div className="bg-white border border-slate-200/85 rounded-xl p-6 min-h-[160px] shadow-sm overflow-x-auto">
+                        <HtmlEmailViewer htmlContent={selectedEmail.html_body} />
+                      </div>
+                    ) : (
+                      <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 text-xs text-slate-700 min-h-[160px]">
+                        <PlainTextTree text={selectedEmail.body_text} />
+                      </div>
+                    )}
+
+                    {/* Attachments Section */}
+                    <AttachmentGallery attachments={selectedEmail.attachments} />
+                  </div>
+
+                  {/* AI Operational Assistant Copilot Panel */}
+                  <div className="px-6 py-5 border-b border-slate-100 bg-blue-50/15" id="ai_operational_assistant_panel">
+                    <div className="flex items-center justify-between mb-3.5">
+                      <div className="flex items-center space-x-2">
+                        <Sparkles className="h-4.5 w-4.5 text-indigo-600 animate-pulse" />
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">AI Operational Assistant Copilot</h3>
+                      </div>
+                      
+                      {selectedEmail.tag_type ? (
+                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                          selectedEmail.tag_type === 'Penugasan' 
+                            ? 'bg-amber-100 text-amber-800 border-amber-300 shadow-sm' 
+                            : selectedEmail.tag_type === 'Peringatan'
+                            ? 'bg-rose-100 text-rose-800 border-rose-300 shadow-sm'
+                            : 'bg-indigo-100 text-indigo-800 border-indigo-300 shadow-sm'
+                        }`}>
+                          Kategori: {selectedEmail.tag_type}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic">Not analyzed by AI</span>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Effective Summary */}
+                      <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-left">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Effective Summary</p>
+                        <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                          {selectedEmail.summary || 'Summary is not generated yet. Analysis will run on next sync/simulation.'}
+                        </p>
+                      </div>
+
+                      {/* Action Required & Urgent markings */}
+                      <div className="flex gap-3">
+                        <div className={`flex-1 p-3 rounded-lg border flex items-center gap-2.5 ${
+                          selectedEmail.action_required 
+                            ? 'bg-amber-50/75 border-amber-200 text-amber-900' 
+                            : 'bg-slate-50/70 border-slate-200 text-slate-500'
+                        }`}>
+                          <div className={`w-2 h-2 rounded-full ${selectedEmail.action_required ? 'bg-amber-500 animate-ping' : 'bg-slate-300'}`} />
+                          <div className="text-left">
+                            <span className="text-[10px] block font-bold uppercase text-slate-400">Action Required</span>
+                            <span className="text-[11px] font-semibold">{selectedEmail.action_required ? 'Yes (Tindakan Diperlukan)' : 'No (Hanya Informasi)'}</span>
+                          </div>
+                        </div>
+
+                        <div className={`flex-1 p-3 rounded-lg border flex items-center gap-2.5 ${
+                          selectedEmail.is_important || selectedEmail.urgency_level === 'High' || selectedEmail.urgency_level === 'Peringatan'
+                            ? 'bg-rose-50/70 border-rose-200 text-rose-900' 
+                            : 'bg-slate-50/70 border-slate-200 text-slate-500'
+                        }`}>
+                          <div className={`w-2 h-2 rounded-full ${selectedEmail.is_important || selectedEmail.urgency_level === 'High' ? 'bg-rose-500 animate-ping' : 'bg-slate-300'}`} />
+                          <div className="text-left">
+                            <span className="text-[10px] block font-bold uppercase text-slate-400">Marking / Urgency</span>
+                            <span className="text-[11px] font-semibold">
+                              {selectedEmail.is_important ? 'Urgent / Task' : 'Routine'} ({selectedEmail.urgency_level || 'Routine'})
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* AI Operational Summary & Classification Card (Replaces Raw JSON per instructions) */}
+                      <div className="bg-white border border-slate-200 rounded-xl p-4.5 shadow-sm text-left font-sans ai-result-card">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 mb-3.5">
+                          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                            <span>Ringkasan Operasional</span>
+                          </h4>
+                          <span className="text-[9px] bg-slate-100 text-slate-500 font-bold font-mono px-2 py-0.5 rounded-full uppercase">
+                            AI Analyzed
+                          </span>
+                        </div>
+
+                        <p className="text-xs text-slate-600 leading-relaxed font-medium mb-4">
+                          {selectedEmail.summary || 'Belum dianalisis. Silakan jalankan simulasi atau sinkronisasi.'}
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-3.5 mb-4">
+                          <div className="bg-slate-50 border border-slate-200/60 rounded-lg p-2.5">
+                            <span className="text-[9px] font-bold text-slate-400 block uppercase mb-1">Klasifikasi Tag</span>
+                            <div className="flex items-center gap-1.5">
+                              {selectedEmail.suggested_tag === 'CIT' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-bold shadow-xs badge tag-cit">
+                                  <span>💰</span> CIT
+                                </span>
+                              ) : selectedEmail.suggested_tag === 'ATM' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[11px] font-bold shadow-xs badge tag-atm">
+                                  <span>💳</span> ATM
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-md text-[11px] font-bold shadow-xs badge tag-lainnya">
+                                  <span>📁</span> {selectedEmail.suggested_tag || 'Lainnya'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 border border-slate-200/60 rounded-lg p-2.5">
+                            <span className="text-[9px] font-bold text-slate-400 block uppercase mb-1">Tingkat Urgensi</span>
+                            <div className="flex items-center gap-1.5">
+                              {selectedEmail.urgency_level === 'High' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-high">
+                                  High / Mendesak
+                                </span>
+                              ) : selectedEmail.urgency_level === 'Medium' ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-medium">
+                                  Medium / Sedang
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded-md text-[11px] font-bold shadow-xs badge urgency-routine">
+                                  Routine / Normal
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {selectedEmail.is_cit_order && (
+                          <div className="bg-blue-50/40 border border-blue-100 rounded-lg p-3 text-xs mb-3 text-left">
+                            <div className="flex justify-between items-center mb-1.5">
+                              <span className="font-bold text-blue-800 text-[10px] uppercase">Deteksi Order Khusus</span>
+                              {selectedEmail.suggested_bank && (
+                                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 text-[9px] font-bold rounded-sm border border-blue-200">
+                                  Bank: {selectedEmail.suggested_bank}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-slate-600 font-medium text-[11px] leading-relaxed">
+                              {selectedEmail.extracted_notes || 'Tidak ada catatan khusus.'}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between text-[10px] text-slate-400 border-t border-slate-100 pt-2.5">
+                          <span>Saran Folder: <strong className="text-slate-700">{selectedEmail.suggested_folder_parent} &gt; {selectedEmail.suggested_folder_child}</strong></span>
+                        </div>
+
+                        {/* Integration Action Buttons */}
+                        <div className="mt-3.5 pt-3.5 border-t border-slate-100 flex items-center justify-between gap-3 font-sans">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const payload = {
+                                folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
+                                folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
+                                tags: [selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya'],
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya',
+                                is_important: selectedEmail.urgency_level === 'High' || !!selectedEmail.is_important,
+                                urgency_level: selectedEmail.urgency_level || 'Routine',
+                                summary: selectedEmail.summary || '',
+                                action_required: !!selectedEmail.action_required,
+                                create_filter_rule: false
+                              };
+                              await handleSmartApply(selectedEmail.message_id, payload);
+                            }}
+                            className="flex-1 py-2 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-lg text-center cursor-pointer flex items-center justify-center gap-1.5 shadow-sm transition-all text-xs"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            <span>Smart Apply</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSuggestionForm({
+                                message_id: selectedEmail.message_id,
+                                folder_parent: selectedEmail.suggested_folder_parent || selectedEmail.folder_parent || 'Operation',
+                                folder_child: selectedEmail.suggested_folder_child || selectedEmail.folder_child || 'General',
+                                suggested_tag: selectedEmail.tag_type || selectedEmail.suggested_tag || 'Lainnya',
+                                urgency_level: selectedEmail.urgency_level || 'Routine',
+                                is_important: !!selectedEmail.is_important,
+                                summary: selectedEmail.summary || '',
+                                action_required: !!selectedEmail.action_required,
+                                create_filter_rule: false,
+                                filter_rule_name: `Rule: ${selectedEmail.fromName || 'Sender'} Routing`,
+                                filter_rule_match_from: selectedEmail.fromAddress || '',
+                                filter_rule_match_subject: '',
+                                filter_rule_match_body: '',
+                                filter_rule_trigger_api: false
+                              });
+                              setIsEditSuggestionOpen(true);
+                            }}
+                            className="py-2 px-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold border border-slate-200 rounded-lg text-center cursor-pointer transition-all text-xs flex items-center gap-1.5"
+                          >
+                            <Pencil className="h-3 w-3" />
+                            <span>Edit Suggestion</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* CIT Automation Status Panel (Highly Visible) */}
+                  <div className="p-6 bg-slate-50/80 shrink-0 border-t border-slate-100" id="cit_automation_panel">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center space-x-2">
+                        <Zap className="h-4.5 w-4.5 text-blue-600" />
+                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Active ATM CIT API Automation</h3>
+                      </div>
+                      
+                      {selectedEmail.api_workflow_status && selectedEmail.api_workflow_status !== 'none' ? (
+                        <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border uppercase ${
+                          selectedEmail.api_workflow_status === 'triggered'
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                            : selectedEmail.api_workflow_status === 'failed'
+                            ? 'bg-rose-50 text-rose-800 border-rose-200'
+                            : 'bg-amber-50 text-amber-800 border-amber-200 animate-pulse'
+                        }`}>
+                          Workflow: {selectedEmail.api_workflow_status}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 italic">No Automation Triggered for this Folder</span>
+                      )}
+                    </div>
+
+                    {/* Parser Extracted Preview if Bank Order */}
+                    {(selectedEmail.folder_parent === 'Bank Order' || (selectedEmail.api_workflow_status && selectedEmail.api_workflow_status !== 'none')) && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-4.5 mb-3 shadow-sm text-xs">
+                        <p className="font-bold text-slate-700 mb-2">Variables Extracted by Parser Engine:</p>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Order Amount</span>
+                            <span className="font-bold font-mono text-slate-800 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
+                                return match ? match[1] : '0';
+                              })()}
+                            </span>
+                          </div>
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Currency Code</span>
+                            <span className="font-bold font-mono text-slate-800 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Currency|Mata\s+Uang|Currency\s+Code)\s*[:=]\s*([a-zA-Z]{3})/i);
+                                return match ? match[1].toUpperCase() : 'IDR';
+                              })()}
+                            </span>
+                          </div>
+                          <div className="p-2.5 bg-slate-50 rounded-lg">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">Target Branch</span>
+                            <span className="font-bold font-mono text-blue-700 text-sm">
+                              {(() => {
+                                const match = (selectedEmail.body_text || '').match(/(?:Branch|Cabang|Bank\s+Branch\s+Name|Branch\s+Name)\s*[:=]\s*([a-zA-Z0-9\s\-]+)/i);
+                                return match ? match[1].trim() : 'Purwokerto';
+                              })()}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPrefillEmail(selectedEmail);
+                              setCurrentMenu('cit-dashboard');
+                            }}
+                            className="flex-1 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl text-center cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-blue-500/10 transition-all text-xs"
+                          >
+                            <Coins className="h-4 w-4 text-white" />
+                            <span>Create Order CIT 💰 (Auto-fill Form)</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* API Logs Output Terminal */}
+                    {selectedEmail.api_workflow_log && (
+                      <div className="bg-slate-900 rounded-xl p-4 border border-slate-800 font-mono text-[10px] text-slate-300 leading-snug">
+                        <div className="flex items-center justify-between text-[9px] text-slate-500 mb-2 border-b border-slate-800 pb-1.5">
+                          <span>SYSTEM EXECUTION LOGS</span>
+                          <span>Sequential API Chaining</span>
+                        </div>
+                        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap select-text pr-2">
+                          {selectedEmail.api_workflow_log}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1">
+                  <Mail className="h-12 w-12 text-slate-200 mb-3" />
+                  <p className="font-bold text-sm">No ticket selected</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[280px] leading-normal">
+                    Select a ticket from the list to view its contents, extracted variables, and CIT API execution state.
+                  </p>
+                </div>
+              )}
+            </section>
+
+          </div>
+        )}
+
+        {/* CIT DASHBOARD SECTION */}
+        {currentMenu === 'cit-dashboard' && (
+          <CitDashboard 
+            onAddToast={addToast}
+            prefillEmail={prefillEmail}
+            onClearPrefill={() => setPrefillEmail(null)}
+          />
+        )}
+
+        {/* 4. SETTINGS SECTION */}
+        {currentMenu === 'settings' && (
+          <div className="flex flex-row flex-1 overflow-hidden w-full bg-slate-50" id="settings_workspace">
+            
+            {/* SETTINGS MENU TABS SELECTOR (LEFT) */}
+            <aside className="w-56 border-r border-slate-200 bg-white flex flex-col shrink-0" id="pane_settings_tabs">
+              <div className="p-4 space-y-1 text-xs">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-3 mb-2">Configure</p>
+
+                <button
+                  onClick={() => setSettingsTab('filters')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'filters' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  <span>Dynamic Filters</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('api')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'api' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Link className="h-4 w-4" />
+                  <span>API Integrations</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('mail')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'mail' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Server className="h-4 w-4" />
+                  <span>Mail & DB Config</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('backfill')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'backfill' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <History className="h-4 w-4" />
+                  <span>Data Backfill</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setSettingsTab('ai-health');
+                    handleRunHealthCheck(); // Trigger health check on click as well
+                  }}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'ai-health' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <Activity className="h-4 w-4" />
+                  <span>AI Settings & Status</span>
+                </button>
+
+                <button
+                  onClick={() => setSettingsTab('whatsapp')}
+                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
+                    settingsTab === 'whatsapp' 
+                      ? 'bg-blue-50 text-blue-700' 
+                      : 'text-slate-600 hover:bg-slate-50'
+                  }`}
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  <span>WhatsApp & Reports</span>
+                </button>
+              </div>
+            </aside>
+
+            {/* SETTINGS PANEL CONTENTS (RIGHT) */}
+            <section className="flex-1 p-8 overflow-y-auto" id="settings_main_panel">
+              <div className="max-w-3xl bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                
+                {/* TAB 1: DYNAMIC FILTERS CRUD BUILDER */}
+                {settingsTab === 'filters' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Dynamic Filter Routing</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Configure logic rules to dynamically tag incoming tickets and trigger automated workflows based on matching criteria.
+                      </p>
+                    </div>
+
+                    {/* Rule builder form */}
+                    <form onSubmit={handleSaveFilter} className="bg-slate-50 rounded-xl p-5 border border-slate-200/60 text-xs space-y-3.5">
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1">
+                        <Plus className="h-3.5 w-3.5" />
+                        {editingFilterId !== null ? 'Edit Filter Rule' : 'Create New Filter Rule'}
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Filter Name</label>
+                          <input 
+                            type="text"
+                            value={filterForm.name}
+                            onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
+                            placeholder="e.g. Bank Order Auto Router"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Sender (From contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_from}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
+                            placeholder="e.g. treasury@bank.com"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Subject (contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_subject}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
+                            placeholder="e.g. CIT Delivery Order"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Match Body Text (contains)</label>
+                          <input 
+                            type="text"
+                            value={filterForm.match_body}
+                            onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
+                            placeholder="e.g. signoff requested"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Parent</label>
+                          <input 
+                            type="text"
+                            value={filterForm.action_parent}
+                            onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
+                            placeholder="e.g. Bank Order"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Child</label>
+                          <input 
+                            type="text"
+                            value={filterForm.action_child}
+                            onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
+                            placeholder="e.g. Purwokerto"
+                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Trigger API Checkbox */}
+                      <div className="flex items-center space-x-2.5 pt-1.5 select-none">
+                        <input
+                          type="checkbox"
+                          id="trigger_api_chk"
+                          checked={!!filterForm.trigger_api}
+                          onChange={(e) => setFilterForm({ ...filterForm, trigger_api: e.target.checked })}
+                          className="h-4.5 w-4.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
+                        />
+                        <label htmlFor="trigger_api_chk" className="text-slate-700 font-bold flex items-center gap-1.5 cursor-pointer">
+                          <Zap className="h-4 w-4 text-blue-600 fill-blue-100" />
+                          <span>Trigger Sequential CIT API Chaining Workflow for matched tickets</span>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="submit"
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                          >
+                            {editingFilterId !== null ? 'Update Rule' : 'Add Rule'}
+                          </button>
+                          {editingFilterId !== null && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingFilterId(null);
+                                setFilterForm({
+                                  name: '',
+                                  match_from: '',
+                                  match_subject: '',
+                                  match_body: '',
+                                  action_parent: '',
+                                  action_child: '',
+                                  trigger_api: false
+                                });
+                                setFilterMsg('');
+                              }}
+                              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer text-xs"
+                            >
+                              Cancel Edit
+                            </button>
+                          )}
+                        </div>
+                        {filterMsg && (
+                          <span className="text-slate-600 italic font-semibold">{filterMsg}</span>
+                        )}
+                      </div>
+                    </form>
+
+                    {/* Existing Rules CRUD Table */}
+                    <div className="space-y-3">
+                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({configuredRules.length})</p>
+
+                      {isLoadingRules ? (
+                        <div className="flex items-center space-x-2 py-4">
+                          <svg className="animate-spin h-5 w-5 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span className="text-xs text-slate-500 font-medium">Memuat aturan...</span>
+                        </div>
+                      ) : configuredRules.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {configuredRules.map(rule => (
+                            <div key={rule.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
+                              <div>
+                                <div className="flex justify-between items-start">
+                                  <h4 className="font-bold text-slate-800 text-sm">{rule.name || '-'}</h4>
+                                  <div className="flex items-center space-x-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (rule.id) {
+                                          setEditingFilterId(rule.id);
+                                          setFilterForm({
+                                            name: rule.name || '',
+                                            match_from: rule.match_from || '',
+                                            match_subject: rule.match_subject || '',
+                                            match_body: rule.match_body || '',
+                                            action_parent: rule.action_parent || '',
+                                            action_child: rule.action_child || '',
+                                            trigger_api: !!rule.trigger_api
+                                          });
+                                          setFilterMsg('');
+                                        }
+                                      }}
+                                      className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                      title="Edit rule"
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => rule.id && handleDeleteFilter(rule.id)}
+                                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                      title="Delete rule"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Sender (From):</span>
+                                    <span className="font-mono text-slate-700 break-all">{rule.match_from || '-'}</span>
+                                  </p>
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Subject:</span>
+                                    <span className="text-slate-700">{rule.match_subject || '-'}</span>
+                                  </p>
+                                  <p className="flex justify-between gap-2">
+                                    <span className="font-semibold text-slate-500">Match Body Text:</span>
+                                    <span className="text-slate-700">{rule.match_body || '-'}</span>
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] text-slate-400 font-bold uppercase">Routing:</span>
+                                  <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
+                                    {rule.action_parent || '-'} &gt; {rule.action_child || '-'}
+                                  </span>
+                                </div>
+                                {rule.trigger_api ? (
+                                  <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
+                                    <Zap className="h-3 w-3 fill-current" /> Active
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: ACTIVE ATM CIT API INTEGRATIONS */}
+                {settingsTab === 'api' && (
+                  <form onSubmit={handleSaveSettings} className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Active ATM CIT API Integration</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Configure the HTTP Header Auth Bearer token used to authorize automated delivery creations on the sequential CIT client workflow.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1.5">CIT API Authorization Token (Bearer Token)</label>
+                        <textarea
+                          rows={4}
+                          value={appSettings.citApiToken}
+                          onChange={(e) => setAppSettings({ ...appSettings, citApiToken: e.target.value })}
+                          placeholder="Paste your Bearer token or API key here..."
+                          className="w-full p-3 font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:border-blue-500 leading-relaxed text-xs"
+                        />
+                      </div>
+
+                      <div className="bg-blue-50 rounded-xl p-4.5 border border-blue-200/50 flex items-start space-x-3 text-slate-700 leading-normal">
+                        <Info className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-blue-900">Chained API Workflow Actions:</p>
+                          <ul className="list-decimal pl-4 mt-1.5 space-y-1 text-[11px] text-blue-800">
+                            <li>Check matched ticket folder (Folder Parent = <strong>Bank Order</strong>).</li>
+                            <li>Extract amount, currency code, and branch name dynamically using regex parsing on raw body.</li>
+                            <li>Authorize with Bearer Token and map parameters to Active ATM System IDs.</li>
+                            <li>POST to create delivery header followed by POST to insert itemized details automatically.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                      >
+                        Save API Configuration
+                      </button>
+                      {saveStatus && (
+                        <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                      )}
+                    </div>
+                  </form>
+                )}
+
+                {/* TAB 3: POP3 SECURE MAIL CONFIG & SUPABASE CREDS */}
+                {settingsTab === 'mail' && (
+                  <form onSubmit={handleSaveSettings} className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Mail Connection & Supabase Client Config</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Input POP3 credentials securely. The background cron auto-fetch routine runs every 3 minutes using these specifications.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Hostname</label>
+                        <input
+                          type="text"
+                          value={appSettings.pop3Host}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3Host: e.target.value })}
+                          placeholder="mail.advantagescm.com"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 TLS Port</label>
+                        <input
+                          type="number"
+                          value={appSettings.pop3Port}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3Port: parseInt(e.target.value, 10) || 995 })}
+                          placeholder="995"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Username / Email</label>
+                        <input
+                          type="text"
+                          value={appSettings.pop3User}
+                          onChange={(e) => setAppSettings({ ...appSettings, pop3User: e.target.value })}
+                          placeholder="fachrul.wisnu@advantagescm.com"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">POP3 Password</label>
+                        <div className="relative">
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            value={appSettings.pop3Pass}
+                            onChange={(e) => setAppSettings({ ...appSettings, pop3Pass: e.target.value })}
+                            placeholder="POP3 Account Password"
+                            className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                          >
+                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* POP3 Diagnostic Button */}
+                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs flex items-center justify-between select-none">
+                      <div>
+                        <p className="font-bold text-slate-700">POP3 Server Connection Diagnostic</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Attempt to connect and authorize with POP3 server immediately.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        disabled={isTestingConn}
+                        className="px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-xs"
+                      >
+                        {isTestingConn ? 'Testing...' : 'Test Mail Server'}
+                      </button>
+                    </div>
+
+                    {testResult && (
+                      <div className={`p-3.5 rounded-xl text-xs border ${
+                        testResult.success 
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                          : 'bg-rose-50 text-rose-800 border-rose-200'
+                      }`}>
+                        <div className="flex items-start space-x-2">
+                          {testResult.success ? <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />}
+                          <div>
+                            <p className="font-bold leading-none">{testResult.success ? "POP3 Connection Succeeded" : "POP3 Connection Failed"}</p>
+                            <p className="opacity-90 leading-normal mt-1 text-[11px]">{testResult.message}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border-t border-slate-200/50 pt-5 mt-4">
+                      <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <Database className="h-4 w-4 text-slate-400" />
+                        Optional Supabase PostgreSQL Credentials
+                      </p>
+                      <p className="text-[10px] text-slate-400 mb-4 leading-normal">
+                        Provide a Supabase REST endpoint URL and API key to replicate cached database actions. If left blank, the system automatically runs fully standalone on local SQLite database store.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">Supabase API Endpoint (URL)</label>
+                        <input
+                          type="text"
+                          value={appSettings.supabaseUrl}
+                          onChange={(e) => setAppSettings({ ...appSettings, supabaseUrl: e.target.value })}
+                          placeholder="https://xxxx.supabase.co"
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-500 font-bold mb-1">Supabase Anon Key / Service Role Key</label>
+                        <input
+                          type="password"
+                          value={appSettings.supabaseKey}
+                          onChange={(e) => setAppSettings({ ...appSettings, supabaseKey: e.target.value })}
+                          placeholder="eyJhbGciOi..."
+                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
+                      >
+                        Save Configuration
+                      </button>
+                      {saveStatus && (
+                        <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                      )}
+                    </div>
+                  </form>
+                )}
+
+                {/* TAB 4: HISTORICAL DATA BACKFILL */}
+                {settingsTab === 'backfill' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">Historical Data Backfill</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Proses ini akan merangkum ribuan email lama yang tersimpan di database agar sistem workflow kembali aktif dan terstruktur.
+                      </p>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-xs space-y-4">
+                      <p className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">Backfill Parameters & Rules:</p>
+                      
+                      <ul className="list-disc pl-4 space-y-1.5 text-slate-600 leading-normal">
+                        <li>System analyzes the content of <strong>body_text</strong> of unsummarized emails deeply.</li>
+                        <li>If the email content is operational, it generates a highly descriptive <strong>summary</strong>.</li>
+                        <li>If the email is a simple system notification (such as Geofence), it generates a compact summary.</li>
+                        <li>All processed results are cleanly parsed and stored.</li>
+                        <li>If the email is system/technical, <strong>action_required</strong> is set to false unless there are clear repair actions.</li>
+                        <li>Emails that are not readable will automatically fallback to <strong>"Data historis tidak terbaca jelas"</strong> and <strong>action_required: false</strong>.</li>
+                      </ul>
+
+                      <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-lg flex items-center justify-between mt-2">
+                        <div>
+                          <p className="font-bold text-blue-900">Trigger Historical Sync Workflow</p>
+                          <p className="text-[10px] text-blue-700/80 mt-0.5">Launches the LLM backend processor on unsummarized records.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleFetchHistoricalData}
+                          disabled={isBackfilling}
+                          className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-400 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm flex items-center gap-1.5 text-xs"
+                        >
+                          {isBackfilling ? (
+                            <>
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                              <span>Backfilling...</span>
+                            </>
+                          ) : (
+                            <>
+                              <History className="h-3.5 w-3.5" />
+                              <span>Fetch & Process Historical Data</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {(isBackfillStreaming || backfillLogs.length > 0) && (
+                        <div className="mt-6 space-y-4">
+                          {/* Progress Bar Container */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-center text-xs text-slate-600 font-bold">
+                              <span>Status Proses Real-time (Moonshot Kimi-k2.6):</span>
+                              <span>{backfillProgress}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+                              <div 
+                                className="bg-gradient-to-r from-blue-600 to-emerald-500 h-full transition-all duration-300"
+                                style={{ width: `${backfillProgress}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Terminal-like log container */}
+                          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-inner">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2 text-[10px] text-slate-500 font-mono">
+                              <span className="flex items-center gap-1.5">
+                                <span className={`h-2 w-2 rounded-full ${isBackfillStreaming ? "bg-emerald-500 animate-pulse" : "bg-slate-600"}`} />
+                                KIMI-K2.6 STREAM ENGINE
+                              </span>
+                              <span>LOGS CONTROLLER</span>
+                            </div>
+                            
+                            <div className="max-h-[200px] overflow-y-auto font-mono text-[11px] text-slate-300 space-y-1.5">
+                              {backfillLogs.map((log, index) => {
+                                let colorClass = "text-slate-400";
+                                if (log.includes("[System]")) colorClass = "text-cyan-400 font-semibold";
+                                if (log.includes("[Selesai]")) colorClass = "text-emerald-400 font-bold";
+                                if (log.includes("[Error]")) colorClass = "text-rose-400 font-bold";
+                                if (log.includes("[SUKSES AI]")) colorClass = "text-emerald-300";
+                                if (log.includes("[FALLBACK]")) colorClass = "text-orange-400";
+                                
+                                return (
+                                  <div key={index} className={`${colorClass} leading-normal`}>
+                                    <span className="text-slate-600 mr-2">&gt;</span>
+                                    {log}
+                                  </div>
+                                );
+                              })}
+                              <div ref={logsEndRef} />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 5: AI SETTINGS & STATUS (HEALTH CHECK) */}
+                {settingsTab === 'ai-health' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">AI Model Connections & Health Status</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Lakukan diagnosis koneksi real-time untuk memverifikasi fungsionalitas, status aktif, dan latency model AI yang terintegrasi di platform.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-bold text-slate-700">Diagnostic Controller</p>
+                        <p className="text-[10px] text-slate-500">Pings NVIDIA integrate API endpoint with a light text workload.</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRunHealthCheck}
+                        disabled={isCheckingHealth}
+                        className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-400 disabled:to-slate-400 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm flex items-center gap-1.5 text-xs"
+                      >
+                        {isCheckingHealth ? (
+                          <>
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            <span>Checking AI Status...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Activity className="h-3.5 w-3.5" />
+                            <span>Test All AI Connections</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {healthError && (
+                      <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-start space-x-2 text-xs text-red-700">
+                        <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p className="font-bold">Diagnostic Server Error</p>
+                          <p className="font-mono text-[11px] bg-red-100/50 p-2 rounded border border-red-200/50">{healthError}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                      {healthData.length === 0 ? (
+                        <div className="text-center py-8 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                          <Activity className="h-8 w-8 text-slate-300 mx-auto mb-2 animate-pulse" />
+                          <p className="text-xs font-semibold text-slate-500">No diagnostic logs found yet</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Click the "Test All AI Connections" button above to run real-time checks.</p>
+                        </div>
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+                                <th className="p-3">Model Name</th>
+                                <th className="p-3">Role / Task</th>
+                                <th className="p-3">Status</th>
+                                <th className="p-3 text-right">Latency</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {healthData.map((item, index) => {
+                                const isHealthy = item.status === 'Active';
+                                const isWarning = item.status === 'Warning';
+                                const latencyValue = item.latency ? parseInt(item.latency, 10) : 0;
+                                const isTimeout = item.status === 'Timeout' || (item.latency && latencyValue > 60000);
+                                const isError = item.status === 'Error' || (!isHealthy && !isTimeout && !isWarning);
+
+                                // Dynamic latency coloring: Green (< 5s), Yellow (5s - 20s), Red (> 20s or Error)
+                                let latencyColorClass = 'text-slate-400';
+                                if (item.latency && !isError && !isTimeout && !isWarning) {
+                                  if (latencyValue < 5000) {
+                                    latencyColorClass = 'text-emerald-600';
+                                  } else if (latencyValue < 20000) {
+                                    latencyColorClass = 'text-amber-500';
+                                  } else {
+                                    latencyColorClass = 'text-rose-500';
+                                  }
+                                } else if (isWarning) {
+                                  latencyColorClass = 'text-amber-500 font-bold';
+                                } else if (isTimeout || isError) {
+                                  latencyColorClass = 'text-rose-500 font-bold';
+                                }
+
+                                return (
+                                  <tr key={index} className="hover:bg-slate-50/50 transition-all">
+                                    <td className="p-3">
+                                      <span className="font-mono font-bold text-slate-700">{item.model}</span>
+                                    </td>
+                                    <td className="p-3 text-slate-500 font-medium">
+                                      {item.model === 'nvidia/nemotron-3-ultra-550b-a55b' && 'Primary Summary Core'}
+                                      {item.model === 'thinkingmachines/inkling' && 'Primary Contextual Tagging'}
+                                      {item.model === 'deepseek-ai/deepseek-v4-pro' && 'Fallback Tier 1'}
+                                      {item.model === 'google/gemma-4-31b-it' && 'Fallback Tier 2'}
+                                      {item.model === 'minimaxai/minimax-m3' && 'Absolute Last Resort'}
+                                    </td>
+                                    <td className="p-3">
+                                      {isHealthy && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                          <span>Healthy</span>
+                                        </span>
+                                      )}
+                                      {isWarning && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                          <span>Warning</span>
+                                        </span>
+                                      )}
+                                      {isTimeout && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                                          <span>Timeout (&gt;60s)</span>
+                                        </span>
+                                      )}
+                                      {isError && (
+                                        <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-bold text-[10px]">
+                                          <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                                          <span>Error</span>
+                                        </span>
+                                      )}
+                                      {item.message && (
+                                        <div className={`text-[10px] mt-1 font-mono break-all p-1.5 rounded border ${isWarning ? 'text-amber-700 bg-amber-50/50 border-amber-200' : 'text-rose-600 bg-rose-50/50 border-rose-100'}`}>
+                                          {item.message}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      {item.latency ? (
+                                        <span className={`font-mono font-semibold ${latencyColorClass}`}>
+                                          {item.latency}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-400 font-mono">-</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 6: WHATSAPP & DAILY REPORTS INTEGRATION */}
+                {settingsTab === 'whatsapp' && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-800">WhatsApp & Daily Reports Integration</h2>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Kirim laporan operasional harian secara otomatis ke nomor WhatsApp tim lapangan atau manajemen secara real-time.
+                      </p>
+                    </div>
+
+                    {/* WhatsApp Connection Status Card */}
+                    <div className="p-5 border border-slate-200 rounded-xl bg-slate-50/50 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <MessageSquare className="h-5 w-5 text-blue-600" />
+                          <div>
+                            <h3 className="text-xs font-bold text-slate-700">WhatsApp Gateway Connection</h3>
+                            <p className="text-[10px] text-slate-400 mt-0.5">Powered by lightweight Baileys engine</p>
+                          </div>
+                        </div>
+
+                        {waStatus.isConnected ? (
+                          <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold text-[10px]">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                            <span>Terhubung</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 font-bold text-[10px]">
+                            <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
+                            <span>Belum Terhubung</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {!waStatus.isConnected && (
+                        <div className="p-3.5 bg-amber-50 border border-amber-100 rounded-lg text-[11px] text-amber-800 space-y-1">
+                          <p className="font-semibold">⚠️ Scan QR Code pada Server Terminal</p>
+                          <p className="text-slate-600 leading-normal">
+                            WhatsApp belum login atau koneksi terputus. Silakan periksa output log terminal server/kontainer Anda untuk melihat dan memindai QR Code menggunakan fitur WhatsApp Linked Devices pada smartphone Anda. Sesi akan tetap aktif di folder <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">auth_info</code>.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={fetchWhatsAppStatus}
+                          disabled={isFetchingWaStatus}
+                          className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg cursor-pointer text-[11px] font-bold shadow-xs transition-all flex items-center gap-1"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${isFetchingWaStatus ? 'animate-spin' : ''}`} />
+                          <span>Cek Status Sesi</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Daily Report Aggregator Preview Card */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                      <div className="px-5 py-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-4.5 w-4.5 text-indigo-600" />
+                          <h3 className="text-xs font-bold text-slate-700">Preview Laporan Operasional Harian</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={fetchDailyReport}
+                          disabled={isFetchingReport}
+                          className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg cursor-pointer text-[10px] font-bold transition-all flex items-center gap-1"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${isFetchingReport ? 'animate-spin' : ''}`} />
+                          <span>Ambil Ulang Data</span>
+                        </button>
+                      </div>
+
+                      {isFetchingReport ? (
+                        <div className="p-8 text-center space-y-2">
+                          <RefreshCw className="h-6 w-6 text-indigo-500 animate-spin mx-auto" />
+                          <p className="text-xs font-semibold text-slate-500">Mengkalkulasi & Menormalisasi Laporan...</p>
+                        </div>
+                      ) : dailyReport ? (
+                        <div className="p-5 space-y-4">
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg text-center">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Tiket</p>
+                              <p className="text-lg font-bold text-slate-800 mt-1">{dailyReport.total}</p>
+                            </div>
+                            <div className="p-3 bg-blue-50/50 border border-blue-100/50 rounded-lg text-center">
+                              <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">CIT Orders</p>
+                              <p className="text-lg font-bold text-blue-700 mt-1">{dailyReport.cit_count}</p>
+                            </div>
+                            <div className="p-3 bg-indigo-50/50 border border-indigo-100/50 rounded-lg text-center">
+                              <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">ATM Orders</p>
+                              <p className="text-lg font-bold text-indigo-700 mt-1">{dailyReport.atm_count}</p>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 text-xs">
+                            <div className="p-3 bg-amber-50/40 border border-amber-100/60 rounded-lg">
+                              <p className="font-bold text-amber-800 flex items-center gap-1 mb-1.5">
+                                <span>🚨</span> Tindakan Segera (Urgent / Action Required):
+                              </p>
+                              {dailyReport.urgent_tickets.length > 0 ? (
+                                <ul className="space-y-1 list-disc list-inside text-slate-700 leading-normal">
+                                  {dailyReport.urgent_tickets.map((t: any, i: number) => {
+                                    const bankName = (t.folder_parent || 'Lainnya').toUpperCase().replace(/^BANK\s+/i, '').trim();
+                                    return (
+                                      <li key={i}>
+                                        <span className="font-semibold text-slate-800">[{bankName}]</span> {t.subject} - <em className="text-slate-500">{t.summary}</em>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              ) : (
+                                <p className="text-slate-500">Aman, tidak ada tiket mendesak.</p>
+                              )}
+                            </div>
+
+                            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg space-y-1">
+                              <p className="font-bold text-slate-700">💼 Detail Kategori:</p>
+                              <p className="text-slate-600"><span className="font-medium text-slate-700">CIT:</span> {dailyReport.data_cit}</p>
+                              <p className="text-slate-600"><span className="font-medium text-slate-700">ATM:</span> {dailyReport.data_atm}</p>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg space-y-1.5">
+                              <p className="font-bold text-slate-700">🏦 Top 5 Distribusi Bank:</p>
+                              {dailyReport.top_banks.length > 0 ? (
+                                <div className="grid grid-cols-2 gap-2 mt-1 text-[11px]">
+                                  {dailyReport.top_banks.map((b: any, i: number) => (
+                                    <div key={i} className="flex justify-between p-1 px-2 bg-white border border-slate-100 rounded">
+                                      <span className="font-semibold text-slate-700">{b.bank_name}</span>
+                                      <span className="text-slate-500 font-bold">{b.count} Tiket</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-slate-400">Tidak ada distribusi bank.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-8 text-center text-slate-400 text-xs font-semibold">
+                          Belum ada data laporan yang dimuat. Klik "Ambil Ulang Data" di atas.
+                        </div>
+                      )}
+                    </div>
+
+                    {/* WhatsApp Sender Controller */}
+                    {dailyReport && (
+                      <div className="p-5 border border-slate-200 rounded-xl bg-white space-y-4 shadow-xs">
+                        <h3 className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                          <Send className="h-4 w-4 text-emerald-600" />
+                          <span>Kirim Laporan Operasional via WhatsApp</span>
+                        </h3>
+
+                        <div className="space-y-3">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 mb-1">NOMOR TELEPON TUJUAN</label>
+                            <input
+                              type="text"
+                              value={waTargetNumber}
+                              onChange={(e) => setWaTargetNumber(e.target.value)}
+                              placeholder="Contoh: 08123456789 atau 628123456789"
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500 transition-all"
+                            />
+                            <p className="text-[9px] text-slate-400 mt-1 leading-normal">
+                              Nomor akan secara otomatis diformat dan dikirim ke jaringan WhatsApp. Pastikan perangkat Anda sudah online di server.
+                            </p>
+                          </div>
+
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-500 mb-1">PREVIEW FORMAT PESAN (ACTION-ORIENTED)</label>
+                            <textarea
+                              rows={10}
+                              value={waCustomMessage}
+                              onChange={(e) => setWaCustomMessage(e.target.value)}
+                              className="w-full p-3 font-mono text-[11px] bg-slate-900 text-slate-200 rounded-lg border border-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 leading-relaxed"
+                            />
+                          </div>
+
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={handleSendWhatsApp}
+                              disabled={isSendingWa || !waStatus.isConnected}
+                              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold rounded-lg cursor-pointer transition-all shadow-xs text-xs flex items-center gap-1.5"
+                            >
+                              {isSendingWa ? (
+                                <>
+                                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                  <span>Mengirim Laporan...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Send className="h-3.5 w-3.5" />
+                                  <span>Kirim WhatsApp Sekarang</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              </div>
+            </section>
+
+          </div>
+        )}
+
+      </main>
+
+      {/* 5. EDIT SUGGESTION MODAL OVERLAY */}
+      {isEditSuggestionOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-xl flex flex-col overflow-hidden max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="h-4.5 w-4.5 text-blue-600 animate-pulse" />
+                <h3 className="text-sm font-bold text-slate-800">Review & Apply AI Penanganan Suggestion</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditSuggestionOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold leading-none cursor-pointer p-1 rounded"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-6 overflow-y-auto space-y-4 text-xs select-text text-left">
+              
+              {/* Folder Mapping (Editable) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Folder Parent (Induk)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.folder_parent}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, folder_parent: e.target.value })}
+                    placeholder="e.g. Bank Maybank"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Folder Child (Anak)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.folder_child}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, folder_child: e.target.value })}
+                    placeholder="e.g. Collection"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+              </div>
+
+              {/* Tag and Urgency */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Suggested Tag (Category)</label>
+                  <input
+                    type="text"
+                    value={suggestionForm.suggested_tag}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, suggested_tag: e.target.value })}
+                    placeholder="e.g. Collection, Penugasan, Informasi"
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-500 font-bold mb-1">Urgency Level</label>
+                  <select
+                    value={suggestionForm.urgency_level}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, urgency_level: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                    <option value="Routine">Routine</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Checkboxes (Action Required, Important) */}
+              <div className="flex gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200/50">
+                <label className="flex-1 flex items-center space-x-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.action_required}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, action_required: e.target.checked })}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded"
+                  />
+                  <span>Action Required (Tindakan)</span>
+                </label>
+                <label className="flex-1 flex items-center space-x-2 cursor-pointer font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.is_important}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, is_important: e.target.checked })}
+                    className="h-4 w-4 text-rose-600 focus:ring-rose-500 border-slate-300 rounded"
+                  />
+                  <span>Is Important (Penting)</span>
+                </label>
+              </div>
+
+              {/* Summary Textarea */}
+              <div>
+                <label className="block text-slate-500 font-bold mb-1">Effective Summary</label>
+                <textarea
+                  value={suggestionForm.summary}
+                  onChange={(e) => setSuggestionForm({ ...suggestionForm, summary: e.target.value })}
+                  rows={3}
+                  placeholder="Review the AI generated summary..."
+                  className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium leading-relaxed"
+                />
+              </div>
+
+              {/* Automate: Create Filter Routing Rule (Optional checkbox) */}
+              <div className="pt-3 border-t border-slate-100">
+                <label className="flex items-center space-x-2 cursor-pointer font-bold text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={suggestionForm.create_filter_rule}
+                    onChange={(e) => setSuggestionForm({ ...suggestionForm, create_filter_rule: e.target.checked })}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-slate-300 rounded"
+                  />
+                  <span>Create automated Filter Rule from this suggestion</span>
+                </label>
+                <p className="text-[10px] text-slate-400 mt-1 ml-6 leading-relaxed">
+                  Checking this will automatically create a dynamic filter rule, routing all future incoming emails matching these rules to the exact folders configured above.
+                </p>
+              </div>
+
+              {/* Collapsible rule settings if create_filter_rule checked */}
+              {suggestionForm.create_filter_rule && (
+                <div className="bg-blue-50/40 border border-blue-100 rounded-xl p-4.5 ml-6 space-y-3">
+                  <p className="font-bold text-blue-800 text-[10px] uppercase tracking-wider">Automated Filter Logic Settings</p>
+                  
+                  <div>
+                    <label className="block text-slate-500 font-semibold mb-0.5">Filter Rule Name</label>
+                    <input
+                      type="text"
+                      value={suggestionForm.filter_rule_name}
+                      onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_name: e.target.value })}
+                      placeholder="e.g. Bank Maybank Auto Router"
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Sender Address (Contains)</label>
+                      <input
+                        type="text"
+                        value={suggestionForm.filter_rule_match_from}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_match_from: e.target.value })}
+                        placeholder="e.g. collection@bankmaybank.co.id"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 font-semibold mb-0.5">Match Subject (Contains)</label>
+                      <input
+                        type="text"
+                        value={suggestionForm.filter_rule_match_subject}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_match_subject: e.target.value })}
+                        placeholder="Optional"
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center space-x-2 cursor-pointer text-slate-600 font-semibold mt-1">
+                      <input
+                        type="checkbox"
+                        checked={suggestionForm.filter_rule_trigger_api}
+                        onChange={(e) => setSuggestionForm({ ...suggestionForm, filter_rule_trigger_api: e.target.checked })}
+                        className="h-3.5 w-3.5 text-blue-600 border-slate-300 rounded"
+                      />
+                      <span>Trigger active Cash In Transit (CIT) API for this filter</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end space-x-3">
+              <button
+                type="button"
+                onClick={() => setIsEditSuggestionOpen(false)}
+                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold rounded-lg cursor-pointer transition-all text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const payload = {
+                    folder_parent: suggestionForm.folder_parent,
+                    folder_child: suggestionForm.folder_child,
+                    tags: [suggestionForm.suggested_tag],
+                    suggested_tag: suggestionForm.suggested_tag,
+                    is_important: suggestionForm.is_important,
+                    urgency_level: suggestionForm.urgency_level,
+                    summary: suggestionForm.summary,
+                    action_required: suggestionForm.action_required,
+                    create_filter_rule: suggestionForm.create_filter_rule,
+                    filter_rule: {
+                      name: suggestionForm.filter_rule_name,
+                      match_from: suggestionForm.filter_rule_match_from,
+                      match_subject: suggestionForm.filter_rule_match_subject,
+                      match_body: suggestionForm.filter_rule_match_body,
+                      action_parent: suggestionForm.folder_parent,
+                      action_child: suggestionForm.folder_child,
+                      trigger_api: suggestionForm.filter_rule_trigger_api
+                    }
+                  };
+                  await handleSmartApply(suggestionForm.message_id, payload);
+                  setIsEditSuggestionOpen(false);
+                }}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer shadow-sm transition-all text-xs"
+              >
+                Apply suggestion
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Pending Queue Management Modal Overlay */}
+      {isQueueModalOpen && (
+        <div className="fixed inset-0 z-45 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  AI Pending Queue Management
+                </h3>
+                <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                  Kelola pemrosesan massal email berstatus PENDING dengan Batched Parallelism (maks. 3 per batch) untuk menghindari rate limit.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 text-lg"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-5">
+              {/* Active Process Log Terminal */}
+              {isBulkProcessing && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700">
+                      Diproses: {bulkProgress.current} dari {bulkProgress.total} Email
+                    </span>
+                    <span className="font-mono text-blue-600 font-bold">
+                      {bulkProgress.total > 0 ? Math.round((bulkProgress.current / bulkProgress.total) * 100) : 0}%
+                    </span>
+                  </div>
+                  {/* Progress Bar Container */}
+                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
+                    <div 
+                      className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${bulkProgress.total > 0 ? (bulkProgress.current / bulkProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+
+                  {/* Terminal Logs */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 font-mono text-[10px] text-slate-300 space-y-1 max-h-[160px] overflow-y-auto h-[160px] leading-relaxed">
+                    {bulkLogs.map((log, index) => (
+                      <div key={index} className="flex items-start gap-1">
+                        <span className="text-slate-500 select-none">&gt;</span>
+                        <span>{log}</span>
+                      </div>
+                    ))}
+                    <div ref={logsEndRef} />
+                  </div>
+                </div>
+              )}
+
+              {/* Pending Queue List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">
+                    Daftar Email Pending ({pendingEmails.length})
+                  </span>
+                  {!isBulkProcessing && pendingEmails.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleBulkProcessAI}
+                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs shadow-xs transition-colors flex items-center gap-1"
+                    >
+                      🚀 Proses Semua (Bulk AI Extraction)
+                    </button>
+                  )}
+                </div>
+
+                {pendingEmails.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                    <p className="text-xs text-slate-400 italic">Tidak ada email dalam antrean pending.</p>
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[250px] overflow-y-auto">
+                    <table className="w-full border-collapse text-left text-[11px] font-medium text-slate-600">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[9px] font-bold">
+                        <tr>
+                          <th className="px-4 py-2.5">Pengirim</th>
+                          <th className="px-4 py-2.5">Subjek</th>
+                          <th className="px-4 py-2.5 w-32">Waktu Terima</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {pendingEmails.map((email) => (
+                          <tr key={email.message_id} className="hover:bg-slate-50/50">
+                            <td className="px-4 py-2.5 truncate max-w-[150px] font-semibold text-slate-700">
+                              {email.sender}
+                            </td>
+                            <td className="px-4 py-2.5 truncate max-w-[250px]">
+                              {email.subject}
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap font-mono text-[10px]">
+                              {new Date(email.date).toLocaleString('id-ID', {
+                                dateStyle: 'short',
+                                timeStyle: 'short'
+                              })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold rounded-lg cursor-pointer transition-all text-xs"
+              >
+                {isBulkProcessing ? 'Tutup (Pantau di Latar Belakang)' : 'Tutup'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CIT Order Creation Modal Overlay */}
+      <CitOrderModal
+        isOpen={isCitOrderModalOpen}
+        onClose={() => {
+          setIsCitOrderModalOpen(false);
+          setCitOrderPrefillEmail(null);
+        }}
+        onAddToast={addToast}
+        prefillEmail={citOrderPrefillEmail}
+        onOrderCreated={async () => {
+          setIsCitOrderModalOpen(false);
+          setCitOrderPrefillEmail(null);
+          await loadEmails(); // Reload emails to show updated state
+        }}
+      />
+
+      {/* Floating Toast Notification Area */}
+      <div className="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none w-80">
+        {toasts.map(t => (
+          <div key={t.id} className="p-4 bg-slate-900 border border-slate-800 text-white rounded-xl shadow-2xl flex items-start space-x-3 pointer-events-auto transition-all animate-fade-in relative overflow-hidden select-text">
+            <div className="absolute top-0 left-0 h-full w-1 bg-gradient-to-b from-blue-500 to-indigo-500"></div>
+            <Zap className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-bold text-xs">{t.title}</p>
+              <p className="text-[11px] text-slate-400 mt-1 leading-normal">{t.message}</p>
+            </div>
+            <button 
+              onClick={() => setToasts(prev => prev.filter(item => item.id !== t.id))}
+              className="text-slate-500 hover:text-white shrink-0 self-start p-0.5 cursor-pointer rounded"
+            >
+              &times;
+            </button>
+          </div>
+        ))}
+      </div>
+
+    </div>
+  );
+}

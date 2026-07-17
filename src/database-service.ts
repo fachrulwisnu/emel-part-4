@@ -1,0 +1,2246 @@
+import sqlite3 from 'sqlite3';
+import path from 'path';
+import fs from 'fs';
+import axios from 'axios';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { GoogleGenAI, Type } from '@google/genai';
+import OpenAI from 'openai';
+import { classifyEmail, classifyFolder } from './sqlite-db';
+import { getAiCompletion } from './services/aiService';
+
+const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
+const SQLITE_DB_PATH = path.join(process.cwd(), 'emails.db');
+
+export interface Email {
+  id?: number;
+  message_id: string;
+  subject: string;
+  sender: string;
+  receiver: string;
+  date: string;
+  body_text: string;
+  html_body: string;
+  tags: string[];
+  category?: string;
+  sub_category?: string;
+  folder_parent?: string;
+  folder_child?: string;
+  api_workflow_status?: string;
+  api_workflow_log?: string;
+  attachments?: any; // JSON string or array of {filename, contentType, size}
+  // AI and operational fields
+  is_read?: boolean;
+  tag_type?: string;
+  summary?: string;
+  action_required?: boolean;
+  suggested_tag?: string;
+  is_important?: boolean;
+  urgency_level?: string;
+  suggested_folder_parent?: string;
+  suggested_folder_child?: string;
+  is_cit_order?: boolean;
+  cit_type?: string;
+  suggested_bank?: string;
+  extracted_notes?: string;
+  currency?: string;
+  denomination_suggestion?: number;
+  total_amount?: number;
+  ai_status?: string;
+}
+
+export interface CustomFilter {
+  id?: number;
+  name: string;
+  match_from: string;
+  match_subject: string;
+  match_body: string;
+  action_parent: string;
+  action_child: string;
+  trigger_api?: boolean;
+}
+
+export interface AppSettings {
+  pop3Host: string;
+  pop3Port: number;
+  pop3User: string;
+  pop3Pass: string;
+  citApiToken: string;
+  supabaseUrl: string;
+  supabaseKey: string;
+}
+
+const defaultSettings: AppSettings = {
+  pop3Host: 'mail.advantagescm.com',
+  pop3Port: 995,
+  pop3User: '',
+  pop3Pass: '',
+  citApiToken: '',
+  supabaseUrl: '',
+  supabaseKey: ''
+};
+
+// Get settings from local app_settings.json
+export function getAppSettings(): AppSettings {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE_PATH)) {
+      fs.writeFileSync(SETTINGS_FILE_PATH, JSON.stringify(defaultSettings, null, 2), 'utf-8');
+      return defaultSettings;
+    }
+    const data = fs.readFileSync(SETTINGS_FILE_PATH, 'utf-8');
+    return { ...defaultSettings, ...JSON.parse(data) };
+  } catch (err) {
+    console.error('Error reading app_settings.json:', err);
+    return defaultSettings;
+  }
+}
+
+// Save settings to local app_settings.json
+export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
+  const current = getAppSettings();
+  const updated = { ...current, ...settings };
+  fs.writeFileSync(SETTINGS_FILE_PATH, JSON.stringify(updated, null, 2), 'utf-8');
+  return updated;
+}
+
+// Initialize Supabase Client dynamically if configured
+let supabaseInstance: SupabaseClient | null = null;
+
+export function getSupabaseClient(): SupabaseClient | null {
+  const settings = getAppSettings();
+  const url = process.env.SUPABASE_URL || settings.supabaseUrl;
+  const key = process.env.SUPABASE_KEY || settings.supabaseKey;
+
+  if (url && key) {
+    if (!supabaseInstance) {
+      supabaseInstance = createClient(url, key);
+    }
+    return supabaseInstance;
+  }
+  return null;
+}
+
+// Helper to check if Supabase is connected
+export function isSupabaseActive(): boolean {
+  return getSupabaseClient() !== null;
+}
+
+// Unified Database CRUD Operations
+let sqliteDb: sqlite3.Database | null = null;
+
+function getSqliteDb(): sqlite3.Database {
+  if (!sqliteDb) {
+    sqliteDb = new sqlite3.Database(SQLITE_DB_PATH);
+  }
+  return sqliteDb;
+}
+
+export async function initDatabaseService(): Promise<void> {
+  const db = getSqliteDb();
+
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      // Create local SQLite emails table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS emails (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT UNIQUE,
+          subject TEXT,
+          sender TEXT,
+          receiver TEXT,
+          date TEXT,
+          body_text TEXT,
+          html_body TEXT,
+          tags TEXT,
+          category TEXT,
+          sub_category TEXT,
+          folder_parent TEXT,
+          folder_child TEXT,
+          api_workflow_status TEXT,
+          api_workflow_log TEXT
+        )
+      `);
+
+      // Create custom_filters table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS custom_filters (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          match_from TEXT,
+          match_subject TEXT,
+          match_body TEXT,
+          action_parent TEXT,
+          action_child TEXT,
+          trigger_api INTEGER DEFAULT 0
+        )
+      `);
+
+      // Ensure api_workflow columns exist in SQLite schema
+      db.run('ALTER TABLE emails ADD COLUMN api_workflow_status TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN api_workflow_log TEXT', () => {});
+      db.run('ALTER TABLE custom_filters ADD COLUMN trigger_api INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN attachments TEXT', () => {});
+
+      // Operational & AI Assistant Columns
+      db.run('ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN tag_type TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN summary TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN action_required INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_tag TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_important INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN urgency_level TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_folder_parent TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_folder_child TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_cit_order INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN cit_type TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_bank TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN extracted_notes TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN currency TEXT DEFAULT "IDR"', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN denomination_suggestion INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN total_amount INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN ai_status TEXT DEFAULT "PENDING"', () => {});
+
+      // Initialize real-time listener in a non-blocking way
+      setTimeout(() => {
+        try {
+          initSupabaseRealtime();
+        } catch (rtErr) {
+          console.error('[Database Service] Failed to initialize Supabase Realtime channel:', rtErr);
+        }
+      }, 1000);
+
+      resolve();
+    });
+  });
+}
+
+// Get all emails (merges Supabase and SQLite)
+export async function dbGetAllEmails(): Promise<Email[]> {
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .order('date', { ascending: false });
+
+      if (!error && data) {
+        return data.map((row: any) => ({
+          id: row.id,
+          message_id: row.message_id,
+          subject: row.subject || '',
+          sender: row.sender || '',
+          receiver: row.receiver || '',
+          date: row.date || '',
+          body_text: row.body_text || '',
+          html_body: row.html_body || '',
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          category: row.category || '',
+          sub_category: row.sub_category || '',
+          folder_parent: row.folder_parent || '',
+          folder_child: row.folder_child || '',
+          api_workflow_status: row.api_workflow_status || 'none',
+          api_workflow_log: row.api_workflow_log || '',
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          // AI and operational fields
+          is_read: row.is_read === true || row.is_read === 1,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: row.action_required === true || row.action_required === 1,
+          suggested_tag: row.suggested_tag || '',
+          is_important: row.is_important === true || row.is_important === 1,
+          urgency_level: row.urgency_level || 'Routine',
+          suggested_folder_parent: row.suggested_folder_parent || '',
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
+          cit_type: row.cit_type || 'None',
+          suggested_bank: row.suggested_bank || '',
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING'
+        }));
+      }
+      console.warn('Supabase emails query failed, falling back to SQLite:', error);
+    } catch (err) {
+      console.error('Error connecting to Supabase for emails:', err);
+    }
+  }
+
+  // Fallback to SQLite
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.all('SELECT * FROM emails ORDER BY date DESC', (err, rows: any[]) => {
+      if (err || !rows) {
+        return resolve([]);
+      }
+      const mapped = rows.map((row) => {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = JSON.parse(row.tags || '[]');
+        } catch {
+          parsedTags = row.tags ? row.tags.split(',') : [];
+        }
+        return {
+          id: row.id,
+          message_id: row.message_id,
+          subject: row.subject || '',
+          sender: row.sender || '',
+          receiver: row.receiver || '',
+          date: row.date || '',
+          body_text: row.body_text || '',
+          html_body: row.html_body || '',
+          tags: parsedTags,
+          category: row.category || '',
+          sub_category: row.sub_category || '',
+          folder_parent: row.folder_parent || '',
+          folder_child: row.folder_child || '',
+          api_workflow_status: row.api_workflow_status || 'none',
+          api_workflow_log: row.api_workflow_log || '',
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          // AI and operational fields
+          is_read: row.is_read === 1,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: row.action_required === 1,
+          suggested_tag: row.suggested_tag || '',
+          is_important: row.is_important === 1,
+          urgency_level: row.urgency_level || 'Routine',
+          suggested_folder_parent: row.suggested_folder_parent || '',
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: row.is_cit_order === 1,
+          cit_type: row.cit_type || 'None',
+          suggested_bank: row.suggested_bank || '',
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING'
+        };
+      });
+      resolve(mapped);
+    });
+  });
+}
+
+// AI Processing with @google/genai SDK
+export async function processEmailWithAI(subject: string, bodyText: string): Promise<{
+  summary: string;
+  action_required: boolean;
+  suggested_tag: string;
+  is_important: boolean;
+}> {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    console.warn('[AI Processing] GEMINI_API_KEY is not configured. Falling back to rule-based classification.');
+    return ruleBasedFallback(subject, bodyText);
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    const systemInstruction = `Anda adalah asisten operasional cerdas untuk memproses email masuk milik Fachrul.
+Setiap email harus dianalisis untuk menghasilkan:
+1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. Jika ada instruksi atau penugasan, sebutkan secara spesifik siapa yang harus melakukan apa.
+2. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
+3. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
+4. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, penugasan penting, atau peringatan kegagalan/error kritis harus dianggap penting.`;
+
+    const prompt = `Subject: ${subject}\n\nBody:\n${bodyText}`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            summary: {
+              type: Type.STRING,
+              description: "Ringkasan email maksimal 2 kalimat. Sebutkan instruksi spesifik jika ada."
+            },
+            action_required: {
+              type: Type.BOOLEAN,
+              description: "True jika ada tindakan/penugasan yang harus ditindaklanjuti."
+            },
+            suggested_tag: {
+              type: Type.STRING,
+              description: "Kategori email: 'Penugasan', 'Informasi', atau 'Peringatan'."
+            },
+            is_important: {
+              type: Type.BOOLEAN,
+              description: "True jika mendesak, mengandung penugasan, atau peringatan kritis."
+            }
+          },
+          required: ["summary", "action_required", "suggested_tag", "is_important"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (text) {
+      try {
+        const result = JSON.parse(text.trim());
+        // Validate suggested_tag
+        if (!['Penugasan', 'Informasi', 'Peringatan'].includes(result.suggested_tag)) {
+          result.suggested_tag = 'Informasi';
+        }
+        return result;
+      } catch (e) {
+        console.error('[AI Processing] Failed to parse JSON response from Gemini:', e, 'Response text:', text);
+      }
+    }
+  } catch (err) {
+    console.error('[AI Processing] Exception during Gemini API call:', err);
+  }
+
+  return ruleBasedFallback(subject, bodyText);
+}
+
+export function ruleBasedFallback(subject: string, bodyText: string): {
+  summary: string;
+  action_required: boolean;
+  suggested_tag: string;
+  is_important: boolean;
+} {
+  const subjUpper = (subject || '').toUpperCase();
+  const bodyUpper = (bodyText || '').toUpperCase();
+
+  let suggested_tag = 'Informasi';
+  let action_required = false;
+  let is_important = false;
+
+  // Determine tag
+  if (
+    subjUpper.includes('TUGAS') || 
+    subjUpper.includes('ASSIGN') || 
+    subjUpper.includes('APPROVAL') || 
+    subjUpper.includes('MOHON') ||
+    bodyUpper.includes('TOLONG') ||
+    bodyUpper.includes('SILAKAN TINJAU')
+  ) {
+    suggested_tag = 'Penugasan';
+    action_required = true;
+    is_important = true;
+  } else if (
+    subjUpper.includes('WARNING') || 
+    subjUpper.includes('ERROR') || 
+    subjUpper.includes('PERINGATAN') || 
+    subjUpper.includes('FAIL') ||
+    subjUpper.includes('ALERT')
+  ) {
+    suggested_tag = 'Peringatan';
+    is_important = true;
+  }
+
+  // Generate a simple 1-2 sentence summary
+  let summary = `Email dari pengirim mengenai "${subject}".`;
+  if (suggested_tag === 'Penugasan') {
+    summary += ' Memerlukan tinjauan dan persetujuan atau pengerjaan tugas.';
+  } else if (suggested_tag === 'Peringatan') {
+    summary += ' Terdapat peringatan sistem atau status peringatan yang memerlukan perhatian.';
+  } else {
+    summary += ' Berisi penyampaian informasi operasional rutin.';
+  }
+
+  return {
+    summary,
+    action_required,
+    suggested_tag,
+    is_important
+  };
+}
+
+/**
+ * Processes email text body using NVIDIA API and thinkingmachines/inkling model
+ */
+function parseCleanJson(text: string): any {
+  let cleaned = text.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.substring(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.substring(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.substring(0, cleaned.length - 3);
+  }
+  cleaned = cleaned.trim();
+  return JSON.parse(cleaned);
+}
+
+// --- CORE PARALLEL FUNCTIONS ---
+
+async function getSummaryNemotron(emailText: string): Promise<any> {
+  const apiKey = process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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';
+  const systemContent = `Anda adalah asisten data operasional cerdas berbasis model nvidia/nemotron-3-ultra-550b-a55b. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+
+JSON schema:
+{
+  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
+  "currency": "IDR" | "USD",
+  "total_amount": number | null,
+  "denomination_suggestion": number | null,
+  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
+  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
+  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
+  "extracted_notes": "Instruksi khusus atau catatan operasional"
+}`;
+
+  const payload = {
+    model: "nvidia/nemotron-3-ultra-550b-a55b",
+    messages: [
+      { role: "system", content: systemContent },
+      { role: "user", content: emailText }
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 16384,
+    chat_template_kwargs: { enable_thinking: true },
+    reasoning_budget: 16384,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
+  return parseCleanJson(content);
+}
+
+async function getTaggingInkling(emailText: string): Promise<any> {
+  const apiKey = process.env.NVIDIA_API_KEY_INKLING || process.env.NVIDIA_API_KEY || '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';
+  const systemContent = `Anda adalah asisten analisis konteks panjang berbasis model thinkingmachines/inkling. Analisis email secara mendalam dan tentukan klasifikasi tag serta urgensinya ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan di luar JSON.
+
+JSON schema:
+{
+  "suggested_tag": "CIT" | "ATM" | "Lainnya",
+  "urgency_level": "High" | "Medium" | "Routine",
+  "action_required": true | false
+}`;
+
+  const payload = {
+    model: "thinkingmachines/inkling",
+    messages: [
+      { role: "system", content: systemContent },
+      { role: "user", content: emailText }
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 8192,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
+  return parseCleanJson(content);
+}
+
+// --- FALLBACK FUNCTIONS ---
+
+const openaiDeepseek = new OpenAI({
+  apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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',
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+});
+
+async function fallbackDeepseek(emailText: string): Promise<any> {
+  const completion = await openaiDeepseek.chat.completions.create({
+    model: "deepseek-ai/deepseek-v4-pro",
+    messages: [{"role":"user","content": emailText}],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 16384,
+    chat_template_kwargs: {"thinking":false},
+    stream: false
+  } as any);
+  return parseCleanJson(completion.choices[0]?.message?.content || '{}');
+}
+
+async function fallbackGemma4(emailText: string): Promise<any> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json"
+  };
+  const payload = {
+    "messages": [{"role":"user","content": emailText}],
+    "model": "google/gemma-4-31b-it",
+    "chat_template_kwargs": {"enable_thinking":true},
+    "max_tokens": 16384,
+    "stream": false,
+    "temperature": 1,
+    "top_p": 0.95
+  };
+
+  const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
+  return parseCleanJson(response.data?.choices?.[0]?.message?.content || '{}');
+}
+
+async function fallbackMinimax(emailText: string): Promise<any> {
+  const apiKey = process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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';
+  const systemContent = `Anda adalah asisten data operasional cerdas berbasis minimaxai/minimax-m3. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
+
+JSON schema:
+{
+  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
+  "currency": "IDR" | "USD",
+  "total_amount": number | null,
+  "denomination_suggestion": number | null,
+  "suggested_bank": "BCA" | "MANDIRI" | "BRI" | "BNI" | "Lainnya" | "",
+  "suggested_folder_parent": "REGION 1" | "REGION 2" | "REGION 3" | "REGION 4" | "REGION 5" | "REGION 6",
+  "suggested_folder_child": "MEDAN" | "SURABAYA" | "JAKARTA" | "General" | "etc",
+  "extracted_notes": "Instruksi khusus atau catatan operasional",
+  "suggested_tag": "CIT" | "ATM" | "Lainnya",
+  "urgency_level": "High" | "Medium" | "Routine",
+  "action_required": true | false
+}`;
+
+  const payload = {
+    model: "minimaxai/minimax-m3",
+    messages: [
+      { role: "system", content: systemContent },
+      { role: "user", content: emailText }
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 8192,
+    stream: false
+  };
+
+  const response = await axios.post("https://integrate.api.nvidia.com/v1/chat/completions", payload, {
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    timeout: 60000
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
+  return parseCleanJson(content);
+}
+
+/**
+ * processEmailAI implements cascading try-catch failover logic as requested.
+ */
+export async function processEmailAI(emailText: string): Promise<any> {
+  // 1. TIER UTAMA (Nemotron + Inkling Paralel)
+  try {
+    console.log("[AI Worker] Menjalankan Nemotron (Summary) & Inkling (Tagging) secara paralel...");
+    const [summaryData, taggingData] = await Promise.all([
+      getSummaryNemotron(emailText),
+      getTaggingInkling(emailText)
+    ]);
+    const parsed = {
+      ...(summaryData || {}),
+      ...(taggingData || {})
+    };
+    console.log("[AI Worker] Successfully merged parallel AI outputs.");
+    return parsed;
+  } catch (error: any) {
+    console.warn(`[AI Warning] Core AI gagal (Error: ${error.message || String(error)}). Rotasi ke Tier 1: DeepSeek...`);
+
+    // 2. TIER 1 (DeepSeek V4 Pro)
+    try {
+      const parsed = await fallbackDeepseek(emailText);
+      return parsed;
+    } catch (deepseekError: any) {
+      console.warn("[AI Warning] DeepSeek gagal. Rotasi ke Tier 2: Gemma 4...");
+
+      // 3. TIER 2 (Gemma 4 31B)
+      try {
+        const parsed = await fallbackGemma4(emailText);
+        return parsed;
+      } catch (gemmaError: any) {
+        console.warn("[AI Warning] Gemma 4 gagal. Rotasi ke Last Resort: Minimax...");
+
+        // 4. LAST RESORT (Minimax M3)
+        try {
+          const parsed = await fallbackMinimax(emailText);
+          return parsed;
+        } catch (minimaxError: any) {
+          console.error("[AI Error] Minimax gagal. Menggunakan default...");
+          return {
+            summary: "Gagal diproses AI",
+            urgency_level: "Routine",
+            suggested_tag: "Lainnya",
+            action_required: false,
+            suggested_folder_parent: "Operation",
+            suggested_folder_child: "General",
+            is_cit_order: false,
+            cit_type: "None",
+            suggested_bank: "",
+            extracted_notes: "",
+            currency: "IDR"
+          };
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Processes email text body using NVIDIA API and Split-Task AI Architecture (Nemotron + Inkling with fallback chain)
+ */
+export async function processEmailWithNvidia(
+  emailSubject: string, 
+  emailBody: string,
+  attachments?: any[]
+): Promise<{
+  summary: string;
+  action_required: boolean;
+  urgency_level: string;
+  suggested_tag: string;
+  suggested_folder_parent: string;
+  suggested_folder_child: string;
+  is_cit_order: boolean;
+  cit_type: string;
+  suggested_bank: string;
+  extracted_notes: string;
+  currency?: string;
+  denomination_suggestion?: number;
+  total_amount?: number;
+ }> {
+  const attachmentListStr = Array.isArray(attachments) && attachments.length > 0
+    ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
+    : 'None';
+
+  const emailText = `Subject: ${emailSubject || "(No Subject)"}\n\nBody:\n${emailBody || "(No Content)"}\n\nAttachments:\n${attachmentListStr}`;
+
+  let parsed: any = null;
+
+  try {
+    parsed = await processEmailAI(emailText);
+  } catch (err: any) {
+    console.error("[AI Worker] Fatal processEmailAI failed unexpectedly:", err);
+  }
+
+  if (!parsed) {
+    parsed = {
+      summary: "Gagal menganalisis email (semua model AI rotator/fallback gagal).",
+      action_required: false,
+      urgency_level: "Routine",
+      suggested_tag: "Lainnya",
+      suggested_folder_parent: "Operation",
+      suggested_folder_child: "General",
+      is_cit_order: false,
+      cit_type: "None",
+      suggested_bank: "",
+      extracted_notes: "",
+      currency: "IDR"
+    };
+  }
+  
+  // Ensure suggested_tag is CIT/ATM/Lainnya per instructions
+  let suggestedTag = parsed.suggested_tag !== undefined ? String(parsed.suggested_tag) : "Lainnya";
+  if (suggestedTag !== "CIT" && suggestedTag !== "ATM" && suggestedTag !== "Lainnya") {
+    if (suggestedTag.toUpperCase().includes("CIT")) {
+      suggestedTag = "CIT";
+    } else if (suggestedTag.toUpperCase().includes("ATM")) {
+      suggestedTag = "ATM";
+    } else {
+      suggestedTag = "Lainnya";
+    }
+  }
+
+  // Ensure is_cit_order and cit_type correspond perfectly
+  const isCit = (suggestedTag === "CIT" || suggestedTag === "ATM" || parsed.is_cit_order === true || parsed.is_cit_order === "true");
+  const citType = isCit ? (suggestedTag === "ATM" ? "ATM" : "CIT") : "None";
+
+  // Build extra notes incorporating detected_attachments & extracted_context if provided
+  let finalNotes = parsed.extracted_notes || "";
+  if (parsed.extracted_context) {
+    finalNotes = `Konteks Thread: ${parsed.extracted_context}\n${finalNotes}`;
+  }
+  if (parsed.detected_attachments && Array.isArray(parsed.detected_attachments) && parsed.detected_attachments.length > 0) {
+    finalNotes = `Lampiran Terdeteksi: ${parsed.detected_attachments.join(", ")}\n${finalNotes}`;
+  }
+
+  // Handle extraction details
+  let currencyVal = parsed.currency ? String(parsed.currency).toUpperCase() : "IDR";
+  if (currencyVal !== "USD" && currencyVal !== "IDR") {
+    currencyVal = "IDR";
+  }
+
+  let denomSuggestion: number | undefined = undefined;
+  if (parsed.denomination_suggestion !== undefined && parsed.denomination_suggestion !== null) {
+    const num = Number(parsed.denomination_suggestion);
+    if (!isNaN(num) && num > 0) {
+      if (num === 100 && currencyVal === "IDR") {
+        denomSuggestion = 100000;
+      } else if (num === 50 && currencyVal === "IDR") {
+        denomSuggestion = 50000;
+      } else {
+        denomSuggestion = num;
+      }
+    }
+  }
+
+  let totalAmountVal: number | undefined = undefined;
+  if (parsed.total_amount !== undefined && parsed.total_amount !== null) {
+    const num = Number(parsed.total_amount);
+    if (!isNaN(num) && num > 0) {
+      totalAmountVal = num;
+    }
+  }
+
+  return {
+    summary: parsed.summary !== undefined ? String(parsed.summary) : "",
+    action_required: parsed.action_required === true || parsed.action_required === "true",
+    urgency_level: parsed.urgency_level !== undefined ? String(parsed.urgency_level) : "Routine",
+    suggested_tag: suggestedTag,
+    suggested_folder_parent: parsed.suggested_folder_parent !== undefined ? String(parsed.suggested_folder_parent) : "Operation",
+    suggested_folder_child: parsed.suggested_folder_child !== undefined ? String(parsed.suggested_folder_child) : "General",
+    is_cit_order: isCit,
+    cit_type: citType,
+    suggested_bank: parsed.suggested_bank !== undefined ? String(parsed.suggested_bank) : "",
+    extracted_notes: finalNotes.trim(),
+    currency: currencyVal,
+    denomination_suggestion: denomSuggestion,
+    total_amount: totalAmountVal
+  };
+}
+
+let dbBroadcasterFn: ((event: string, data: any) => void) | null = null;
+
+export function registerDbBroadcaster(fn: (event: string, data: any) => void) {
+  dbBroadcasterFn = fn;
+}
+
+/**
+ * Synchronizes and analyzes emails using NVIDIA API and saves/upserts to Supabase + SQLite
+ * In the new event-driven / asynchronous flow, this function immediately upserts the email
+ * as PENDING, and then asynchronously triggers analyzeEmail(emailId).
+ */
+export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
+  const initialEmail: Email = {
+    ...email,
+    ai_status: email.ai_status || 'PENDING',
+    summary: email.summary || 'Belum dianalisis (Menunggu AI...)',
+    action_required: email.action_required !== undefined ? email.action_required : false,
+    urgency_level: email.urgency_level || 'Routine',
+    suggested_tag: email.suggested_tag || 'Informasi',
+    is_cit_order: email.is_cit_order !== undefined ? email.is_cit_order : false,
+    cit_type: email.cit_type || 'None',
+    suggested_bank: email.suggested_bank || '',
+    extracted_notes: email.extracted_notes || '',
+    currency: email.currency || 'IDR'
+  };
+
+  // 1. Immediately insert/upsert the email to SQLite & Supabase
+  await dbUpsertEmail(initialEmail);
+
+  // Trigger frontend to show loading/pending status
+  if (dbBroadcasterFn) {
+    dbBroadcasterFn('email_added', {
+      email: initialEmail,
+      message: `Email "${initialEmail.subject}" added with PENDING AI status.`
+    });
+  }
+
+  // 2. Start the AI analysis asynchronously (non-blocking)
+  analyzeEmail(email.message_id).catch(err => {
+    console.error(`[Async AI Worker] Error running analyzeEmail for ${email.message_id}:`, err);
+  });
+}
+
+/**
+ * Asynchronously analyzes a specific email and updates its status in the DB
+ */
+export async function analyzeEmail(messageId: string): Promise<void> {
+  try {
+    // Check if email exists
+    const email = await dbGetEmailByMessageId(messageId);
+    if (!email) {
+      console.warn(`[Async AI] Email with message_id ${messageId} not found in database.`);
+      return;
+    }
+
+    // Move to ANALYZING state
+    console.log(`[Async AI] Memproses email: "${email.subject}" (${messageId})`);
+    await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+
+    // Notify frontend of status change
+    if (dbBroadcasterFn) {
+      dbBroadcasterFn('email_analyzing', {
+        message_id: messageId,
+        subject: email.subject,
+        ai_status: 'ANALYZING'
+      });
+    }
+
+    let summary = "";
+    let action_required = false;
+    let urgency_level = "Routine";
+    let suggested_tag = "Informasi";
+    let suggested_folder_parent = "Operation";
+    let suggested_folder_child = "General";
+    let is_cit_order = false;
+    let cit_type = "None";
+    let suggested_bank = "";
+    let extracted_notes = "";
+    let currency = "IDR";
+    let denomination_suggestion: number | undefined = undefined;
+    let total_amount: number | undefined = undefined;
+
+    try {
+      const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "", email.attachments);
+      
+      summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
+      action_required = !!aiResult.action_required;
+      urgency_level = aiResult.urgency_level || "Routine";
+      suggested_tag = aiResult.suggested_tag || "Informasi";
+      suggested_folder_parent = aiResult.suggested_folder_parent || "Operation";
+      suggested_folder_child = aiResult.suggested_folder_child || "General";
+      is_cit_order = !!aiResult.is_cit_order;
+      cit_type = aiResult.cit_type || "None";
+      suggested_bank = aiResult.suggested_bank || "";
+      extracted_notes = aiResult.extracted_notes || "";
+      currency = aiResult.currency || "IDR";
+      denomination_suggestion = aiResult.denomination_suggestion;
+      total_amount = aiResult.total_amount;
+
+      console.log(`[AI Copilot] Email processed: ${email.subject} | Category: ${urgency_level}`);
+
+      // Update to COMPLETED
+      await dbUpdateEmailFields(messageId, {
+        summary,
+        action_required,
+        urgency_level,
+        suggested_tag,
+        is_important: urgency_level === 'High' || urgency_level === 'Peringatan',
+        folder_parent: suggested_folder_parent,
+        folder_child: suggested_folder_child,
+        is_cit_order,
+        cit_type,
+        suggested_bank,
+        extracted_notes,
+        currency,
+        denomination_suggestion,
+        total_amount,
+        ai_status: 'COMPLETED'
+      });
+    } catch (aiError) {
+      console.log('[AI Copilot] AI sedang tidak tersedia, falling back to rule-based...', aiError);
+      
+      // Fallback: rule-based summary but action_required: false and ai_status: FAILED
+      const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
+      summary = fallbackInfo.summary || `Email from ${email.sender}.`;
+      action_required = false;
+      urgency_level = "Routine";
+      suggested_tag = "Informasi";
+      suggested_folder_parent = "Operation";
+      suggested_folder_child = "General";
+      is_cit_order = false;
+      cit_type = "None";
+      suggested_bank = "";
+      extracted_notes = "";
+      currency = "IDR";
+
+      await dbUpdateEmailFields(messageId, {
+        summary,
+        action_required,
+        urgency_level,
+        suggested_tag,
+        is_important: false,
+        folder_parent: suggested_folder_parent,
+        folder_child: suggested_folder_child,
+        is_cit_order,
+        cit_type,
+        suggested_bank,
+        extracted_notes,
+        currency,
+        ai_status: 'FAILED'
+      });
+    }
+
+    // Fetch final email data to broadcast to frontend
+    const finalEmail = await dbGetEmailByMessageId(messageId);
+    if (finalEmail) {
+      await applyDynamicFilters(finalEmail);
+      const postFilterEmail = await dbGetEmailByMessageId(messageId) || finalEmail;
+      if (dbBroadcasterFn) {
+        dbBroadcasterFn('email_updated', {
+          email: postFilterEmail,
+          message: `Email "${postFilterEmail.subject}" successfully updated by AI and dynamic filters.`
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`[Async AI] Fatal error running analyzeEmail for ${messageId}:`, err);
+    await dbUpdateEmailFields(messageId, { ai_status: 'FAILED' }).catch(() => {});
+  }
+}
+
+/**
+ * Main worker queue that processes up to 5 pending emails in parallel with Promise.all
+ */
+export async function processEmailQueue(): Promise<void> {
+  const supabase = getSupabaseClient();
+  let pendingEmails: Email[] = [];
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('ai_status', 'PENDING')
+        .limit(5);
+      
+      if (!error && data) {
+        pendingEmails = data;
+      }
+    } catch (e) {
+      console.error('[Queue Worker] Error fetching pending emails from Supabase:', e);
+    }
+  }
+
+  // Fallback to SQLite if Supabase returns nothing or is inactive
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    pendingEmails = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' LIMIT 5",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  if (pendingEmails.length === 0) {
+    return;
+  }
+
+  console.log(`[Queue Worker] Processing ${pendingEmails.length} pending emails in parallel...`);
+
+  await Promise.all(pendingEmails.map(async (email) => {
+    await analyzeEmail(email.message_id);
+  }));
+}
+
+/**
+ * Retrieve a single email by its message_id from SQLite
+ */
+export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.get('SELECT * FROM emails WHERE message_id = ?', [messageId], (err, row: any) => {
+      if (row) {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = JSON.parse(row.tags || '[]');
+        } catch {
+          parsedTags = row.tags ? row.tags.split(',') : [];
+        }
+        resolve({
+          ...row,
+          tags: parsedTags,
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          is_read: row.is_read === 1,
+          action_required: row.action_required === 1,
+          is_important: row.is_important === 1,
+          is_cit_order: row.is_cit_order === 1,
+        });
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+// Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
+export async function dbUpsertEmail(email: Email): Promise<void> {
+  // Classify dynamically if not provided
+  let emailCategory = email.category;
+  let emailSubCategory = email.sub_category;
+  if (!emailCategory || !emailSubCategory) {
+    const classification = classifyEmail(email.subject);
+    if (!emailCategory) emailCategory = classification.category;
+    if (!emailSubCategory) emailSubCategory = classification.subCategory;
+  }
+
+  let folderParent = email.folder_parent;
+  let folderChild = email.folder_child;
+
+  // Apply custom filters
+  if (!folderParent || !folderChild) {
+    const filters = await dbGetCustomFilters();
+    for (const filter of filters) {
+      if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+        continue;
+      }
+      let isMatch = true;
+      if (filter.match_from && !email.sender.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
+      if (filter.match_subject && !email.subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
+      if (filter.match_body && !email.body_text.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+
+      if (isMatch) {
+        folderParent = filter.action_parent;
+        folderChild = filter.action_child;
+        break;
+      }
+    }
+  }
+
+  // Fallback to auto-rules
+  if (!folderParent || !folderChild) {
+    const classification = classifyFolder(email.sender, email.subject);
+    if (!folderParent) folderParent = classification.folder_parent;
+    if (!folderChild) folderChild = classification.folder_child;
+  }
+
+  // Preserve existing operational fields if updating
+  let tagType = email.tag_type;
+  let summary = email.summary;
+  let actionRequired = email.action_required;
+  let suggestedTag = email.suggested_tag;
+  let isImportant = email.is_important;
+  let urgencyLevel = email.urgency_level || 'Routine';
+  let suggestedFolderParent = email.suggested_folder_parent;
+  let suggestedFolderChild = email.suggested_folder_child;
+  let isCitOrder = email.is_cit_order;
+  let citType = email.cit_type !== undefined && email.cit_type !== null ? email.cit_type : 'None';
+  let suggestedBank = email.suggested_bank !== undefined && email.suggested_bank !== null ? email.suggested_bank : '';
+  let extractedNotes = email.extracted_notes !== undefined && email.extracted_notes !== null ? email.extracted_notes : '';
+  let tags = email.tags || [];
+  let isRead = email.is_read !== undefined ? email.is_read : false;
+  let currency = email.currency || 'IDR';
+  let denominationSuggestion = email.denomination_suggestion;
+  let totalAmount = email.total_amount;
+
+  const db = getSqliteDb();
+  const existing: any = await new Promise((resolve) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes, currency, denomination_suggestion, total_amount FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+      resolve(row || null);
+    });
+  });
+
+  if (existing) {
+    isRead = email.is_read !== undefined ? email.is_read : (existing.is_read === 1);
+    if (!tagType) tagType = existing.tag_type;
+    if (!summary) summary = existing.summary;
+    if (actionRequired === undefined) actionRequired = existing.action_required === 1;
+    if (!suggestedTag) suggestedTag = existing.suggested_tag;
+    if (isImportant === undefined) isImportant = existing.is_important === 1;
+    if (!urgencyLevel || urgencyLevel === 'Routine') urgencyLevel = existing.urgency_level || 'Routine';
+    if (!suggestedFolderParent) suggestedFolderParent = existing.suggested_folder_parent;
+    if (!suggestedFolderChild) suggestedFolderChild = existing.suggested_folder_child;
+    if (isCitOrder === undefined) isCitOrder = existing.is_cit_order === 1;
+    if (email.cit_type === undefined) citType = existing.cit_type || 'None';
+    if (email.suggested_bank === undefined) suggestedBank = existing.suggested_bank !== undefined ? existing.suggested_bank : '';
+    if (email.extracted_notes === undefined) extractedNotes = existing.extracted_notes !== undefined ? existing.extracted_notes : '';
+    if (email.currency === undefined || email.currency === 'IDR') currency = existing.currency || 'IDR';
+    if (email.denomination_suggestion === undefined) denominationSuggestion = existing.denomination_suggestion;
+    if (email.total_amount === undefined) totalAmount = existing.total_amount;
+    try {
+      if (tags.length === 0 && existing.tags) {
+        tags = JSON.parse(existing.tags);
+      }
+    } catch (e) {}
+  } else {
+    // New email: Run AI Assistant if not already supplied
+    if (!summary) {
+      try {
+        console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
+        const aiResult = await processEmailWithAI(email.subject, email.body_text);
+        summary = aiResult.summary;
+        actionRequired = aiResult.action_required;
+        suggestedTag = aiResult.suggested_tag;
+        tagType = aiResult.suggested_tag;
+        isImportant = aiResult.is_important;
+        urgencyLevel = aiResult.suggested_tag === 'Penugasan' ? 'High' : (aiResult.is_important ? 'Medium' : 'Routine');
+
+        // Tag backfilling: Jika mengandung instruksi mendesak atau penugasan, berikan label khusus 'Urgent/Task' pada tags
+        if (isImportant || suggestedTag === 'Penugasan') {
+          if (!tags.includes('Urgent/Task')) {
+            tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
+          }
+        }
+      } catch (aiErr) {
+        console.error('[AI Copilot] Error analyzing new email:', aiErr);
+      }
+    }
+  }
+
+  const normalizedEmail = {
+    ...email,
+    category: emailCategory,
+    sub_category: emailSubCategory,
+    folder_parent: folderParent,
+    folder_child: folderChild,
+    api_workflow_status: email.api_workflow_status || 'pending',
+    api_workflow_log: email.api_workflow_log || '',
+    ai_status: email.ai_status || 'PENDING'
+  };
+
+  // Upsert to SQLite
+  await new Promise<void>((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO emails (
+        message_id, subject, sender, receiver, date, body_text, html_body, tags, 
+        category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
+        is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level,
+        suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes,
+        attachments, currency, denomination_suggestion, total_amount, ai_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        subject = excluded.subject,
+        sender = excluded.sender,
+        receiver = excluded.receiver,
+        date = excluded.date,
+        body_text = excluded.body_text,
+        html_body = excluded.html_body,
+        tags = excluded.tags,
+        category = excluded.category,
+        sub_category = excluded.sub_category,
+        folder_parent = excluded.folder_parent,
+        folder_child = excluded.folder_child,
+        api_workflow_status = excluded.api_workflow_status,
+        api_workflow_log = excluded.api_workflow_log,
+        is_read = excluded.is_read,
+        tag_type = excluded.tag_type,
+        summary = excluded.summary,
+        action_required = excluded.action_required,
+        suggested_tag = excluded.suggested_tag,
+        is_important = excluded.is_important,
+        urgency_level = excluded.urgency_level,
+        suggested_folder_parent = excluded.suggested_folder_parent,
+        suggested_folder_child = excluded.suggested_folder_child,
+        is_cit_order = excluded.is_cit_order,
+        cit_type = excluded.cit_type,
+        suggested_bank = excluded.suggested_bank,
+        extracted_notes = excluded.extracted_notes,
+        attachments = excluded.attachments,
+        currency = excluded.currency,
+        denomination_suggestion = excluded.denomination_suggestion,
+        total_amount = excluded.total_amount,
+        ai_status = excluded.ai_status
+      `,
+      [
+        normalizedEmail.message_id,
+        normalizedEmail.subject,
+        normalizedEmail.sender,
+        normalizedEmail.receiver,
+        normalizedEmail.date,
+        normalizedEmail.body_text,
+        normalizedEmail.html_body,
+        JSON.stringify(tags),
+        normalizedEmail.category,
+        normalizedEmail.sub_category,
+        normalizedEmail.folder_parent,
+        normalizedEmail.folder_child,
+        normalizedEmail.api_workflow_status,
+        normalizedEmail.api_workflow_log,
+        isRead ? 1 : 0,
+        tagType || null,
+        summary || null,
+        actionRequired ? 1 : 0,
+        suggestedTag || null,
+        isImportant ? 1 : 0,
+        urgencyLevel || null,
+        suggestedFolderParent || null,
+        suggestedFolderChild || null,
+        isCitOrder ? 1 : 0,
+        citType || 'None',
+        suggestedBank || '',
+        extractedNotes || '',
+        JSON.stringify(normalizedEmail.attachments || []),
+        currency || 'IDR',
+        denominationSuggestion !== undefined ? denominationSuggestion : null,
+        totalAmount !== undefined ? totalAmount : null,
+        normalizedEmail.ai_status || 'PENDING'
+      ],
+      (err) => {
+        if (err) return reject(err);
+        resolve();
+      }
+    );
+  });
+
+  // Upsert to Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const message_id = normalizedEmail.message_id;
+      let dateIso = new Date().toISOString();
+      if (normalizedEmail.date) {
+        try {
+          dateIso = new Date(normalizedEmail.date).toISOString();
+        } catch (e) {
+          console.warn('[Supabase Worker] Invalid date value, defaulting to now:', normalizedEmail.date);
+        }
+      }
+
+      const payload = {
+        message_id: normalizedEmail.message_id !== undefined ? normalizedEmail.message_id : null,
+        subject: normalizedEmail.subject !== undefined ? normalizedEmail.subject : null,
+        sender: normalizedEmail.sender !== undefined ? normalizedEmail.sender : null,
+        receiver: normalizedEmail.receiver !== undefined ? normalizedEmail.receiver : null,
+        date: dateIso,
+        body_text: normalizedEmail.body_text !== undefined ? normalizedEmail.body_text : null,
+        html_body: normalizedEmail.html_body !== undefined ? normalizedEmail.html_body : null,
+        tags: tags,
+        category: normalizedEmail.category !== undefined ? normalizedEmail.category : null,
+        sub_category: normalizedEmail.sub_category !== undefined ? normalizedEmail.sub_category : null,
+        folder_parent: normalizedEmail.folder_parent !== undefined ? normalizedEmail.folder_parent : null,
+        folder_child: normalizedEmail.folder_child !== undefined ? normalizedEmail.folder_child : null,
+        api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
+        api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null,
+        // AI fields
+        is_read: !!isRead,
+        tag_type: tagType || null,
+        summary: summary || null,
+        action_required: !!actionRequired,
+        suggested_tag: suggestedTag || null,
+        is_important: !!isImportant,
+        urgency_level: urgencyLevel || null,
+        suggested_folder_parent: suggestedFolderParent || null,
+        suggested_folder_child: suggestedFolderChild || null,
+        is_cit_order: !!isCitOrder,
+        cit_type: citType || 'None',
+        suggested_bank: suggestedBank || '',
+        extracted_notes: extractedNotes || '',
+        currency: currency || 'IDR',
+        denomination_suggestion: denominationSuggestion !== undefined ? denominationSuggestion : null,
+        total_amount: totalAmount !== undefined ? totalAmount : null,
+        ai_status: normalizedEmail.ai_status || 'PENDING',
+        attachments: normalizedEmail.attachments !== undefined ? normalizedEmail.attachments : null
+      };
+
+      const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
+      if (error) {
+        console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
+      }
+    } catch (err) {
+      console.error('[Supabase Upsert Exception]:', err);
+    }
+  }
+}
+
+// Mark email as read or unread on SQLite and Supabase databases
+export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): Promise<void> {
+  const isReadInt = is_read ? 1 : 0;
+  
+  // SQLite
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('UPDATE emails SET is_read = ? WHERE message_id = ?', [isReadInt, message_id], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  // Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { error } = await supabase
+        .from('emails')
+        .update({ is_read: is_read })
+        .eq('message_id', message_id);
+      if (error) {
+        console.error('[Supabase Update is_read Error]:', error);
+      }
+    } catch (err) {
+      console.error('[Supabase Update is_read Exception]:', err);
+    }
+  }
+}
+
+// Get all custom filters (from Supabase if configured, fallback to SQLite)
+export async function dbGetCustomFilters(): Promise<CustomFilter[]> {
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('custom_filters')
+        .select('*')
+        .order('id', { ascending: true });
+
+      if (!error && data) {
+        return data.map((row: any) => ({
+          id: row.id,
+          name: row.name || '',
+          match_from: row.match_from || '',
+          match_subject: row.match_subject || '',
+          match_body: row.match_body || '',
+          action_parent: row.action_parent || '',
+          action_child: row.action_child || '',
+          trigger_api: !!row.trigger_api
+        }));
+      }
+    } catch (err) {
+      console.error('Error connecting to Supabase for custom filters:', err);
+    }
+  }
+
+  // Fallback to SQLite
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.all('SELECT * FROM custom_filters ORDER BY id ASC', (err, rows: any[]) => {
+      if (err || !rows) {
+        return resolve([]);
+      }
+      const mapped = rows.map((row) => ({
+        id: row.id,
+        name: row.name || '',
+        match_from: row.match_from || '',
+        match_subject: row.match_subject || '',
+        match_body: row.match_body || '',
+        action_parent: row.action_parent || '',
+        action_child: row.action_child || '',
+        trigger_api: row.trigger_api === 1
+      }));
+      resolve(mapped);
+    });
+  });
+}
+
+// Add/Save Custom Filter
+export async function dbSaveCustomFilter(filter: CustomFilter): Promise<void> {
+  const isTriggerApiInt = filter.trigger_api ? 1 : 0;
+
+  // Save to SQLite
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    if (filter.id) {
+      db.run(
+        `UPDATE custom_filters SET 
+          name = ?, match_from = ?, match_subject = ?, match_body = ?, action_parent = ?, action_child = ?, trigger_api = ?
+         WHERE id = ?`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child, isTriggerApiInt, filter.id],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    } else {
+      db.run(
+        `INSERT INTO custom_filters (name, match_from, match_subject, match_body, action_parent, action_child, trigger_api)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child, isTriggerApiInt],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    }
+  });
+
+  // Save to Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const payload: any = {
+        name: filter.name,
+        match_from: filter.match_from,
+        match_subject: filter.match_subject,
+        match_body: filter.match_body,
+        action_parent: filter.action_parent,
+        action_child: filter.action_child,
+        trigger_api: !!filter.trigger_api
+      };
+      if (filter.id) {
+        payload.id = filter.id;
+      }
+      const { error } = await supabase.from('custom_filters').upsert(payload);
+      if (error) {
+        console.error('[Supabase Custom Filter Save Error]:', error);
+      }
+    } catch (err) {
+      console.error('[Supabase Custom Filter Save Exception]:', err);
+    }
+  }
+}
+
+// Delete Custom Filter
+export async function dbDeleteCustomFilter(id: number): Promise<void> {
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('DELETE FROM custom_filters WHERE id = ?', [id], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('custom_filters').delete().eq('id', id);
+      if (error) {
+        console.error('[Supabase Custom Filter Delete Error]:', error);
+      }
+    } catch (err) {
+      console.error('[Supabase Custom Filter Delete Exception]:', err);
+    }
+  }
+}
+
+// Clear Database Cache
+export async function dbClearEmails(): Promise<void> {
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('DELETE FROM emails', (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('emails').delete().neq('id', 0); // deletes all rows
+      if (error) {
+        console.error('[Supabase Clear Emails Error]:', error);
+      }
+    } catch (err) {
+      console.error('[Supabase Clear Emails Exception]:', err);
+    }
+  }
+}
+
+// Apply retroactive filter to local SQLite database
+export async function dbApplyRetroactiveFilter(filter: CustomFilter): Promise<number> {
+  const db = getSqliteDb();
+  return new Promise<number>((resolve, reject) => {
+    db.all("SELECT * FROM emails WHERE folder_parent = 'Lainnya'", (err, rows: any[]) => {
+      if (err) return reject(err);
+      if (!rows || rows.length === 0) return resolve(0);
+
+      let matchedCount = 0;
+      const stmt = db.prepare("UPDATE emails SET folder_parent = ?, folder_child = ? WHERE message_id = ?");
+
+      for (const row of rows) {
+        let isMatch = true;
+        const senderLower = (row.sender || '').toLowerCase();
+        const subjectLower = (row.subject || '').toLowerCase();
+        const bodyLower = (row.body_text || '').toLowerCase();
+
+        if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+          continue;
+        }
+
+        if (filter.match_from && !senderLower.includes(filter.match_from.toLowerCase())) isMatch = false;
+        if (filter.match_subject && !subjectLower.includes(filter.match_subject.toLowerCase())) isMatch = false;
+        if (filter.match_body && !bodyLower.includes(filter.match_body.toLowerCase())) isMatch = false;
+
+        if (isMatch) {
+          matchedCount++;
+          stmt.run(filter.action_parent, filter.action_child, row.message_id);
+        }
+      }
+
+      stmt.finalize();
+      resolve(matchedCount);
+    });
+  });
+}
+
+/**
+ * Matches subject, sender, and body_text with Dynamic Filter Rules from Supabase/local db.
+ * If match found, updates folder_parent and folder_child fields.
+ */
+export async function applyDynamicFilters(emailData: Email): Promise<boolean> {
+  try {
+    const filters = await dbGetCustomFilters();
+    let matched = false;
+    let folderParent = emailData.folder_parent || '';
+    let folderChild = emailData.folder_child || '';
+
+    for (const filter of filters) {
+      if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+        continue;
+      }
+      let isMatch = true;
+      if (filter.match_from && !emailData.sender?.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
+      if (filter.match_subject && !emailData.subject?.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
+      if (filter.match_body && !emailData.body_text?.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+
+      if (isMatch) {
+        folderParent = filter.action_parent;
+        folderChild = filter.action_child;
+        matched = true;
+        break; // Match first rule found
+      }
+    }
+
+    if (matched) {
+      console.log(`[applyDynamicFilters] Email "${emailData.subject}" (ID: ${emailData.message_id}) matched custom filter. Updating folder to "${folderParent} > ${folderChild}".`);
+      await dbUpdateEmailFields(emailData.message_id, {
+        folder_parent: folderParent,
+        folder_child: folderChild
+      });
+      return true;
+    }
+  } catch (err) {
+    console.error('[applyDynamicFilters] Error processing dynamic filters:', err);
+  }
+  return false;
+}
+
+// Granular fields update for "Smart Apply" and "Edit Suggestion" actions
+export async function dbUpdateEmailFields(
+  message_id: string, 
+  fields: {
+    folder_parent?: string;
+    folder_child?: string;
+    tags?: string[];
+    is_important?: boolean;
+    urgency_level?: string;
+    suggested_tag?: string;
+    summary?: string;
+    action_required?: boolean;
+    is_cit_order?: boolean;
+    cit_type?: string;
+    suggested_bank?: string;
+    extracted_notes?: string;
+    ai_status?: string;
+    currency?: string;
+    denomination_suggestion?: number;
+    total_amount?: number;
+  }
+): Promise<void> {
+  // SQLite update
+  const db = getSqliteDb();
+  const sets: string[] = [];
+  const params: any[] = [];
+  
+  if (fields.folder_parent !== undefined) { sets.push('folder_parent = ?'); params.push(fields.folder_parent); }
+  if (fields.folder_child !== undefined) { sets.push('folder_child = ?'); params.push(fields.folder_child); }
+  if (fields.tags !== undefined) { sets.push('tags = ?'); params.push(JSON.stringify(fields.tags)); }
+  if (fields.is_important !== undefined) { sets.push('is_important = ?'); params.push(fields.is_important ? 1 : 0); }
+  if (fields.urgency_level !== undefined) { sets.push('urgency_level = ?'); params.push(fields.urgency_level); }
+  if (fields.suggested_tag !== undefined) { sets.push('suggested_tag = ?'); params.push(fields.suggested_tag); sets.push('tag_type = ?'); params.push(fields.suggested_tag); }
+  if (fields.summary !== undefined) { sets.push('summary = ?'); params.push(fields.summary); }
+  if (fields.action_required !== undefined) { sets.push('action_required = ?'); params.push(fields.action_required ? 1 : 0); }
+  if (fields.is_cit_order !== undefined) { sets.push('is_cit_order = ?'); params.push(fields.is_cit_order ? 1 : 0); }
+  if (fields.cit_type !== undefined) { sets.push('cit_type = ?'); params.push(fields.cit_type); }
+  if (fields.suggested_bank !== undefined) { sets.push('suggested_bank = ?'); params.push(fields.suggested_bank); }
+  if (fields.extracted_notes !== undefined) { sets.push('extracted_notes = ?'); params.push(fields.extracted_notes); }
+  if (fields.ai_status !== undefined) { sets.push('ai_status = ?'); params.push(fields.ai_status); }
+  if (fields.currency !== undefined) { sets.push('currency = ?'); params.push(fields.currency); }
+  if (fields.denomination_suggestion !== undefined) { sets.push('denomination_suggestion = ?'); params.push(fields.denomination_suggestion); }
+  if (fields.total_amount !== undefined) { sets.push('total_amount = ?'); params.push(fields.total_amount); }
+  
+  if (sets.length > 0) {
+    params.push(message_id);
+    await new Promise<void>((resolve, reject) => {
+      db.run(`UPDATE emails SET ${sets.join(', ')} WHERE message_id = ?`, params, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+  }
+  
+  // Supabase update
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const updatePayload: any = {};
+      if (fields.folder_parent !== undefined) updatePayload.folder_parent = fields.folder_parent;
+      if (fields.folder_child !== undefined) updatePayload.folder_child = fields.folder_child;
+      if (fields.tags !== undefined) updatePayload.tags = fields.tags;
+      if (fields.is_important !== undefined) updatePayload.is_important = fields.is_important;
+      if (fields.urgency_level !== undefined) updatePayload.urgency_level = fields.urgency_level;
+      if (fields.suggested_tag !== undefined) {
+        updatePayload.suggested_tag = fields.suggested_tag;
+        updatePayload.tag_type = fields.suggested_tag;
+      }
+      if (fields.summary !== undefined) updatePayload.summary = fields.summary;
+      if (fields.action_required !== undefined) updatePayload.action_required = fields.action_required;
+      if (fields.is_cit_order !== undefined) updatePayload.is_cit_order = fields.is_cit_order;
+      if (fields.cit_type !== undefined) updatePayload.cit_type = fields.cit_type;
+      if (fields.suggested_bank !== undefined) updatePayload.suggested_bank = fields.suggested_bank;
+      if (fields.extracted_notes !== undefined) updatePayload.extracted_notes = fields.extracted_notes;
+      if (fields.ai_status !== undefined) updatePayload.ai_status = fields.ai_status;
+      if (fields.currency !== undefined) updatePayload.currency = fields.currency;
+      if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
+      if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
+      
+      if (Object.keys(updatePayload).length > 0) {
+        const { error } = await supabase
+          .from('emails')
+          .update(updatePayload)
+          .eq('message_id', message_id);
+        if (error) {
+          console.error('[Supabase Update Email Error]:', error);
+        }
+      }
+    } catch (err) {
+      console.error('[Supabase Update Email Exception]:', err);
+    }
+  }
+}
+
+// Historical Data Backfill for unsummarized emails
+export async function dbRunHistoricalBackfill(): Promise<{ processedCount: number; failedCount: number; skippedCount: number }> {
+  const db = getSqliteDb();
+  
+  // 1. Get all emails that are unsummarized
+  const oldEmails: any[] = await new Promise((resolve, reject) => {
+    db.all(
+      "SELECT message_id, subject, body_text FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated'",
+      [],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+
+  let processedCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+
+  const BACKFILL_BATCH_SIZE = 5;
+  for (let i = 0; i < oldEmails.length; i += BACKFILL_BATCH_SIZE) {
+    const batch = oldEmails.slice(i, i + BACKFILL_BATCH_SIZE);
+    
+    await Promise.all(batch.map(async (email) => {
+      const text = email.body_text || '';
+      
+      // Check length of body
+      if (!text || text.trim().length < 10) {
+        console.log(`[Backfill] Skipping/setting default for message_id ${email.message_id}: Body too short or empty`);
+        await dbUpdateEmailFields(email.message_id, {
+          summary: "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false
+        });
+        skippedCount++;
+        return;
+      }
+
+      try {
+        console.log(`Memproses summary untuk email: [${email.subject || '(No Subject)'}]`);
+        const aiResult = await processEmailWithNvidia(email.subject || "", text);
+        
+        if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
+          await dbUpdateEmailFields(email.message_id, {
+            summary: aiResult.summary,
+            action_required: !!aiResult.action_required,
+            urgency_level: aiResult.urgency_level || "Routine",
+            suggested_tag: aiResult.suggested_tag || "Informasi",
+            folder_parent: aiResult.suggested_folder_parent || "Operation",
+            folder_child: aiResult.suggested_folder_child || "General",
+            is_important: aiResult.urgency_level === "High"
+          });
+          processedCount++;
+        } else {
+          console.warn(`[Backfill] AI returned empty summary for message_id: ${email.message_id}. Fallback applied.`);
+          await dbUpdateEmailFields(email.message_id, {
+            summary: "Data historis tidak terbaca jelas",
+            action_required: false,
+            urgency_level: "Routine",
+            suggested_tag: "Informasi",
+            is_important: false
+          });
+          failedCount++;
+        }
+      } catch (err: any) {
+        console.error(`[Backfill] Error processing message_id ${email.message_id}:`, err.message || err);
+        // Fail gracefully and keep trying the rest
+        await dbUpdateEmailFields(email.message_id, {
+          summary: "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          is_important: false
+        });
+        failedCount++;
+      }
+    }));
+
+    // Add a tiny delay between batches to respect rate limit of NVIDIA API
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  return { processedCount, failedCount, skippedCount };
+}
+
+/**
+ * Asynchronous background historical backfill function.
+ * Immediately spawns background processor and returns.
+ */
+export function runHistoricalBackfill(): void {
+  console.log("[Backfill Background] Spawning runHistoricalBackfill asynchronous worker...");
+  _runHistoricalBackfillAsync().catch((err) => {
+    console.error("[Backfill Background] Fatal error in asynchronous worker:", err);
+  });
+}
+
+/**
+ * Internal async worker for historical backfill.
+ * Grabs unsummarized emails from Supabase (or SQLite as fallback) and processes them in chunked batches of 5.
+ * Uses 3-5 second delays to avoid rate limit (Error 429).
+ */
+async function _runHistoricalBackfillAsync(): Promise<void> {
+  const supabase = getSupabaseClient();
+  let oldEmails: any[] = [];
+  if (supabase) {
+    try {
+      console.log("[Backfill Background] Fetching unsummarized historical emails from Supabase...");
+      const { data, error } = await supabase
+        .from('emails')
+        .select('message_id, subject, body_text, attachments')
+        .or('summary.is.null,ai_status.eq.PENDING');
+      
+      if (!error && data) {
+        oldEmails = data;
+      } else if (error) {
+        console.error("[Backfill Background] Supabase query error:", error);
+      }
+    } catch (err) {
+      console.error("[Backfill Background] Exception fetching from Supabase:", err);
+    }
+  }
+  
+  // If Supabase fetch was empty or not active, try SQLite
+  if (oldEmails.length === 0) {
+    console.log("[Backfill Background] Fetching from SQLite database...");
+    const db = getSqliteDb();
+    oldEmails = await new Promise((resolve, reject) => {
+      db.all(
+        "SELECT message_id, subject, body_text, attachments FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR ai_status = 'PENDING'",
+        [],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
+
+  console.log(`[Backfill Background] Found ${oldEmails.length} unsummarized/pending historical emails to process.`);
+  if (oldEmails.length === 0) {
+    console.log("[Backfill Background] No historical data needs backfilling.");
+    return;
+  }
+
+  const BATCH_SIZE = 5;
+  for (let i = 0; i < oldEmails.length; i += BATCH_SIZE) {
+    const batch = oldEmails.slice(i, i + BATCH_SIZE);
+    console.log(`[Backfill Background] Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(oldEmails.length / BATCH_SIZE)} (Size: ${batch.length})`);
+    
+    await Promise.all(batch.map(async (email) => {
+      const text = email.body_text || '';
+      const messageId = email.message_id;
+
+      await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+      if (dbBroadcasterFn) {
+        dbBroadcasterFn('email_analyzing', { message_id: messageId, subject: email.subject, ai_status: 'ANALYZING' });
+      }
+
+      if (!text || text.trim().length < 10) {
+        await dbUpdateEmailFields(messageId, {
+          summary: "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false,
+          ai_status: 'COMPLETED'
+        });
+        return;
+      }
+
+      try {
+        const parsedAttachments = typeof email.attachments === 'string' 
+          ? JSON.parse(email.attachments || '[]') 
+          : (email.attachments || []);
+
+        const aiResult = await processEmailWithNvidia(email.subject || "", text, parsedAttachments);
+        if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
+          await dbUpdateEmailFields(messageId, {
+            summary: aiResult.summary,
+            action_required: !!aiResult.action_required,
+            urgency_level: aiResult.urgency_level || "Routine",
+            suggested_tag: aiResult.suggested_tag || "Informasi",
+            folder_parent: aiResult.suggested_folder_parent || "Operation",
+            folder_child: aiResult.suggested_folder_child || "General",
+            is_important: aiResult.urgency_level === 'High' || aiResult.urgency_level === 'Peringatan',
+            is_cit_order: !!aiResult.is_cit_order,
+            cit_type: aiResult.cit_type || "None",
+            suggested_bank: aiResult.suggested_bank || "",
+            extracted_notes: aiResult.extracted_notes || "",
+            currency: aiResult.currency || "IDR",
+            denomination_suggestion: aiResult.denomination_suggestion,
+            total_amount: aiResult.total_amount,
+            ai_status: 'COMPLETED'
+          });
+        } else {
+          throw new Error("Empty summary from AI");
+        }
+      } catch (err: any) {
+        console.error(`[Backfill Background] Error processing message_id ${messageId}:`, err.message || err);
+        const fallbackInfo = ruleBasedFallback(email.subject, text);
+        await dbUpdateEmailFields(messageId, {
+          summary: fallbackInfo.summary || "Data historis tidak terbaca jelas",
+          action_required: false,
+          urgency_level: "Routine",
+          suggested_tag: "Informasi",
+          folder_parent: "Operation",
+          folder_child: "General",
+          is_important: false,
+          ai_status: 'FAILED'
+        });
+      }
+
+      // Fetch final email data to broadcast to frontend
+      const finalEmail = await dbGetEmailByMessageId(messageId);
+      if (finalEmail) {
+        await applyDynamicFilters(finalEmail);
+        const postFilterEmail = await dbGetEmailByMessageId(messageId) || finalEmail;
+        if (dbBroadcasterFn) {
+          dbBroadcasterFn('email_updated', {
+            email: postFilterEmail,
+            message: `Email "${postFilterEmail.subject}" successfully updated by historical backfill and dynamic filters.`
+          });
+        }
+      }
+    }));
+
+    // Wait 3-5 seconds between batches to avoid 429 rate limits of NVIDIA API
+    if (i + BATCH_SIZE < oldEmails.length) {
+      const waitTime = 3000 + Math.random() * 2000;
+      console.log(`[Backfill Background] Waiting ${(waitTime / 1000).toFixed(1)} seconds before next batch...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+  console.log("[Backfill Background] Asynchronous historical backfill completed!");
+}
+
+/**
+ * Initializes postgres_changes realtime subscription for the emails table
+ */
+export function initSupabaseRealtime() {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    console.log('[Supabase Realtime] Supabase is not active/configured. Realtime channel not started.');
+    return;
+  }
+
+  console.log('[Supabase Realtime] Initializing event-driven Supabase real-time listener...');
+
+  const channel = supabase
+    .channel('public:emails')
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'emails' },
+      async (payload) => {
+        console.log('[Supabase Realtime] New email detected via postgres_changes INSERT event:', payload);
+        const newEmail = payload.new;
+        if (newEmail && newEmail.message_id) {
+          // Verify if it is still pending or if it has not been analyzed
+          const emailInDb = await dbGetEmailByMessageId(newEmail.message_id);
+          if (emailInDb && (emailInDb.ai_status === 'PENDING' || !emailInDb.ai_status)) {
+            console.log(`[Supabase Realtime] Triggering async AI analysis for message: ${newEmail.subject}`);
+            analyzeEmail(newEmail.message_id).catch(err => {
+              console.error(`[Supabase Realtime] Error analyzing email ${newEmail.message_id}:`, err);
+            });
+          } else {
+            console.log(`[Supabase Realtime] Email ${newEmail.message_id} is already in status: ${emailInDb?.ai_status || 'analyzed'}. Skipping duplicate trigger.`);
+          }
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log(`[Supabase Realtime] Subscription status: ${status}`);
+    });
+}
+
+/**
+ * Fetches all unsummarized emails from Supabase and SQLite.
+ */
+export async function dbGetUnsummarizedEmails(): Promise<any[]> {
+  const supabase = getSupabaseClient();
+  let emails: any[] = [];
+  
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .or('summary.is.null,summary.eq.,summary.eq.No summary generated,summary.eq.Data historis tidak terbaca jelas');
+      if (!error && data) {
+        emails = data.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+        }));
+      }
+    } catch (err) {
+      console.error('[Supabase Unsummarized Fetch Exception]:', err);
+    }
+  }
+
+  // Fallback/merge with SQLite
+  const db = getSqliteDb();
+  const localEmails: any[] = await new Promise((resolve, reject) => {
+    db.all(
+      "SELECT * FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR summary = 'Data historis tidak terbaca jelas'",
+      [],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+
+  // Merge them by message_id
+  const mergedMap = new Map<string, any>();
+  for (const e of emails) {
+    if (e.message_id) {
+      mergedMap.set(e.message_id, e);
+    }
+  }
+  for (const e of localEmails) {
+    if (e.message_id && !mergedMap.has(e.message_id)) {
+      mergedMap.set(e.message_id, {
+        ...e,
+        tags: typeof e.tags === 'string' ? JSON.parse(e.tags || '[]') : (e.tags || []),
+        attachments: typeof e.attachments === 'string' ? JSON.parse(e.attachments || '[]') : (e.attachments || [])
+      });
+    }
+  }
+
+  return Array.from(mergedMap.values());
+}
+
+/**
+ * Fetches all emails with ai_status = 'PENDING' from Supabase and SQLite.
+ */
+export async function dbGetAllPendingEmails(): Promise<Email[]> {
+  const supabase = getSupabaseClient();
+  let pendingEmails: Email[] = [];
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*')
+        .eq('ai_status', 'PENDING')
+        .order('date', { ascending: false });
+      
+      if (!error && data) {
+        pendingEmails = data.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+        }));
+      }
+    } catch (e) {
+      console.error('[dbGetAllPendingEmails] Error fetching from Supabase:', e);
+    }
+  }
+
+  // Fallback to SQLite
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    const rows: any[] = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' ORDER BY date DESC",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+
+    pendingEmails = rows.map((row: any) => ({
+      ...row,
+      tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+      attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+    }));
+  }
+
+  return pendingEmails;
+}
+
+export interface DailyReportData {
+  tanggal: string;
+  total: number;
+  cit_count: number;
+  atm_count: number;
+  data_cit: string;
+  data_atm: string;
+  urgent_tickets: Array<{
+    subject: string;
+    folder_parent: string;
+    summary: string;
+  }>;
+  top_banks: Array<{
+    bank_name: string;
+    count: number;
+  }>;
+}
+
+export async function dbGetDailyReportData(): Promise<DailyReportData> {
+  const supabase = getSupabaseClient();
+  let emails: Email[] = [];
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('*');
+      
+      if (!error && data) {
+        emails = data.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
+          is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
+          is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true'
+        }));
+      }
+    } catch (e) {
+      console.error('[dbGetDailyReportData] Supabase error:', e);
+    }
+  }
+
+  // Fallback to SQLite or if no data returned from Supabase
+  if (emails.length === 0) {
+    const db = getSqliteDb();
+    emails = await new Promise<Email[]>((resolve) => {
+      db.all('SELECT * FROM emails', [], (err, rows) => {
+        if (err || !rows) return resolve([]);
+        const mapped = rows.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
+          is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
+          is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true'
+        }));
+        resolve(mapped);
+      });
+    });
+  }
+
+  // Format Date in Indonesian locale (locale: id-ID)
+  const todayStr = new Date().toLocaleDateString('id-ID', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+
+  // Calculate total, cit_count, atm_count
+  const total = emails.length;
+  const cit_count = emails.filter(e => e.cit_type === 'CIT' || e.suggested_tag === 'CIT').length;
+  const atm_count = emails.filter(e => e.cit_type === 'ATM' || e.suggested_tag === 'ATM').length;
+
+  // Detailed CIT & ATM banks breakdown
+  const citBanks: { [key: string]: number } = {};
+  const atmBanks: { [key: string]: number } = {};
+
+  emails.forEach(e => {
+    const isCit = e.cit_type === 'CIT' || e.suggested_tag === 'CIT';
+    const isAtm = e.cit_type === 'ATM' || e.suggested_tag === 'ATM';
+    let bank = (e.folder_parent || '').toUpperCase().trim();
+    // Normalize bank (e.g. remove leading "BANK ")
+    if (bank.startsWith('BANK ')) {
+      bank = bank.substring(5).trim();
+    }
+    
+    if (bank) {
+      if (isCit) citBanks[bank] = (citBanks[bank] || 0) + 1;
+      if (isAtm) atmBanks[bank] = (atmBanks[bank] || 0) + 1;
+    }
+  });
+
+  const data_cit = Object.entries(citBanks).map(([b, c]) => `${b} (${c})`).join(', ') || 'Tidak ada tiket CIT';
+  const data_atm = Object.entries(atmBanks).map(([b, c]) => `${b} (${c})`).join(', ') || 'Tidak ada tiket ATM';
+
+  // Urgent tickets
+  // 2. TIKET URGENT (Action Required):
+  // - Query tiket dengan urgency_level = 'Urgent' ATAU action_required = true.
+  // - Ambil 5 tiket teratas dengan field: subject, folder_parent, summary.
+  const urgentTickets = emails
+    .filter(e => e.urgency_level === 'Urgent' || e.action_required === true)
+    // Order by date desc or id desc to get latest
+    .sort((a, b) => {
+      const dateA = a.date ? new Date(a.date).getTime() : 0;
+      const dateB = b.date ? new Date(b.date).getTime() : 0;
+      return (dateB - dateA) || ((b.id || 0) - (a.id || 0));
+    })
+    .slice(0, 5)
+    .map(e => ({
+      subject: e.subject || 'Tanpa Subjek',
+      folder_parent: e.folder_parent || 'Lainnya',
+      summary: e.summary || 'Perlu tindak lanjut segera'
+    }));
+
+  // Group top 5 bank distribution using SQL UPPER(TRIM(folder_parent)) concept
+  const bankDistribution: { [key: string]: number } = {};
+  emails.forEach(e => {
+    let rawBank = e.folder_parent || '';
+    // Apply UPPER(TRIM(folder_parent))
+    let normBank = rawBank.toUpperCase().trim();
+    
+    // Normalize "BANK BCA" or "BCA" to "BCA" to group them as requested
+    if (normBank.startsWith('BANK ')) {
+      normBank = normBank.substring(5).trim();
+    }
+    
+    if (normBank) {
+      bankDistribution[normBank] = (bankDistribution[normBank] || 0) + 1;
+    }
+  });
+
+  const top_banks = Object.entries(bankDistribution)
+    .map(([bank_name, count]) => ({ bank_name, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  return {
+    tanggal: todayStr,
+    total,
+    cit_count,
+    atm_count,
+    data_cit,
+    data_atm,
+    urgent_tickets: urgentTickets,
+    top_banks
+  };
+}
+
+
