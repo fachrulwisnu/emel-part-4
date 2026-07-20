@@ -2551,13 +2551,33 @@ export async function dbSaveEmailAnalysis(
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
+      // 1. Sanitasi Tags (text[])
+      let formattedTags = analysis.tags || [];
+      if (typeof formattedTags === 'string') {
+        try {
+          formattedTags = JSON.parse(formattedTags);
+        } catch (e) {
+          formattedTags = [String(formattedTags).replace(/[\[\]"]/g, '')]; 
+        }
+      }
+
+      // 2. Sanitasi Summary Attachments (jsonb)
+      let formattedAttachments = analysis.summary_attachments || [];
+      if (typeof formattedAttachments === 'string') {
+        try {
+          formattedAttachments = JSON.parse(formattedAttachments);
+        } catch (e) {
+          formattedAttachments = [];
+        }
+      }
+
       const payload = {
         message_id: messageId,
         folder: analysis.folder,
         sub_folder: analysis.sub_folder,
-        tags: tagsStr,
+        tags: Array.isArray(formattedTags) ? formattedTags : [],
         summary_email: analysis.summary_email,
-        summary_attachments: attachmentsStr,
+        summary_attachments: formattedAttachments,
         created_at: createdAt
       };
       const { error } = await supabase
