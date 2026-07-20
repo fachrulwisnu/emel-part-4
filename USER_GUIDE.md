@@ -44,6 +44,45 @@ Ketika Anda mengklik salah satu email di daftar inbox, panel kanan akan menampil
 
 ---
 
+### 🔮 2.3. Dasbor Intelijen Email AI (AI Email Intelligence Dashboard)
+Guna meningkatkan fungsionalitas pengarsipan dan analisis dokumen, Anda kini dibekali halaman khusus intelijen email yang dipisahkan dari alur inbox harian:
+
+1. **Cara Mengakses**:
+   * Klik ikon berkilau **(Sparkles Icon / "Email Intelligence")** pada bilah navigasi menu utama sebelah kiri.
+2. **Navigasi Pohon Folder (Folder Tree Accordion)**:
+   * Bilah kiri menyajikan seluruh email yang dikelompokkan secara terstruktur.
+   * **Level 1 (Parent)**: Menunjukkan Bank Utama atau Kategori Operasional (misal: *Bank Mandiri*, *Bank Maybank*, *Operation*, *Uncategorized*).
+   * **Level 2 (Child)**: Menunjukkan sub-klasifikasi operasional seperti *Collection*, *ATM*, *CIT*, atau *General*.
+   * Di setiap level folder, terdapat **Badge Counter** berwarna kontras yang memperlihatkan secara akurat berapa jumlah tiket email yang tersarang di dalamnya. Klik nama folder untuk membentangkan (*expand*) atau melipat kembali (*collapse*).
+3. **Pemicu On-Demand (Analyze Intelligence)**:
+   * Pilih email mana pun dari struktur navigasi pohon folder. Klik tombol **"Analyze Intelligence"** di sudut kanan panel detail.
+   * AI akan memproses ulang email serta seluruh berkas lampiran pendukungnya dengan instruksi ekstraksi yang sangat tinggi.
+4. **Analisis Ephemeral Berkas Lampiran (Attachment Summary)**:
+   * Menghindari penumpukan data (*storage bloat*) pada server lokal, lampiran diproses secara ephemeral oleh AI. Hasilnya adalah teks deskripsi operasional yang informatif mengenai isi berkas tersebut tanpa perlu menyimpan file mentahnya di penyimpanan terdistribusi yang berat.
+5. **Secure Real-time Streaming & Download**:
+   * Jika Anda memerlukan berkas lampiran aslinya, cukup tekan tombol **"Download"** pada baris lampiran yang diinginkan.
+   * Sistem akan mengonversi biner terkompresi Base64 dari database, membungkusnya ke dalam struktur stream biner real-time, lalu mengalirkannya langsung ke peramban web PIC secara aman dan cepat.
+
+#### 📊 Diagram Alur Pemrosesan Ephemeral Attachment & Streaming
+```
+ [User Dashboard] ---> Klik "Analyze Intelligence" ---> Ambil Attachment Base64 dari DB
+                                                                  |
+                                                                  v
+ [AI Gateway] <------- Terjemahkan secara Ephemeral <------- Bungkus File Sementara
+      |
+      +---> [Core Parsing AI] ------> Ekstrak Konten Dokumen (PDF/DOC)
+      |
+      +---> [Multimodal Core AI] ---> Analisis Gambar/Visual Lampiran (JPG/PNG)
+                                                                  |
+                                                                  v
+ [Analisis Terintegrasi] ----------> Simpan ke Tabel `email_analysis` (Metadata Deskripsi)
+                                                                  |
+                                                                  v
+ [Download Trigger] ---------> Mengalirkan Stream Biner Aman langsung ke Browser PIC
+```
+
+---
+
 ## 💵 3. Manajemen Pecahan & Denominasi Dinamis (CIT / ATM Order)
 
 Saat Anda membuat atau menyunting rincian pesanan **Cash In Transit (CIT)** atau pengiriman **ATM** melalui modal disposisi, Anda akan disajikan dengan bagian **Pecahan & Denominasi Dynamic**:

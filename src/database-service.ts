@@ -176,6 +176,20 @@ export async function initDatabaseService(): Promise<void> {
         )
       `);
 
+      // Create email_analysis table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS email_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT UNIQUE,
+          folder TEXT,
+          sub_folder TEXT,
+          tags TEXT,
+          summary_email TEXT,
+          summary_attachments TEXT,
+          created_at TEXT
+        )
+      `, () => {});
+
       // Ensure api_workflow columns exist in SQLite schema
       db.run('ALTER TABLE emails ADD COLUMN api_workflow_status TEXT', () => {});
       db.run('ALTER TABLE emails ADD COLUMN api_workflow_log TEXT', () => {});
@@ -723,7 +737,10 @@ export async function processEmailAI(emailText: string): Promise<any> {
 export async function processEmailWithNvidia(
   emailSubject: string, 
   emailBody: string,
-  attachments?: any[]
+  attachments?: any[],
+  messageId?: string,
+  sender?: string,
+  date?: string
 ): Promise<{
   summary: string;
   action_required: boolean;
@@ -739,6 +756,68 @@ export async function processEmailWithNvidia(
   denomination_suggestion?: number;
   total_amount?: number;
  }> {
+  // If messageId is provided, run the high intelligence process and save to emails/email_analysis
+  if (messageId) {
+    try {
+      const { processEmailIntelligence } = await import('./services/aiProcessingService');
+      console.log(`[processEmailWithNvidia] Running processEmailIntelligence for message_id: ${messageId}`);
+      
+      const intel = await processEmailIntelligence({
+        message_id: messageId,
+        subject: emailSubject,
+        sender: sender || "",
+        date: date || "",
+        body_text: emailBody,
+        attachments
+      });
+
+      // Save intelligence to table email_analysis
+      await dbSaveEmailAnalysis(messageId, intel).catch(err => {
+        console.error(`[processEmailWithNvidia] Failed to save email analysis:`, err);
+      });
+
+      // Map intelligence tags to structural fields
+      const is_cit_order = intel.tags.some(t => {
+        const ut = t.toUpperCase();
+        return ut.includes('CIT') || ut.includes('ATM') || ut.includes('ORDER');
+      });
+      const suggested_tag = intel.tags.some(t => t.toUpperCase().includes('ATM')) 
+        ? 'ATM' 
+        : (intel.tags.some(t => t.toUpperCase().includes('CIT')) ? 'CIT' : 'Lainnya');
+      const cit_type = suggested_tag === 'ATM' ? 'ATM' : (suggested_tag === 'CIT' ? 'CIT' : 'None');
+      
+      const urgency_level = intel.tags.some(t => {
+        const ut = t.toUpperCase();
+        return ut.includes('URGENT') || ut.includes('HIGH') || ut.includes('CRITICAL');
+      }) ? 'High' : 'Routine';
+
+      const action_required = intel.tags.some(t => {
+        const ut = t.toUpperCase();
+        return ut.includes('ACTION') || ut.includes('NEED') || ut.includes('PERLU');
+      });
+
+      const extracted_notes = intel.summary_attachments && intel.summary_attachments.length > 0
+        ? 'Summary Attachments:\n' + intel.summary_attachments.map(sa => `- ${sa.filename}: ${sa.desc}`).join('\n')
+        : '';
+
+      return {
+        summary: intel.summary_email || emailSubject,
+        action_required,
+        urgency_level,
+        suggested_tag,
+        suggested_folder_parent: intel.folder || 'Operation',
+        suggested_folder_child: intel.sub_folder || 'General',
+        is_cit_order,
+        cit_type,
+        suggested_bank: intel.folder || '',
+        extracted_notes,
+        currency: 'IDR'
+      };
+    } catch (intelErr) {
+      console.error(`[processEmailWithNvidia] processEmailIntelligence error, falling back to legacy processEmailAI:`, intelErr);
+    }
+  }
+
   const attachmentListStr = Array.isArray(attachments) && attachments.length > 0
     ? attachments.map(att => `${att.filename || 'File'} (${att.contentType || 'unknown'}, ${att.size || 0} bytes)`).join('\n')
     : 'None';
@@ -922,7 +1001,14 @@ export async function analyzeEmail(messageId: string): Promise<void> {
     let total_amount: number | undefined = undefined;
 
     try {
-      const aiResult = await processEmailWithNvidia(email.subject || "", email.body_text || "", email.attachments);
+      const aiResult = await processEmailWithNvidia(
+        email.subject || "", 
+        email.body_text || "", 
+        email.attachments,
+        email.message_id,
+        email.sender,
+        email.date
+      );
       
       summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
       action_required = !!aiResult.action_required;
@@ -1823,7 +1909,17 @@ export async function dbRunHistoricalBackfill(): Promise<{ processedCount: numbe
 
       try {
         console.log(`Memproses summary untuk email: [${email.subject || '(No Subject)'}]`);
-        const aiResult = await processEmailWithNvidia(email.subject || "", text);
+        const parsedAttachments = typeof email.attachments === 'string' 
+          ? JSON.parse(email.attachments || '[]') 
+          : (email.attachments || []);
+        const aiResult = await processEmailWithNvidia(
+          email.subject || "", 
+          text,
+          parsedAttachments,
+          email.message_id,
+          email.sender,
+          email.date
+        );
         
         if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
           await dbUpdateEmailFields(email.message_id, {
@@ -1960,7 +2056,14 @@ async function _runHistoricalBackfillAsync(): Promise<void> {
           ? JSON.parse(email.attachments || '[]') 
           : (email.attachments || []);
 
-        const aiResult = await processEmailWithNvidia(email.subject || "", text, parsedAttachments);
+        const aiResult = await processEmailWithNvidia(
+          email.subject || "", 
+          text, 
+          parsedAttachments,
+          email.message_id,
+          email.sender,
+          email.date
+        );
         if (aiResult && aiResult.summary && aiResult.summary.trim() !== "") {
           await dbUpdateEmailFields(messageId, {
             summary: aiResult.summary,
@@ -2389,6 +2492,191 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
     pending_sync,
     ai_conclusion
   };
+}
+
+export async function dbSaveEmailAnalysis(
+  messageId: string, 
+  analysis: { 
+    folder: string; 
+    sub_folder: string; 
+    tags: string[]; 
+    summary_email: string; 
+    summary_attachments: any[] 
+  }
+): Promise<void> {
+  const db = getSqliteDb();
+  const tagsStr = JSON.stringify(analysis.tags || []);
+  const attachmentsStr = JSON.stringify(analysis.summary_attachments || []);
+  const createdAt = new Date().toISOString();
+
+  // 1. Save to SQLite
+  await new Promise<void>((resolve, reject) => {
+    db.run(`
+      INSERT INTO email_analysis (message_id, folder, sub_folder, tags, summary_email, summary_attachments, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        folder = excluded.folder,
+        sub_folder = excluded.sub_folder,
+        tags = excluded.tags,
+        summary_email = excluded.summary_email,
+        summary_attachments = excluded.summary_attachments,
+        created_at = excluded.created_at
+    `, [
+      messageId,
+      analysis.folder,
+      analysis.sub_folder,
+      tagsStr,
+      analysis.summary_email,
+      attachmentsStr,
+      createdAt
+    ], (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+
+  // 2. Sync to emails table to keep folders/tags aligned
+  await dbUpdateEmailFields(messageId, {
+    folder_parent: analysis.folder,
+    folder_child: analysis.sub_folder,
+    tags: analysis.tags,
+    summary: analysis.summary_email,
+    is_summarized: true,
+    ai_status: 'COMPLETED'
+  }).catch(err => {
+    console.error(`[Database Service] Failed to sync fields to emails table:`, err);
+  });
+
+  // 3. Save to Supabase (if active)
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const payload = {
+        message_id: messageId,
+        folder: analysis.folder,
+        sub_folder: analysis.sub_folder,
+        tags: tagsStr,
+        summary_email: analysis.summary_email,
+        summary_attachments: attachmentsStr,
+        created_at: createdAt
+      };
+      const { error } = await supabase
+        .from('email_analysis')
+        .upsert(payload, { onConflict: 'message_id' });
+      
+      if (error) {
+        console.warn(`[Database Service] Supabase email_analysis upsert error:`, error);
+      }
+    } catch (err) {
+      console.error(`[Database Service] Supabase email_analysis sync failed:`, err);
+    }
+  }
+}
+
+export async function dbGetEmailAnalysis(messageId: string): Promise<any | null> {
+  const db = getSqliteDb();
+
+  const sqliteRow = await new Promise<any>((resolve) => {
+    db.get('SELECT * FROM email_analysis WHERE message_id = ?', [messageId], (err, row) => {
+      if (err || !row) resolve(null);
+      else resolve(row);
+    });
+  });
+
+  if (sqliteRow) {
+    return {
+      message_id: sqliteRow.message_id,
+      folder: sqliteRow.folder,
+      sub_folder: sqliteRow.sub_folder,
+      tags: typeof sqliteRow.tags === 'string' ? JSON.parse(sqliteRow.tags || '[]') : (sqliteRow.tags || []),
+      summary_email: sqliteRow.summary_email,
+      summary_attachments: typeof sqliteRow.summary_attachments === 'string' ? JSON.parse(sqliteRow.summary_attachments || '[]') : (sqliteRow.summary_attachments || [])
+    };
+  }
+
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('email_analysis')
+        .select('*')
+        .eq('message_id', messageId)
+        .single();
+      
+      if (!error && data) {
+        return {
+          message_id: data.message_id,
+          folder: data.folder,
+          sub_folder: data.sub_folder,
+          tags: typeof data.tags === 'string' ? JSON.parse(data.tags || '[]') : (data.tags || []),
+          summary_email: data.summary_email,
+          summary_attachments: typeof data.summary_attachments === 'string' ? JSON.parse(data.summary_attachments || '[]') : (data.summary_attachments || [])
+        };
+      }
+    } catch (err) {
+      console.error(`[Database Service] Supabase email_analysis fetch failed:`, err);
+    }
+  }
+
+  return null;
+}
+
+export async function dbGetAllEmailAnalysis(): Promise<any[]> {
+  const db = getSqliteDb();
+  return new Promise<any[]>((resolve) => {
+    db.all('SELECT * FROM email_analysis', (err, rows: any[]) => {
+      if (err || !rows) {
+        resolve([]);
+      } else {
+        const mapped = rows.map(row => ({
+          message_id: row.message_id,
+          folder: row.folder,
+          sub_folder: row.sub_folder,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          summary_email: row.summary_email,
+          summary_attachments: typeof row.summary_attachments === 'string' ? JSON.parse(row.summary_attachments || '[]') : (row.summary_attachments || [])
+        }));
+        resolve(mapped);
+      }
+    });
+  });
+}
+
+export async function dbGetGroupedEmails(): Promise<any> {
+  const emails = await dbGetAllEmails();
+  const analysisList = await dbGetAllEmailAnalysis();
+
+  const analysisMap = new Map<string, any>();
+  for (const analysis of analysisList) {
+    analysisMap.set(analysis.message_id, analysis);
+  }
+
+  const grouped: any = {};
+
+  for (const email of emails) {
+    const analysis = analysisMap.get(email.message_id);
+    
+    const folder = (analysis?.folder || email.folder_parent || email.suggested_folder_parent || 'Uncategorized').trim();
+    const sub_folder = (analysis?.sub_folder || email.folder_child || email.suggested_folder_child || 'General').trim();
+
+    const enrichedEmail = {
+      ...email,
+      folder_parent: folder,
+      folder_child: sub_folder,
+      summary_email: analysis?.summary_email || email.summary || 'No summary generated',
+      summary_attachments: analysis?.summary_attachments || []
+    };
+
+    if (!grouped[folder]) {
+      grouped[folder] = {};
+    }
+    if (!grouped[folder][sub_folder]) {
+      grouped[folder][sub_folder] = [];
+    }
+    grouped[folder][sub_folder].push(enrichedEmail);
+  }
+
+  return grouped;
 }
 
 

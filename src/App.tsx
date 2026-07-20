@@ -45,6 +45,7 @@ import HtmlEmailViewer from './components/HtmlEmailViewer';
 import PlainTextTree from './components/PlainTextTree';
 import AttachmentGallery from './components/AttachmentGallery';
 import WhatsAppQrModal from './components/WhatsAppQrModal';
+import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 
 interface Email {
   id?: number;
@@ -134,7 +135,7 @@ const getTagBadgeStyle = (str: string) => {
 
 export default function App() {
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard'>('inbox');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence'>('inbox');
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
@@ -1500,6 +1501,22 @@ export default function App() {
               Workflow Settings
             </span>
           </button>
+
+          {/* Email Intelligence button */}
+          <button 
+            onClick={() => setCurrentMenu('intelligence')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'intelligence' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Email Intelligence"
+          >
+            <Sparkles className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Email Intelligence
+            </span>
+          </button>
         </div>
 
         <div className="flex flex-col items-center space-y-4 w-full text-slate-500 font-mono text-[9px]">
@@ -1513,8 +1530,11 @@ export default function App() {
         {/* TOP SYSTEM & ACTIONS BAR */}
         <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0" id="workspace_header">
           <div className="flex items-center space-x-3">
-            <h1 className="text-base font-bold text-slate-800 tracking-tight">
-              {currentMenu === 'inbox' ? 'Workflow Email Ticketing System' : 'Automation Rule & Mail Config'}
+            <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans">
+              {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
+              {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
+              {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
+              {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
             </h1>
             <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-600 rounded-full font-mono font-medium flex items-center gap-1.5 border border-slate-200">
               <span className={`h-2 w-2 rounded-full ${appSettings.supabaseUrl ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
@@ -3266,6 +3286,11 @@ export default function App() {
             </section>
 
           </div>
+        )}
+
+        {/* EMAIL INTELLIGENCE AI CATALOG SECTION */}
+        {currentMenu === 'intelligence' && (
+          <EmailIntelligenceSection onAddToast={addToast} />
         )}
 
       </main>

@@ -93,10 +93,80 @@ Untuk mencegah kegagalan akibat batas **40 RPM (Requests Per Minute)** pada NVID
 2. **Strict Time Throttling**: Ditambahkan jeda waktu aman (**15 hingga 20 detik**) antar batch pemrosesan untuk memberikan waktu regenerasi rate limit NVIDIA NIM secara berkala.
 3. **Exponential Backoff**: Jaringan interseptor otomatis mendeteksi HTTP `429 Too Many Requests`. Saat limit tercapai, sistem akan otomatis melakukan jeda tunggu aman selama **30 detik** sebelum mengulangi permintaan secara cerdas.
 
+### 🔮 Alur Analisis Ephemeral Attachment & Streaming File
+Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud melalui pemrosesan ephemeral serta menyajikannya kembali secara aman dan real-time:
+
+```
+                     +------------------------------------+
+                     |    User Memilih Tiket Email        |
+                     +------------------------------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     | Klik Tombol "Analyze Intelligence" |
+                     +------------------------------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |  Sistem Mengambil Base64 Lampiran  |
+                     |  dari SQLite / Supabase DB         |
+                     +------------------------------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |  Mengubah ke Format Ephemeral File |
+                     |  (Tanpa Disimpan di Storage Cloud) |
+                     +------------------------------------+
+                                       |
+                     +-----------------+-----------------+
+                     |                                   |
+                     v                                   v
+       +----------------------------+      +----------------------------+
+       |   Ekstraksi Teks (PDF/Doc) |      |   Analisis Visual Lampiran |
+       |   oleh Core AI Parsing     |      |   oleh Multimodal Core AI  |
+       +----------------------------+      +----------------------------+
+                     |                                   |
+                     +-----------------+-----------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |   Menggabungkan Ringkasan Berkas   |
+                     |   menjadi Deskripsi Operasional     |
+                     +------------------------------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |   Menyimpan Metadata Analisis ke   |
+                     |   Tabel `email_analysis` (SQLite)  |
+                     +------------------------------------+
+                                       |
+                     +-----------------+-----------------+
+                     v (Bila User Meminta File Asli)     v (Bila User Membaca Summary)
+       +----------------------------+      +----------------------------+
+       | Klik "Download" Attachment |      | Teks Deskripsi Langsung    |
+       +----------------------------+      | Ditampilkan di Dashboard   |
+                     |                     +----------------------------+
+                     v
+       +----------------------------+
+       | Stream Real-time dari DB   |
+       | via Endpoint API `/api/...`|
+       +----------------------------+
+                     |
+                     v
+       +----------------------------+
+       | File Terunduh Aman & Cepat |
+       +----------------------------+
+```
+
 ---
 
 ## ✨ 3. Fitur Unggulan Terbaru
 
+* **🔮 Dasbor Intelijen Email AI (AI Email Intelligence Dashboard)**:
+  * Antarmuka visual terpisah yang diakses via menu **Sparkles Icon** untuk analisis mendalam tanpa mengotori ruang kerja inbox harian.
+  * **Tree Navigation Folder Accordion**: Mengelompokkan seluruh email secara otomatis dan hierarkis ke dalam folder induk (*Folder Parent* seperti nama bank/kategori) dan folder anak (*Folder Child* seperti sub-kategori operasional) lengkap dengan indikator jumlah (badge counter) di tiap tingkatan folder.
+  * **Ephemeral Attachment Analysis**: Model kecerdasan buatan NVIDIA / Gemini memproses file lampiran secara asinkron dan menghasilkan deskripsi teks ringkas tanpa harus menyimpan file biner di penyimpanan cloud permanen, meminimalkan biaya penyimpanan (*storage bloat*) dan risiko kebocoran data.
+  * **Real-time Secure File Streaming Engine**: Menyediakan endpoint `/api/emails/:message_id/attachment/:filename` untuk mengekstrak data lampiran Base64 secara instan langsung dari database SQLite/Supabase dan mengalirkannya kembali (*stream*) ke peramban pengguna lengkap dengan metadata header biner (`Content-Type`, `Content-Disposition`, `Content-Length`) sehingga file dapat diunduh secara real-time dan aman.
 * **💵 Pecahan & Denominasi Dynamic (IDR/USD)**:
   * Antarmuka entri pecahan kini berubah secara dinamis berdasarkan state mata uang (`mataUang`) aktif yang dipilih.
   * Opsi pecahan diperbarui secara dinamis:

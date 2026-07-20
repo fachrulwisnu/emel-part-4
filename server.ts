@@ -21,7 +21,9 @@ import {
   dbGetEmailByMessageId,
   dbGetAllPendingEmails,
   analyzeEmail,
-  dbGetDailyReportData
+  dbGetDailyReportData,
+  dbGetGroupedEmails,
+  dbGetEmailAnalysis
 } from "./src/database-service";
 import { initWhatsApp, sendMessage, getWhatsAppStatus, forceInitWhatsApp } from "./src/services/waService";
 import { 
@@ -300,6 +302,48 @@ async function startServer() {
     }
   });
 
+  // Get grouped emails based on AI-categorized folder -> sub_folder -> list of emails
+  app.get("/api/emails/grouped", async (req, res) => {
+    try {
+      const grouped = await dbGetGroupedEmails();
+      res.json({ success: true, grouped });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Download/Stream attachment real-time directly from database payload
+  app.get("/api/emails/:message_id/attachment/:filename", async (req, res) => {
+    try {
+      const { message_id, filename } = req.params;
+      const email = await dbGetEmailByMessageId(message_id);
+      if (!email) {
+        return res.status(404).json({ success: false, message: "Email not found" });
+      }
+
+      const attachments = typeof email.attachments === 'string'
+        ? JSON.parse(email.attachments || '[]')
+        : (email.attachments || []);
+
+      const att = attachments.find((a: any) => a.filename === filename);
+      if (!att) {
+        return res.status(404).json({ success: false, message: `Attachment "${filename}" not found` });
+      }
+
+      if (!att.fileData) {
+        return res.status(400).json({ success: false, message: "Attachment base64 data is not available" });
+      }
+
+      const buffer = Buffer.from(att.fileData, 'base64');
+      res.setHeader('Content-Type', att.contentType || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+      res.setHeader('Content-Length', buffer.length);
+      res.send(buffer);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Clear emails database cache (SQLite & Supabase)
   app.post("/api/clear-emails", async (req, res) => {
     try {
@@ -319,6 +363,21 @@ async function startServer() {
       }
       await dbMarkEmailAsRead(message_id, is_read);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Run high-intelligence AI processing on a single email on-demand
+  app.post("/api/emails/analyze", async (req, res) => {
+    try {
+      const { message_id } = req.body;
+      if (!message_id) {
+        return res.status(400).json({ success: false, message: "Missing message_id" });
+      }
+      await analyzeEmail(message_id);
+      const analysis = await dbGetEmailAnalysis(message_id);
+      res.json({ success: true, analysis });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
