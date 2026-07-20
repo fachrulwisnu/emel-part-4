@@ -2175,43 +2175,58 @@ export async function dbUpdateEmailFields(
     });
   }
   
-  // Supabase update
-  const supabase = getSupabaseClient();
-  if (supabase) {
-    try {
-      const updatePayload: any = {};
-      if (fields.folder_parent !== undefined) updatePayload.folder_parent = fields.folder_parent;
-      if (fields.folder_child !== undefined) updatePayload.folder_child = fields.folder_child;
-      if (fields.tags !== undefined) updatePayload.tags = fields.tags;
-      if (fields.is_important !== undefined) updatePayload.is_important = fields.is_important;
-      if (fields.urgency_level !== undefined) updatePayload.urgency_level = fields.urgency_level;
-      if (fields.suggested_tag !== undefined) {
-        updatePayload.suggested_tag = fields.suggested_tag;
-        updatePayload.tag_type = fields.suggested_tag;
+  // 2. Remote update (MongoDB or Supabase)
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+
+  const updatePayload: any = {};
+  if (fields.folder_parent !== undefined) updatePayload.folder_parent = fields.folder_parent;
+  if (fields.folder_child !== undefined) updatePayload.folder_child = fields.folder_child;
+  if (fields.tags !== undefined) updatePayload.tags = fields.tags;
+  if (fields.is_important !== undefined) updatePayload.is_important = fields.is_important;
+  if (fields.urgency_level !== undefined) updatePayload.urgency_level = fields.urgency_level;
+  if (fields.suggested_tag !== undefined) {
+    updatePayload.suggested_tag = fields.suggested_tag;
+    updatePayload.tag_type = fields.suggested_tag;
+  }
+  if (fields.summary !== undefined) updatePayload.summary = fields.summary;
+  if (fields.action_required !== undefined) updatePayload.action_required = fields.action_required;
+  if (fields.is_cit_order !== undefined) updatePayload.is_cit_order = fields.is_cit_order;
+  if (fields.cit_type !== undefined) updatePayload.cit_type = fields.cit_type;
+  if (fields.suggested_bank !== undefined) updatePayload.suggested_bank = fields.suggested_bank;
+  if (fields.extracted_notes !== undefined) updatePayload.extracted_notes = fields.extracted_notes;
+  if (fields.ai_status !== undefined) updatePayload.ai_status = fields.ai_status;
+  if (fields.currency !== undefined) updatePayload.currency = fields.currency;
+  if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
+  if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
+  if (fields.is_summarized !== undefined) updatePayload.is_summarized = fields.is_summarized;
+
+  if (driver === 'mongodb') {
+    if (Object.keys(updatePayload).length > 0) {
+      try {
+        const { dbUpdateEmailFields: mongoUpdateEmailFields } = await import('./services/dbManager');
+        await mongoUpdateEmailFields(message_id, updatePayload);
+      } catch (err) {
+        console.error('[MongoDB Update Email Fields Exception]:', err);
       }
-      if (fields.summary !== undefined) updatePayload.summary = fields.summary;
-      if (fields.action_required !== undefined) updatePayload.action_required = fields.action_required;
-      if (fields.is_cit_order !== undefined) updatePayload.is_cit_order = fields.is_cit_order;
-      if (fields.cit_type !== undefined) updatePayload.cit_type = fields.cit_type;
-      if (fields.suggested_bank !== undefined) updatePayload.suggested_bank = fields.suggested_bank;
-      if (fields.extracted_notes !== undefined) updatePayload.extracted_notes = fields.extracted_notes;
-      if (fields.ai_status !== undefined) updatePayload.ai_status = fields.ai_status;
-      if (fields.currency !== undefined) updatePayload.currency = fields.currency;
-      if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
-      if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
-      if (fields.is_summarized !== undefined) updatePayload.is_summarized = fields.is_summarized;
-      
-      if (Object.keys(updatePayload).length > 0) {
-        const { error } = await supabase
-          .from('emails')
-          .update(updatePayload)
-          .eq('message_id', message_id);
-        if (error) {
-          console.error('[Supabase Update Email Error]:', error);
+    }
+  } else {
+    // Supabase update
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        if (Object.keys(updatePayload).length > 0) {
+          const { error } = await supabase
+            .from('emails')
+            .update(updatePayload)
+            .eq('message_id', message_id);
+          if (error) {
+            console.error('[Supabase Update Email Error]:', error);
+          }
         }
+      } catch (err) {
+        console.error('[Supabase Update Email Exception]:', err);
       }
-    } catch (err) {
-      console.error('[Supabase Update Email Exception]:', err);
     }
   }
 }
