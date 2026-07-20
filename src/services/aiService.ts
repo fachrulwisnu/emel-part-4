@@ -1,21 +1,15 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import { executeWithBackoff } from './aiProcessingService';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Load environment variables
 dotenv.config();
 
-// Hardcoded API Key (Sesuai instruksi)
-const GEMINI_API_KEY = "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA"; 
-const ai = new GoogleGenAI({
-  apiKey: GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
+// Wajib menggunakan Environment Variable untuk keamanan.
+// Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''; 
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 export async function generateWithGemini(prompt: string | any[]): Promise<string> {
   let textPrompt = "";
@@ -25,14 +19,11 @@ export async function generateWithGemini(prompt: string | any[]): Promise<string
     textPrompt = prompt.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
   }
 
-  const result = await ai.models.generateContent({
-    model: "gemini-3.5-flash",
-    contents: textPrompt,
-  });
-
-  const responseText = result.text;
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const result = await model.generateContent(textPrompt);
+  const responseText = result.response.text();
   if (!responseText) {
-    throw new Error("Empty response from Gemini 3.5 Flash");
+    throw new Error("Empty response from Gemini 1.5 Flash");
   }
   return responseText;
 }
@@ -51,7 +42,7 @@ const MODELS: ModelConfig[] = [
   },
   {
     name: 'Gemini',
-    id: 'gemini-3.5-flash',
+    id: 'gemini-1.5-flash',
     apiKey: GEMINI_API_KEY
   },
   {

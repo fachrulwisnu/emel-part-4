@@ -4,7 +4,7 @@ import axios from 'axios';
 import { readFile } from 'node:fs/promises';
 import OpenAI from 'openai';
 import sharp from 'sharp';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getAiCompletion, generateWithGemini } from './aiService';
 
 /**
@@ -19,15 +19,9 @@ export const AI_CONFIG = {
   retryDelaySeconds: 30       // Detik tunggu jika kena limit 429
 };
 
-// Google GenAI SDK Client Initialization (Sesuai panduan skill)
-const aiClient = new GoogleGenAI({
-  apiKey: "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
+// Wajib menggunakan Environment Variable untuk keamanan.
+// Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 /**
  * Automatically compress images to keep the payload size under 180KB for API calls.
@@ -95,30 +89,24 @@ async function callCosmos3(imageB64: string | null, promptText: string): Promise
 }
 
 /**
- * Gemini 3.5 Flash call
+ * Gemini 1.5 Flash call
  */
 async function callGemini(imageB64: string | null, promptText: string): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
   if (imageB64) {
-    const imagePart = {
-      inlineData: {
-        mimeType: "image/jpeg",
-        data: imageB64,
-      },
-    };
-    const textPart = {
-      text: promptText,
-    };
-    const response = await aiClient.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: { parts: [imagePart, textPart] },
-    });
-    return response.text || "";
+    const response = await model.generateContent([
+      promptText,
+      {
+        inlineData: {
+          mimeType: "image/jpeg",
+          data: imageB64,
+        },
+      }
+    ]);
+    return response.response.text() || "";
   } else {
-    const response = await aiClient.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: promptText,
-    });
-    return response.text || "";
+    const response = await model.generateContent(promptText);
+    return response.response.text() || "";
   }
 }
 

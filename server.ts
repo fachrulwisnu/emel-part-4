@@ -2,7 +2,7 @@ import express, { Response } from "express";
 import path from "path";
 import axios from "axios";
 import OpenAI from "openai";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createServer as createViteServer } from "vite";
 import { 
   initDatabaseService, 
@@ -333,27 +333,20 @@ async function startServer() {
           }
         })(),
 
-        // 2. Gemini 3.5 Flash (Primary Fallback)
+        // 2. Gemini 1.5 Flash (Primary Fallback)
         (async () => {
           const start = Date.now();
           try {
-            const GEMINI_API_KEY = "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA"; 
-            const ai = new GoogleGenAI({
-              apiKey: GEMINI_API_KEY,
-              httpOptions: {
-                headers: {
-                  'User-Agent': 'aistudio-build',
-                }
-              }
-            });
-            const result = await ai.models.generateContent({
-              model: "gemini-3.5-flash",
-              contents: "ping",
-            });
-            const responseText = result.text;
+            // Wajib menggunakan Environment Variable untuk keamanan.
+            // Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
+            const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''; 
+            const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent("ping");
+            const responseText = result.response.text();
             const latency = Date.now() - start;
             return {
-              name: "gemini-3.5-flash",
+              name: "Gemini 1.5 Flash",
               status: responseText ? "Online" : "Offline",
               statusCode: 200,
               latency: `${latency}ms`
@@ -361,7 +354,7 @@ async function startServer() {
           } catch (err: any) {
             const latency = Date.now() - start;
             return {
-              name: "gemini-3.5-flash",
+              name: "Gemini 1.5 Flash",
               status: "Offline" as const,
               statusCode: err.status || 500,
               latency: `${latency}ms`,
