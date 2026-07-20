@@ -3,6 +3,8 @@ import path from 'path';
 import axios from 'axios';
 import { readFile } from 'node:fs/promises';
 import OpenAI from 'openai';
+import sharp from 'sharp';
+import { GoogleGenAI } from "@google/genai";
 import { getAiCompletion, generateWithGemini } from './aiService';
 
 /**
@@ -12,10 +14,262 @@ import { getAiCompletion, generateWithGemini } from './aiService';
  */
 
 export const AI_CONFIG = {
-  batchSize: 5,               // Maksimal 5-8 email per batch
+  batchSize: 2,               // Diperkecil menjadi maksimal 2 atau 3 email per batch
   throttleDelay: 15000,       // Jeda waktu antar batch (15-20 detik)
   retryDelaySeconds: 30       // Detik tunggu jika kena limit 429
 };
+
+// Google GenAI SDK Client Initialization (Sesuai panduan skill)
+const aiClient = new GoogleGenAI({
+  apiKey: "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA",
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
+
+/**
+ * Automatically compress images to keep the payload size under 180KB for API calls.
+ */
+async function compressImageForNvidia(filePath: string): Promise<string> {
+  const stat = await fs.promises.stat(filePath);
+  const MAX_API_SIZE = 180 * 1024; // 180KB
+  
+  // Jika file sudah kecil, langsung return base64
+  if (stat.size < MAX_API_SIZE) {
+    const buffer = await fs.promises.readFile(filePath);
+    return buffer.toString('base64');
+  }
+  
+  console.log(`[Image Optimizer] Mengompresi gambar ${filePath} untuk API NIM/Gemini...`);
+  let quality = 80;
+  let compressedBuffer = await sharp(filePath)
+    .resize({ width: 1200, withoutEnlargement: true })
+    .jpeg({ quality }) 
+    .toBuffer();
+      
+  // Iterasi penurunan kualitas jika hasil masih di atas 180KB
+  while (compressedBuffer.length > MAX_API_SIZE && quality > 20) {
+    quality -= 15;
+    compressedBuffer = await sharp(filePath)
+      .resize({ width: 800, withoutEnlargement: true })
+      .jpeg({ quality })
+      .toBuffer();
+  }
+  
+  return compressedBuffer.toString('base64');
+}
+
+/**
+ * Cosmos3-Nano-Reasoner call
+ */
+async function callCosmos3(imageB64: string | null, promptText: string): Promise<string> {
+  const client = new OpenAI({
+    apiKey: "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",
+    baseURL: "https://integrate.api.nvidia.com/v1",
+  });
+
+  const contentPayload: any = imageB64 ? [
+    { type: "text", text: promptText },
+    {
+      type: "image_url",
+      image_url: {
+        url: `data:image/jpeg;base64,${imageB64}`
+      }
+    }
+  ] : promptText;
+
+  const response = await client.chat.completions.create({
+    model: "nvidia/cosmos3-nano-reasoner",
+    messages: [
+      {
+        role: "user",
+        content: contentPayload
+      }
+    ] as any,
+    max_tokens: 4096,
+    stream: false
+  });
+  return response.choices[0]?.message?.content || "";
+}
+
+/**
+ * Gemini 3.5 Flash call
+ */
+async function callGemini(imageB64: string | null, promptText: string): Promise<string> {
+  if (imageB64) {
+    const imagePart = {
+      inlineData: {
+        mimeType: "image/jpeg",
+        data: imageB64,
+      },
+    };
+    const textPart = {
+      text: promptText,
+    };
+    const response = await aiClient.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: { parts: [imagePart, textPart] },
+    });
+    return response.text || "";
+  } else {
+    const response = await aiClient.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: promptText,
+    });
+    return response.text || "";
+  }
+}
+
+/**
+ * Qwen3-Next-80B-A3B-Instruct call
+ */
+async function callQwen3(imageB64: string | null, promptText: string): Promise<string> {
+  const client = new OpenAI({
+    apiKey: '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',
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+  });
+
+  const contentPayload: any = imageB64 ? [
+    { type: "text", text: promptText },
+    {
+      type: "image_url",
+      image_url: {
+        url: `data:image/jpeg;base64,${imageB64}`
+      }
+    }
+  ] : promptText;
+
+  const response = await client.chat.completions.create({
+    model: "qwen/qwen3-next-80b-a3b-instruct",
+    messages: [
+      {
+        role: "user",
+        content: contentPayload
+      }
+    ] as any,
+    temperature: 0.6,
+    top_p: 0.7,
+    max_tokens: 4096,
+    stream: false
+  });
+  return response.choices[0]?.message?.content || "";
+}
+
+/**
+ * StepFun-AI Step-3.7-Flash call
+ */
+async function callStepFun(imageB64: string | null, promptText: string): Promise<string> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
+
+  const contentPayload: any = imageB64 ? [
+    { type: "text", text: promptText },
+    {
+      type: "image_url",
+      image_url: {
+        url: `data:image/jpeg;base64,${imageB64}`
+      }
+    }
+  ] : promptText;
+
+  const payload = {
+    model: "stepfun-ai/step-3.7-flash",
+    messages: [
+      {
+        role: "user",
+        content: contentPayload
+      }
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 4096,
+    stream: false
+  };
+
+  const response = await axios.post(invokeUrl, payload, { headers, timeout: 30000 });
+  return response.data?.choices?.[0]?.message?.content || "";
+}
+
+/**
+ * Image Rotator (Cosmos3 -> Gemini -> Qwen3 -> StepFun)
+ */
+export async function processImageAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
+  const imageB64 = await compressImageForNvidia(filePath);
+  const promptText = `Ekstrak semua teks penting, angka, tabel, dan data penting dari gambar lampiran bernama "${filename}" dengan teliti, lengkap, dan rapi dalam Bahasa Indonesia.`;
+  
+  const models = [
+    { name: 'Cosmos3-Nano-Reasoner', fn: () => callCosmos3(imageB64, promptText) },
+    { name: 'Gemini 3.5 Flash', fn: () => callGemini(imageB64, promptText) },
+    { name: 'Qwen3-Next-80B', fn: () => callQwen3(imageB64, promptText) },
+    { name: 'StepFun-3.7-Flash', fn: () => callStepFun(imageB64, promptText) }
+  ];
+
+  let lastError: Error | null = null;
+  for (const model of models) {
+    try {
+      console.log(`[AI Rotator Image] Mencoba analisis gambar dengan model: ${model.name}`);
+      const result = await executeWithBackoff(async () => {
+        return await model.fn();
+      });
+      if (result) {
+        console.log(`[AI Rotator Image] Sukses mengekstrak menggunakan model: ${model.name}`);
+        return `[Hasil Ekstraksi ${model.name} dari ${filename}]:\n"""\n${result}\n"""`;
+      }
+    } catch (err: any) {
+      console.warn(`[AI Rotator Image Error] Gagal menggunakan model ${model.name}:`, err.message || String(err));
+      lastError = err;
+    }
+  }
+
+  console.error(`[AI Rotator Image Fail] Semua model rotator gambar gagal mengekstrak ${filename}.`);
+  const basicExtract = extractAttachmentContent(filePath, filename);
+  return `[Semua Model Rotator Gagal] Fallback ke ekstraksi metadata dasar.\n${basicExtract}\nLast Error: ${lastError?.message || 'Unknown'}`;
+}
+
+/**
+ * Document Rotator (Qwen3 -> StepFun -> Gemini)
+ */
+export async function processDocumentAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
+  const rawText = extractAttachmentContent(filePath, filename);
+  const promptText = `Berikut adalah teks mentah atau metadata hasil ekstraksi dari lampiran dokumen bernama "${filename}":
+"""
+${rawText}
+"""
+
+Harap ringkas dan analisis semua data penting, angka, transaksi, tabel, instruksi, atau informasi penting dari dokumen ini dalam Bahasa Indonesia secara mendalam, terstruktur, dan rapi.`;
+
+  const models = [
+    { name: 'Qwen3-Next-80B', fn: () => callQwen3(null, promptText) },
+    { name: 'StepFun-3.7-Flash', fn: () => callStepFun(null, promptText) },
+    { name: 'Gemini 3.5 Flash', fn: () => callGemini(null, promptText) }
+  ];
+
+  let lastError: Error | null = null;
+  for (const model of models) {
+    try {
+      console.log(`[AI Rotator Document] Mencoba analisis dokumen dengan model: ${model.name}`);
+      const result = await executeWithBackoff(async () => {
+        return await model.fn();
+      });
+      if (result) {
+        console.log(`[AI Rotator Document] Sukses menganalisis menggunakan model: ${model.name}`);
+        return `[Hasil Ringkasan ${model.name} dari ${filename}]:\n"""\n${result}\n"""`;
+      }
+    } catch (err: any) {
+      console.warn(`[AI Rotator Document Error] Gagal menggunakan model ${model.name}:`, err.message || String(err));
+      lastError = err;
+    }
+  }
+
+  console.error(`[AI Rotator Document Fail] Semua model rotator dokumen gagal menganalisis ${filename}.`);
+  return `[Semua Model Rotator Gagal] Hanya menampilkan teks mentah hasil ekstraksi.\n${rawText}\nLast Error: ${lastError?.message || 'Unknown'}`;
+}
 
 /**
  * Image/Attachment OCR Extraction using NVIDIA Nemotron OCR v2
@@ -28,14 +282,13 @@ export async function extractTextWithNvidiaOCR(filePath: string): Promise<any> {
     "Accept": "application/json"
   };
   
-  const data = await readFile(filePath);
-  const imageB64 = Buffer.from(data).toString('base64');
+  const imageB64 = await compressImageForNvidia(filePath);
   
   if (imageB64.length > 180000) {
-    console.warn("[NVIDIA OCR] File over 180KB base64 limit, proceeding with caution or fallback.");
+    console.warn("[NVIDIA OCR] File over 180KB base64 limit even after compression, proceeding with caution.");
   }
 
-  const payload = { input: [{ type: "image_url", url: `data:image/png;base64,${imageB64}` }] };
+  const payload = { input: [{ type: "image_url", url: `data:image/jpeg;base64,${imageB64}` }] };
   const response = await axios.post(invokeUrl, payload, { headers, responseType: 'json' });
   return response.data;
 }
@@ -51,7 +304,7 @@ export async function processWithNemoSuper(promptText: string): Promise<string> 
   });
 
   let fullContent = "";
-  const completion = await nvidiaOpenAI.chat.completions.create({
+  const completion: any = await nvidiaOpenAI.chat.completions.create({
     model: "nvidia/nemotron-3-super-120b-a12b",
     messages: [{"role": "user", "content": promptText}],
     temperature: 1,
@@ -193,28 +446,29 @@ export async function processEmailIntelligence(email: {
     // 1. Download/Write files to './temp'
     for (const att of rawAttachments) {
       if (att.filename && att.fileData) {
+        const buffer = Buffer.from(att.fileData, 'base64');
+        const fileSize = buffer.length;
+        const MAX_SIZE_LIMIT = 20 * 1024 * 1024; // 20MB
+
+        if (fileSize > MAX_SIZE_LIMIT) {
+          console.warn(`[AI Warning] File ${att.filename} terlalu besar (${(fileSize / (1024 * 1024)).toFixed(2)}MB) melebihi batas 20MB. SKIP pemrosesan AI.`);
+          extractedContents.push(`[File: ${att.filename} (Dilewati: Ukuran file melebihi batas 20MB)]`);
+          continue;
+        }
+
         const sanitizedFilename = path.basename(att.filename);
         const filePath = path.join(tempDir, `${email.message_id}_${sanitizedFilename}`);
-        const buffer = Buffer.from(att.fileData, 'base64');
         fs.writeFileSync(filePath, buffer);
         savedFiles.push({ filePath, filename: att.filename });
 
-        // 2. OCR or Basic extract based on format
+        // 2. OCR or Basic extract using Ultimate AI Rotator
         const ext = path.extname(att.filename).toLowerCase();
         let extracted = "";
         
         if (['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'].includes(ext)) {
-          try {
-            console.log(`[NVIDIA OCR] Invoking Nemotron OCR v2 for image file: ${att.filename}`);
-            const ocrRes = await extractTextWithNvidiaOCR(filePath);
-            const ocrText = typeof ocrRes === 'string' ? ocrRes : (ocrRes?.text || ocrRes?.description || JSON.stringify(ocrRes));
-            extracted = `[NVIDIA Nemotron OCR Extracted Text from ${att.filename}]:\n"""\n${ocrText}\n"""`;
-          } catch (ocrErr: any) {
-            console.error(`[NVIDIA OCR Fail] Failed to run Nemotron OCR on ${att.filename}, falling back to basic extraction:`, ocrErr.message);
-            extracted = extractAttachmentContent(filePath, att.filename);
-          }
+          extracted = await processImageAttachmentWithRotator(filePath, att.filename);
         } else {
-          extracted = extractAttachmentContent(filePath, att.filename);
+          extracted = await processDocumentAttachmentWithRotator(filePath, att.filename);
         }
         
         extractedContents.push(extracted);
@@ -269,14 +523,14 @@ Expected JSON schema to return:
       });
       console.log(`[Email Intelligence] Success with Nemotron-3-Super 120B!`);
     } catch (nemoErr: any) {
-      console.warn(`[Email Intelligence] Primary model Nemotron-3-Super 120B failed: ${nemoErr.message || nemoErr}. Falling back to Gemini 1.5 Flash...`);
+      console.warn(`[Email Intelligence] Primary model Nemotron-3-Super 120B failed: ${nemoErr.message || nemoErr}. Falling back to Gemini 3.5 Flash...`);
       try {
         aiResponse = await executeWithBackoff(async () => {
-          return await generateWithGemini(prompt);
+          return await callGemini(null, prompt);
         });
-        console.log(`[Email Intelligence] Success with Gemini 1.5 Flash fallback!`);
+        console.log(`[Email Intelligence] Success with Gemini 3.5 Flash fallback!`);
       } catch (geminiErr: any) {
-        console.warn(`[Email Intelligence] Gemini 1.5 Flash failed: ${geminiErr.message || geminiErr}. Falling back to DeepSeek...`);
+        console.warn(`[Email Intelligence] Gemini 3.5 Flash failed: ${geminiErr.message || geminiErr}. Falling back to DeepSeek...`);
         try {
           // Direct fallback to DeepSeek via OpenAI SDK configured with DeepSeek parameters
           aiResponse = await executeWithBackoff(async () => {
@@ -409,7 +663,7 @@ export async function executeControlledBulkProcess(
   analyzeSingleEmailFn: (messageId: string) => Promise<any>,
   onProgress?: (data: { current: number; total: number; percentage: number; log: string; status: string }) => void
 ): Promise<void> {
-  const BATCH_SIZE = 3;
+  const BATCH_SIZE = 2;
   const DELAY_MS = 15000;
   const total = pendingEmails.length;
 

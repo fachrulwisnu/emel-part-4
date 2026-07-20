@@ -17,9 +17,9 @@ Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data ma
 
 ---
 
-## 🤖 2. Arsitektur AI Mekanik & Aliran Fallback Cascading
+## 🤖 2. Arsitektur AI Mekanik & Ultimate AI Rotator System
 
-Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit ketat (NVIDIA NIM 40 RPM).
+Sistem ini didesain tangguh (*resilient*) menggunakan arsitektur **Ultimate AI Rotator** berbasis kombinasi ekosistem Google Gemini dan NVIDIA NIM (Cosmos3, Qwen3, StepFun). Sistem berfokus pada kestabilan tinggi, ketahanan terhadap kegagalan API, pembatasan rate limit ketat, serta otomatisasi rotasi berantai jika salah satu model mengalami kegagalan.
 
 ### ⚡ Alur Pemrosesan AI & Mekanisme Throttling
 ```
@@ -59,25 +59,16 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
                                       | (Jika Tetap Gagal)
                                       v
                        +-----------------------------+
-                       | FALLBACK TIER 1             |
-                       | Model: Gemini 1.5 Flash     |
+                       | FALLBACK TIER               |
+                       | Model: Gemini 3.5 Flash     |
                        | Engine: Google GenAI SDK    |
                        +-----------------------------+
                                       |
-                                      | (Jika Tier 1 Gagal)
+                                      | (Jika Gemini Gagal)
                                       v
                        +-----------------------------+
-                       | FALLBACK TIER 2             |
-                       | Model: DeepSeek             |
-                       | Engine: Axios / NVIDIA NIM  |
-                       +-----------------------------+
-                                      |
-                                      | (Jika Tier 2 Gagal)
-                                      v
-                       +-----------------------------+
-                       | FALLBACK TIER 3             |
-                       | Model: Gemma                |
-                       | Engine: Axios / NVIDIA NIM  |
+                       | SECONDARY FALLBACK          |
+                       | Model: DeepSeek / Gemma     |
                        +-----------------------------+
                                       |
                                       | (Jika Semua AI Gagal)
@@ -89,16 +80,20 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
 
 ### ⚡ Proteksi Throttling & Anti-Timeout NVIDIA NIM
 Untuk mencegah kegagalan akibat batas 40 RPM (Requests Per Minute) pada NVIDIA NIM, sistem mengadopsi taktik berikut:
-* **Dynamic Queue Batching**: Pemrosesan massal email (Bulk AI / Data Backfill / Queue Workers) dipangkas dari ukuran besar menjadi maksimal **3 email** saja per batch secara konkuren menggunakan `Promise.allSettled()`.
+* **Dynamic Queue Batching**: Pemrosesan massal email (Bulk AI / Data Backfill / Queue Workers) dipangkas dari ukuran besar menjadi maksimal **2 email** saja per batch secara konkuren menggunakan `Promise.allSettled()`.
 * **Strict Time Throttling**: Ditambahkan jeda waktu aman (**15 detik**) antar batch pemrosesan untuk memberikan waktu regenerasi rate limit NVIDIA NIM secara berkala.
 * **Exponential Backoff**: Jaringan interseptor otomatis mendeteksi HTTP 429 Too Many Requests atau batas rate limit. Saat limit tercapai, sistem akan otomatis melakukan jeda tunggu aman selama **30 detik** sebelum mengulangi permintaan secara cerdas.
 * **Live Terminal Logging**: Konsol log beralur maju (*live-scrolling terminal logs*) langsung memproyeksikan status batch, waktu jeda, dan respons model AI ke monitor pengguna pada modal terpadu secara real-time via Server-Sent Events (SSE).
 
 ---
 
-## 🔮 3. Alur Analisis Ephemeral Attachment & Streaming File
+## 🔮 3. Alur Analisis Ephemeral Attachment & Ultimate AI Rotator
 
-Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud melalui pemrosesan ephemeral serta menyajikannya kembali secara aman dan real-time:
+Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud melalui pemrosesan ephemeral serta menyajikannya kembali secara aman dan real-time menggunakan **Ultimate AI Rotator** yang membedakan alur berdasarkan tipe berkas:
+
+### 🔄 Alur Rotator Cerdas:
+1. **GAMBAR (.jpg, .png, .jpeg)**: Urutan rotasinya adalah **Cosmos3-Nano-Reasoner** ➡️ **Gemini 3.5 Flash** ➡️ **Qwen3-Next-80B** ➡️ **StepFun-3.7-Flash**.
+2. **DOKUMEN/TEKS (.txt, .pdf, dsb)**: Urutan rotasinya adalah **Qwen3-Next-80B** ➡️ **StepFun-3.7-Flash** ➡️ **Gemini 3.5 Flash**.
 
 ```
                      +------------------------------------+
@@ -118,25 +113,33 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
                                        |
                                        v
                      +------------------------------------+
-                     |  Mengubah ke Format Ephemeral File |
-                     |  (Tanpa Disimpan di Storage Cloud) |
+                     |   Validasi Ukuran Lampiran         |
+                     |   (Max 20MB, Skip jika melebihi)   |
                      +------------------------------------+
-                                       |
-                     +-----------------+-----------------+
-                     |                                   |
-                     v                                   v
-       +----------------------------+      +----------------------------+
-       |   Ekstraksi Gambar/Doc     |      |   Analisis Visual/Teks     |
-       |   oleh NVIDIA Nemotron OCR v2|    |   oleh Nemotron-3-Super    |
-       +----------------------------+      +----------------------------+
-                     |                                   |
-                     +-----------------+-----------------+
                                        |
                                        v
                      +------------------------------------+
-                     |  Fallback: Gemini 1.5 Flash        |
-                     |  (Jika NVIDIA mengalami kegagalan) |
+                     |  Mengubah ke Format Ephemeral File |
                      +------------------------------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |  Kompresi Otomatis via Sharp       |
+                     |  (Jika Gambar, di-keep < 180KB)    |
+                     +------------------------------------+
+                                       |
+                     +-----------------+-----------------+
+                     |                                   |
+                     v (Jika GAMBAR .jpg/.png)           v (Jika DOKUMEN/TEKS)
+        +----------------------------+      +----------------------------+
+        |   ROTATOR GAMBAR:          |      |   ROTATOR DOKUMEN:         |
+        |   1. Cosmos3-Nano-Reasoner |      |   1. Qwen3-Next-80B        |
+        |   2. Gemini 3.5 Flash      |      |   2. StepFun-3.7-Flash     |
+        |   3. Qwen3-Next-80B        |      |   3. Gemini 3.5 Flash      |
+        |   4. StepFun-3.7-Flash     |      +----------------------------+
+        +----------------------------+                     |
+                     |                                     |
+                     +-----------------+-------------------+
                                        |
                                        v
                      +------------------------------------+
@@ -152,20 +155,20 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
                                        |
                      +-----------------+-----------------+
                      v (Bila User Meminta File Asli)     v (Bila User Membaca Summary)
-       +----------------------------+      +----------------------------+
-       | Klik "Download" Attachment |      | Teks Deskripsi Langsung    |
-       +----------------------------+      | Ditampilkan di Dashboard   |
+        +----------------------------+      +----------------------------+
+        | Klik "Download" Attachment |      | Teks Deskripsi Langsung    |
+        +----------------------------+      | Ditampilkan di Dashboard   |
                      |                     +----------------------------+
                      v
-       +----------------------------+
-       | Stream Real-time dari DB   |
-       | via Endpoint API `/api/...`|
-       +----------------------------+
+        +----------------------------+
+        | Stream Real-time dari DB   |
+        | via Endpoint API `/api/...`|
+        +----------------------------+
                      |
                      v
-       +----------------------------+
-       | File Terunduh Aman & Cepat |
-       +----------------------------+
+        +----------------------------+
+        | File Terunduh Aman & Cepat |
+        +----------------------------+
 ```
 
 ---
@@ -178,8 +181,11 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
   * **AI Intelligence Queue Management Modal**: Dialog modal komprehensif yang menampilkan bar progres "Diproses: X dari Y Email" beserta persentasenya, daftar antrean pending, dan terminal log box hitam yang terhubung ke Server-Sent Events (SSE).
 * **🟢 Sistem AI Health Check & Diagnostics**:
   * Widget monitor real-time yang diletakkan di pojok atas sistem header.
-  * Menampilkan lampu indikator hijau (Aktif/Online) dan merah (Gangguan/Offline) untuk masing-masing model operasional utama: **Nemotron OCR v2**, **Nemotron 3 Super 120B**, dan **Gemini 1.5 Flash**.
+  * Menampilkan lampu indikator hijau (Aktif/Online) dan merah (Gangguan/Offline) untuk masing-masing model operasional utama: **Cosmos3-Nano-Reasoner**, **Gemini 3.5 Flash**, **Qwen3-Next-80B**, dan **StepFun-3.7-Flash**.
   * Dilengkapi info latency (Response Time) aktual dalam hitungan milidetik dan deskripsi error terperinci saat disentuh/diklik.
+* **⚡ Kompresi & Validasi Ukuran File Otomatis**:
+  * Menggunakan library `sharp` untuk melakukan resize dan reduksi kualitas gambar secara dinamis agar base64 payload berada di bawah batasan API 180KB.
+  * Proteksi ukuran berkas masukan maksimal 20MB untuk mencegah crash kelebihan memori pada runtime Node.js.
 * **💵 Pecahan & Denominasi Dynamic (IDR/USD)**:
   * Antarmuka entri pecahan kini berubah secara dinamis berdasarkan state mata uang (`mataUang`) aktif yang dipilih.
   * USD: `[USD 1, USD 2, USD 5, USD 10, USD 20, USD 50, USD 100]`
@@ -194,7 +200,7 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
 * **Frontend Framework**: React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
 * **Backend Runtime**: Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
 * **Databases**: Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
-* **AI & Integration**: Axios murni, SDK `@google/generative-ai`, dan SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
+* **AI & Integration**: Axios murni, SDK `@google/genai`, dan SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
 
 ---
 

@@ -58,8 +58,11 @@ Guna meningkatkan fungsionalitas pengarsipan dan analisis dokumen, Anda kini dib
    * Di bawah menu navigasi pohon folder sebelah kiri, Anda akan melihat tombol **"Kelola Antrean Intelligence (X Pending)"**.
    * Klik tombol ini untuk membuka **AI Intelligence Queue Management Modal**.
    * Di dalam modal, Anda dapat memantau bar progres "Diproses: X dari Y Email" beserta persentasenya, daftar antrean pending, dan terminal log box hitam yang terhubung ke Server-Sent Events (SSE). Anda dapat memulai proses massal dengan mengeklik tombol **"Bulk Analyze"**.
-4. **Analisis Berkas Lampiran (NVIDIA OCR & Nemotron 3 Super)**:
-   * AI akan memproses file lampiran secara ephemeral menggunakan NVIDIA Nemotron OCR v2 untuk mengekstrak teks, dan menyuapnya ke NVIDIA Nemotron 3 Super 120B (dengan fallback Gemini 1.5 Flash). Hasilnya adalah teks deskripsi operasional yang informatif mengenai isi berkas tersebut tanpa perlu menyimpan file mentahnya secara redundan.
+4. **Analisis Berkas Lampiran (Ultimate AI Rotator)**:
+   * AI memproses berkas secara ephemeral menggunakan arsitektur rotasi bertingkat:
+     * **GAMBAR (.jpg, .png, dsb)**: Di-rotasikan otomatis berurutan dari **Cosmos3-Nano-Reasoner** ➡️ **Gemini 3.5 Flash** ➡️ **Qwen3-Next-80B** ➡️ **StepFun-3.7-Flash** demi keakuratan ekstraksi OCR visual terbaik.
+     * **DOKUMEN/TEKS (.txt, .pdf, dsb)**: Di-analisis berurutan dari **Qwen3-Next-80B** ➡️ **StepFun-3.7-Flash** ➡️ **Gemini 3.5 Flash** untuk ringkasan isi dokumen yang padat dan informatif.
+     * **Kompresi & Proteksi Ukuran**: Berkas gambar di-kompresi secara dinamis dengan library `sharp` agar payload berada di bawah limit API 180KB. Berkas di atas **20MB** akan secara otomatis dilewati (*skip*) untuk memproteksi kestabilan memori runtime server.
 5. **Secure Real-time Streaming & Download**:
    * Jika Anda memerlukan berkas lampiran aslinya, cukup tekan tombol **"Download"** pada baris lampiran yang diinginkan.
    * Sistem akan mengonversi biner terkompresi Base64 dari database, membungkusnya ke dalam struktur stream biner real-time, lalu mengalirkannya langsung ke peramban web PIC secara aman dan cepat.
@@ -70,7 +73,7 @@ Guna meningkatkan fungsionalitas pengarsipan dan analisis dokumen, Anda kini dib
 
 Di pojok kiri atas sistem header (bersebelahan dengan indikator Database status), Anda akan melihat tombol indikator **"AI Health: Online"** atau **"AI Health: Degraded"**:
 * **Lampu Indikator**:
-  * 🟢 **Hijau**: Menandakan seluruh sistem kecerdasan utama (**Nemotron OCR v2**, **Nemotron 3 Super 120B**, dan **Gemini 1.5 Fallback**) berfungsi penuh dengan status online.
+  * 🟢 **Hijau**: Menandakan seluruh sistem kecerdasan utama (**Cosmos3-Nano-Reasoner**, **Gemini 3.5 Flash**, **Qwen3-Next-80B**, dan **StepFun-3.7-Flash**) berfungsi penuh dengan status online.
   * 🔴 **Merah**: Menunjukkan satu atau lebih model mengalami kegagalan, kehabisan kuota, atau waktu habis (timeout).
 * **Popover Panel**:
   * Klik tombol indikator tersebut untuk menampilkan panel detail monitor.
@@ -101,8 +104,8 @@ Saat Anda membuat atau menyunting rincian pesanan **Cash In Transit (CIT)** atau
 ## ⚠️ 5. Penanganan Masalah (Troubleshooting) & Tips Operasional
 
 * **Tanya**: Mengapa proses sinkronisasi massal (*Bulk AI*) atau *Backfill* terasa berjalan lebih lambat dibanding versi awal?
-  * **Jawab**: Ini adalah fitur pengaman baru yang dirancang agar sistem Anda tidak diblokir oleh server AI NVIDIA (limit 40 RPM). Memproses email dalam batch berisi 3 item secara konkuren dengan jeda 15 detik menjamin stabilitas 100% tanpa adanya error crash di tengah jalan.
+  * **Jawab**: Ini adalah fitur pengaman baru yang dirancang agar sistem Anda tidak diblokir oleh server AI NVIDIA (limit 40 RPM). Memproses email dalam batch berisi **2 item** secara konkuren dengan jeda **15 detik** menjamin stabilitas 100% tanpa adanya error crash di tengah jalan.
 * **Tanya**: Mengapa muncul kotak peringatan berwarna kuning saat mengisi pecahan CIT?
   * **Jawab**: Itu menunjukkan jumlah perkalian pecahan uang Anda (misal: 100 lembar x $50 = $5000) berbeda dengan nilai nominal utama yang Anda input pada form atas. Anda dapat mengecek kembali jumlah lembar uang atau mengklik tombol **"Samakan Nominal"** untuk membetulkannya secara cepat.
 * **Tanya**: Apa yang terjadi jika seluruh sistem AI NVIDIA mendadak down atau mati?
-  * **Jawab**: Sistem secara dinamis akan beralih (*cascading fallback*) ke model Google Gemini 1.5 Flash, dilanjutkan ke DeepSeek dan Gemma, lalu beralih ke Rule-Based Regex Fallback yang tersimpan lokal di SQLite. Operasional penanganan tiket Anda dijamin tetap stabil berjalan 100% tanpa hambatan.
+  * **Jawab**: Sistem secara dinamis akan beralih (*cascading fallback*) ke model Google Gemini 3.5 Flash, dilanjutkan ke DeepSeek dan Gemma, lalu beralih ke Rule-Based Regex Fallback yang tersimpan lokal di SQLite. Operasional penanganan tiket Anda dijamin tetap stabil berjalan 100% tanpa hambatan.

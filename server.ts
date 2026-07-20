@@ -2,7 +2,7 @@ import express, { Response } from "express";
 import path from "path";
 import axios from "axios";
 import OpenAI from "openai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { 
   initDatabaseService, 
@@ -300,68 +300,32 @@ async function startServer() {
   app.get("/api/system/ai-health", async (req, res) => {
     try {
       const results = await Promise.all([
-        // 1. Nemotron OCR v2
-        (async () => {
-          const start = Date.now();
-          try {
-            const invokeUrl = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2";
-            const headers = {
-              "Authorization": "Bearer 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",
-              "Accept": "application/json",
-              "Content-Type": "application/json"
-            };
-            const payload = {
-              input: [{
-                type: "image_url",
-                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-              }]
-            };
-            const response = await axios.post(invokeUrl, payload, { headers, timeout: 8000 });
-            const latency = Date.now() - start;
-            return {
-              name: "nemotron-ocr-v2",
-              status: response.status === 200 ? "Online" : "Offline",
-              statusCode: response.status,
-              latency: `${latency}ms`
-            };
-          } catch (err: any) {
-            const latency = Date.now() - start;
-            return {
-              name: "nemotron-ocr-v2",
-              status: "Offline",
-              statusCode: err.response?.status || 500,
-              latency: `${latency}ms`,
-              error: err.message
-            };
-          }
-        })(),
-
-        // 2. Nemotron-3-Super-120B
+        // 1. Cosmos3-Nano-Reasoner (Vision & Reasoning)
         (async () => {
           const start = Date.now();
           try {
             const openai = new OpenAI({
-              apiKey: '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',
-              baseURL: 'https://integrate.api.nvidia.com/v1',
+              apiKey: "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",
+              baseURL: "https://integrate.api.nvidia.com/v1",
             });
-            const completion = await openai.chat.completions.create({
-              model: "nvidia/nemotron-3-super-120b-a12b",
+            await openai.chat.completions.create({
+              model: "nvidia/cosmos3-nano-reasoner",
               messages: [{"role": "user", "content": "ping"}],
               max_tokens: 5,
               stream: false
             });
             const latency = Date.now() - start;
             return {
-              name: "nemotron-3-super-120b",
-              status: "Online",
+              name: "cosmos3-nano-reasoner",
+              status: "Online" as const,
               statusCode: 200,
               latency: `${latency}ms`
             };
           } catch (err: any) {
             const latency = Date.now() - start;
             return {
-              name: "nemotron-3-super-120b",
-              status: "Offline",
+              name: "cosmos3-nano-reasoner",
+              status: "Offline" as const,
               statusCode: err.status || err.response?.status || 500,
               latency: `${latency}ms`,
               error: err.message
@@ -369,18 +333,27 @@ async function startServer() {
           }
         })(),
 
-        // 3. Gemini 1.5 Flash (Primary Fallback)
+        // 2. Gemini 3.5 Flash (Primary Fallback)
         (async () => {
           const start = Date.now();
           try {
             const GEMINI_API_KEY = "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA"; 
-            const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-            const result = await model.generateContent("ping");
-            const responseText = result.response.text();
+            const ai = new GoogleGenAI({
+              apiKey: GEMINI_API_KEY,
+              httpOptions: {
+                headers: {
+                  'User-Agent': 'aistudio-build',
+                }
+              }
+            });
+            const result = await ai.models.generateContent({
+              model: "gemini-3.5-flash",
+              contents: "ping",
+            });
+            const responseText = result.text;
             const latency = Date.now() - start;
             return {
-              name: "gemini-1.5-flash",
+              name: "gemini-3.5-flash",
               status: responseText ? "Online" : "Offline",
               statusCode: 200,
               latency: `${latency}ms`
@@ -388,9 +361,78 @@ async function startServer() {
           } catch (err: any) {
             const latency = Date.now() - start;
             return {
-              name: "gemini-1.5-flash",
-              status: "Offline",
+              name: "gemini-3.5-flash",
+              status: "Offline" as const,
               statusCode: err.status || 500,
+              latency: `${latency}ms`,
+              error: err.message
+            };
+          }
+        })(),
+
+        // 3. Qwen3-Next-80B-A3B-Instruct
+        (async () => {
+          const start = Date.now();
+          try {
+            const openai = new OpenAI({
+              apiKey: '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',
+              baseURL: 'https://integrate.api.nvidia.com/v1',
+            });
+            await openai.chat.completions.create({
+              model: "qwen/qwen3-next-80b-a3b-instruct",
+              messages: [{"role": "user", "content": "ping"}],
+              max_tokens: 5,
+              stream: false
+            });
+            const latency = Date.now() - start;
+            return {
+              name: "qwen3-next-80b-a3b-instruct",
+              status: "Online" as const,
+              statusCode: 200,
+              latency: `${latency}ms`
+            };
+          } catch (err: any) {
+            const latency = Date.now() - start;
+            return {
+              name: "qwen3-next-80b-a3b-instruct",
+              status: "Offline" as const,
+              statusCode: err.status || err.response?.status || 500,
+              latency: `${latency}ms`,
+              error: err.message
+            };
+          }
+        })(),
+
+        // 4. StepFun-AI Step-3.7-Flash
+        (async () => {
+          const start = Date.now();
+          try {
+            const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+            const headers = {
+              "Authorization": "Bearer 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",
+              "Accept": "application/json",
+              "Content-Type": "application/json"
+            };
+            const payload = {
+              model: "stepfun-ai/step-3.7-flash",
+              messages: [{"role": "user", "content": "ping"}],
+              max_tokens: 5,
+              stream: false
+            };
+            const response = await axios.post(invokeUrl, payload, { headers, timeout: 8000 });
+            const latency = Date.now() - start;
+            return {
+              name: "stepfun-ai-step-3.7-flash",
+              status: response.status === 200 ? "Online" : "Offline",
+              statusCode: response.status,
+              latency: `${latency}ms`
+            };
+          } catch (err: any) {
+            const latency = Date.now() - start;
+            return {
+              name: "stepfun-ai-step-3.7-flash",
+              status: "Offline" as const,
+              statusCode: err.response?.status || 500,
               latency: `${latency}ms`,
               error: err.message
             };
