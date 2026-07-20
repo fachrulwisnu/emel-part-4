@@ -952,42 +952,16 @@ export default function App() {
   };
 
   // AI Pending Queue: Fetch and Process
-  const fetchPendingQueue = async (providedSettings?: AppSettings) => {
-    const activeSettings = providedSettings || appSettings;
-    const url = activeSettings.supabaseUrl;
-    const key = activeSettings.supabaseKey;
-
-    if (url && key) {
-      try {
-        const supabase = createClient(url, key);
-        const { data, error } = await supabase
-          .from('emails')
-          .select('message_id, sender, subject, date, ai_status')
-          .eq('ai_status', 'PENDING')
-          .order('date', { ascending: false });
-
-        if (!error && data) {
-          setPendingEmails(data);
-          setPendingCount(data.length);
-          return;
-        } else if (error) {
-          console.warn('[Supabase Fetch Pending Queue Error]:', error);
-        }
-      } catch (err) {
-        console.error('[Supabase Fetch Pending Queue Exception]:', err);
-      }
-    }
-
-    // Fallback SQLite
+  const fetchPendingQueue = async () => {
     try {
-      const res = await fetch('/api/ai/pending-queue');
+      const res = await fetch('/api/emails/pending-summary');
       const data = await res.json();
       if (data.success && data.emails) {
         setPendingEmails(data.emails);
         setPendingCount(data.emails.length);
       }
     } catch (err) {
-      console.error('[SQLite Fetch Pending Queue Failed]:', err);
+      console.error('[Fetch Pending Summary Queue Failed]:', err);
     }
   };
 
@@ -1002,30 +976,28 @@ export default function App() {
     setBulkLogs(["[System] Menghubungkan ke real-time stream bulk process..."]);
     setIsBulkStreaming(true);
 
-    const eventSource = new EventSource('/api/ai/bulk-process-stream');
+    const eventSource = new EventSource('/api/emails/bulk-summary/stream');
 
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         
-        if (data.type === 'start') {
-          setBulkLogs(prev => [...prev, `[System] ${data.message}`]);
-          setBulkProgress({ current: 0, total: data.total });
-        } else if (data.type === 'progress') {
-          setBulkProgress({ current: data.current, total: data.total });
-          setBulkLogs(prev => [...prev, `[Progress ${data.current}/${data.total}] ${data.message}`]);
-        } else if (data.type === 'complete') {
-          setBulkProgress({ current: pendingCount, total: pendingCount });
-          setBulkLogs(prev => [...prev, `[Selesai] ${data.message}`]);
-          addToast('Bulk AI Selesai', data.message || 'Semua email pending berhasil diproses.');
+        if (data.percentage !== undefined) {
+          setBulkProgress({ current: data.processedCount || 0, total: data.total || pendingCount });
+        }
+        if (data.log) {
+          setBulkLogs(prev => [...prev, data.log]);
+        }
+
+        if (data.status === 'complete') {
+          addToast('Bulk AI Selesai', data.log || 'Semua email pending berhasil diproses.');
           eventSource.close();
           setIsBulkStreaming(false);
           setIsBulkProcessing(false);
           fetchPendingQueue();
           loadEmails(); // Refresh emails list
-        } else if (data.type === 'error') {
-          setBulkLogs(prev => [...prev, `[Error] ${data.message}`]);
-          addToast('Bulk AI Error', data.message);
+        } else if (data.status === 'error') {
+          addToast('Bulk AI Error', data.log || 'Terjadi kesalahan.');
           eventSource.close();
           setIsBulkStreaming(false);
           setIsBulkProcessing(false);
@@ -3532,7 +3504,7 @@ export default function App() {
                   AI Pending Queue Management
                 </h3>
                 <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                  Kelola pemrosesan massal email berstatus PENDING dengan Batched Parallelism (maks. 3 per batch) untuk menghindari rate limit.
+                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 5 per batch, jeda 15s) dan AI Rotator (Nemotron &rarr; DeepSeek &rarr; Gemma &rarr; Minimax).
                 </p>
               </div>
               <button

@@ -119,10 +119,31 @@ Fitur khusus bagi PIC saat melakukan migrasi atau jika terdapat data email lama 
 1. **Throttling Cerdas**: Sistem memproses antrean email secara bertahap dalam kelompok kecil berisi **5 email per batch**.
 2. **Jeda Waktu Aman (15-20 Detik)**: Antar batch diberi jeda istirahat selama 15 hingga 20 detik untuk mengembalikan kuota batas pemanggilan pada NVIDIA NIM API secara berkala agar terhindar dari pemblokiran.
 3. **Resiliensi Auto-Retry**: Jika batas **40 RPM** NVIDIA tercapai, sistem akan memicu respons *Exponential Backoff*—menunda aktivitas selama **30 detik** sebelum mengulangi proses pengerjaan secara otomatis.
+4. **Alur Paralel Ganda (Asinkron Sejati)**: Untuk mempercepat pemrosesan, email-email dalam batch kini dianalisis secara konkuren menggunakan `Promise.allSettled()`. Analisis umum email (*Summary & Tagging*) dan analisis berkas lampiran (*Attachment Intelligence*) berjalan berdampingan secara simultan, sehingga mempersingkat total durasi pengerjaan backlog hingga setengahnya.
 
 ---
 
-## ⚠️ 5. Penanganan Masalah (Troubleshooting) & Tips Operasional
+## 🔒 5. Integrasi Database & Sanitasi Array Supabase
+Sistem ini menggunakan sinkronisasi hybrid antara SQLite lokal dan database cloud Supabase PostgreSQL. Untuk memastikan transaksi data berjalan lancar tanpa terganggu inkonsistensi tipe data:
+* **Mekanisme Sanitasi Defensif**: Database PostgreSQL sangat ketat terhadap format data array. Jika format string JSON lampiran langsung ditulis apa adanya, Postgres dapat melempar error `Malformed array literal`.
+* **Solusi Otomatis**: Backend secara aktif mendeteksi, mengonversi, dan menyembuhkan bentuk lampiran yang tidak standar sebelum disimpan ke Supabase. Data lampiran dibersihkan, divalidasi, dan diubah ke dalam array objek yang terstruktur dengan aman. PIC tidak perlu khawatir tentang kesalahan sinkronisasi data biner di latar belakang.
+
+---
+
+## ⚡ 6. Monitoring Real-Time dengan Server-Sent Events (SSE)
+Untuk memberikan pengalaman operasional yang interaktif, pengerjaan antrean email pending kini dilengkapi dengan dashboard pemantauan **Server-Sent Events (SSE)** langsung pada antarmuka pengguna:
+1. **Status Antrean Visual (Real-Time Counter)**:
+   * **Inbox Utama**: Menampilkan tombol antrean beserta indikator jumlah email pending yang belum dianalisis ringkasannya oleh AI.
+   * **Dasbor Intelijen**: Menampilkan info antrean lampiran (*Pending Attachments*) dengan badge berdenyut (*pulse animation*) untuk mempermudah deteksi berkas belum teranalisis.
+2. **Tombol "Bulk Analyze"**:
+   * PIC dapat memicu pemrosesan seluruh antrean dalam sekali klik.
+   * Saat pengerjaan berjalan, progress bar (%) akan bergerak secara dinamis seiring rampungnya pengerjaan email.
+3. **Live Terminal Logging**:
+   * Konsol logs interaktif pada antarmuka secara berurutan menampilkan aksi yang sedang dilakukan oleh server (misal: pengerjaan batch, jeda pemulihan rate-limit, atau penanganan retry).
+
+---
+
+## ⚠️ 7. Penanganan Masalah (Troubleshooting) & Tips Operasional
 
 * **Tanya**: Mengapa proses sinkronisasi massal (*Bulk AI*) atau *Backfill* terasa berjalan lebih lambat dibanding versi awal?
   * **Jawab**: Ini adalah fitur pengaman baru yang dirancang agar sistem Anda tidak diblokir oleh server AI NVIDIA (limit 40 RPM). Memproses email dalam batch berisi 5 item dengan jeda 15 detik menjamin stabilitas 100% tanpa adanya error crash di tengah jalan.

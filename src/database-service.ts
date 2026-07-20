@@ -986,6 +986,66 @@ export async function analyzeEmail(messageId: string): Promise<void> {
       });
     }
 
+    try {
+      const attachments = typeof email.attachments === 'string'
+        ? JSON.parse(email.attachments || '[]')
+        : (email.attachments || []);
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+
+    let summaryData: any = null;
+    let intelligenceData: any = null;
+
+    const tasks: Promise<any>[] = [];
+
+    // Task 1: Generate Summary and Tagging (Inbox General)
+    const summaryTask = (async () => {
+      try {
+        const { generateSummaryAndTagging } = await import('./services/aiProcessingService');
+        summaryData = await generateSummaryAndTagging({
+          subject: email.subject || '',
+          body_text: email.body_text || '',
+          sender: email.sender || '',
+          date: email.date || ''
+        });
+        console.log(`[Parallel AI] Summary and Tagging completed for: ${messageId}`);
+      } catch (err) {
+        console.error(`[Parallel AI] Summary/Tagging failed for ${messageId}, falling back to legacy:`, err);
+        summaryData = await processEmailAI(
+          `Subject: ${email.subject}\n\nBody:\n${email.body_text}`
+        ).catch(() => null);
+      }
+    })();
+    tasks.push(summaryTask);
+
+    // Task 2: Process Email Intelligence (Attachment Analysis) if it has attachments
+    if (hasAttachments) {
+      const intelligenceTask = (async () => {
+        try {
+          const { processEmailIntelligence } = await import('./services/aiProcessingService');
+          intelligenceData = await processEmailIntelligence({
+            message_id: messageId,
+            subject: email.subject || '',
+            sender: email.sender || '',
+            date: email.date || '',
+            body_text: email.body_text || '',
+            attachments: attachments
+          });
+
+          // Save intelligence to table email_analysis
+          await dbSaveEmailAnalysis(messageId, intelligenceData).catch(err => {
+            console.error(`[Parallel AI] Failed to save email analysis:`, err);
+          });
+          console.log(`[Parallel AI] Email Intelligence completed for: ${messageId}`);
+        } catch (err) {
+          console.error(`[Parallel AI] Email Intelligence failed for ${messageId}:`, err);
+        }
+      })();
+      tasks.push(intelligenceTask);
+    }
+
+    // Wait for all tasks to settle in parallel
+    await Promise.allSettled(tasks);
+
     let summary = "";
     let action_required = false;
     let urgency_level = "Routine";
@@ -1000,31 +1060,37 @@ export async function analyzeEmail(messageId: string): Promise<void> {
     let denomination_suggestion: number | undefined = undefined;
     let total_amount: number | undefined = undefined;
 
-    try {
-      const aiResult = await processEmailWithNvidia(
-        email.subject || "", 
-        email.body_text || "", 
-        email.attachments,
-        email.message_id,
-        email.sender,
-        email.date
-      );
-      
-      summary = aiResult.summary || `Email from ${email.sender} regarding ${email.subject}.`;
-      action_required = !!aiResult.action_required;
-      urgency_level = aiResult.urgency_level || "Routine";
-      suggested_tag = aiResult.suggested_tag || "Informasi";
-      suggested_folder_parent = aiResult.suggested_folder_parent || "Operation";
-      suggested_folder_child = aiResult.suggested_folder_child || "General";
-      is_cit_order = !!aiResult.is_cit_order;
-      cit_type = aiResult.cit_type || "None";
-      suggested_bank = aiResult.suggested_bank || "";
-      extracted_notes = aiResult.extracted_notes || "";
-      currency = aiResult.currency || "IDR";
-      denomination_suggestion = aiResult.denomination_suggestion;
-      total_amount = aiResult.total_amount;
+    if (summaryData || intelligenceData) {
+      summary = summaryData?.summary || intelligenceData?.summary_email || `Email dari ${email.sender} mengenai ${email.subject}.`;
+      action_required = summaryData?.action_required !== undefined 
+        ? !!summaryData.action_required 
+        : (intelligenceData?.tags ? intelligenceData.tags.some((t: string) => {
+            const ut = t.toUpperCase();
+            return ut.includes('ACTION') || ut.includes('NEED') || ut.includes('PERLU');
+          }) : false);
 
-      console.log(`[AI Copilot] Email processed: ${email.subject} | Category: ${urgency_level}`);
+      urgency_level = summaryData?.urgency_level || (intelligenceData?.tags && intelligenceData.tags.some((t: string) => {
+        const ut = t.toUpperCase();
+        return ut.includes('URGENT') || ut.includes('HIGH') || ut.includes('CRITICAL');
+      }) ? 'High' : 'Routine');
+
+      suggested_tag = summaryData?.suggested_tag || (intelligenceData?.tags && intelligenceData.tags.some((t: string) => t.toUpperCase().includes('ATM')) ? 'ATM' : (intelligenceData?.tags && intelligenceData.tags.some((t: string) => t.toUpperCase().includes('CIT')) ? 'CIT' : 'Lainnya'));
+      cit_type = suggested_tag === 'ATM' ? 'ATM' : (suggested_tag === 'CIT' ? 'CIT' : 'None');
+      is_cit_order = summaryData?.is_cit_order !== undefined ? !!summaryData.is_cit_order : (cit_type !== 'None');
+
+      suggested_folder_parent = intelligenceData?.folder || summaryData?.suggested_folder_parent || 'Operation';
+      suggested_folder_child = intelligenceData?.sub_folder || summaryData?.suggested_folder_child || 'General';
+
+      suggested_bank = suggested_folder_parent;
+      extracted_notes = intelligenceData?.summary_attachments && intelligenceData.summary_attachments.length > 0
+        ? 'Summary Attachments:\n' + intelligenceData.summary_attachments.map((sa: any) => `- ${sa.filename}: ${sa.desc}`).join('\n')
+        : (summaryData?.extracted_notes || '');
+
+      currency = summaryData?.currency || 'IDR';
+      denomination_suggestion = summaryData?.denomination_suggestion;
+      total_amount = summaryData?.total_amount;
+
+      console.log(`[Parallel AI] Email processed successfully: ${email.subject}`);
 
       // Update to COMPLETED
       await dbUpdateEmailFields(messageId, {
@@ -1032,7 +1098,7 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         action_required,
         urgency_level,
         suggested_tag,
-        is_important: urgency_level === 'High' || urgency_level === 'Peringatan',
+        is_important: urgency_level === 'High' || urgency_level === 'Peringatan' || urgency_level === 'Medium',
         folder_parent: suggested_folder_parent,
         folder_child: suggested_folder_child,
         is_cit_order,
@@ -1045,40 +1111,34 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         ai_status: 'COMPLETED',
         is_summarized: true
       });
-    } catch (aiError) {
-      console.log('[AI Copilot] AI sedang tidak tersedia, falling back to rule-based...', aiError);
-      
-      // Fallback: rule-based summary but action_required: false and ai_status: FAILED
-      const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
-      summary = fallbackInfo.summary || `Email from ${email.sender}.`;
-      action_required = false;
-      urgency_level = "Routine";
-      suggested_tag = "Informasi";
-      suggested_folder_parent = "Operation";
-      suggested_folder_child = "General";
-      is_cit_order = false;
-      cit_type = "None";
-      suggested_bank = "";
-      extracted_notes = "";
-      currency = "IDR";
-
-      await dbUpdateEmailFields(messageId, {
-        summary,
-        action_required,
-        urgency_level,
-        suggested_tag,
-        is_important: false,
-        folder_parent: suggested_folder_parent,
-        folder_child: suggested_folder_child,
-        is_cit_order,
-        cit_type,
-        suggested_bank,
-        extracted_notes,
-        currency,
-        ai_status: 'FAILED',
-        is_summarized: false
-      });
+    } else {
+      throw new Error("Both parallel AI tasks returned no data");
     }
+
+  } catch (aiError: any) {
+    console.log('[Parallel AI] AI execution failed, falling back to rule-based...', aiError);
+    
+    // Fallback: rule-based summary but action_required: false and ai_status: FAILED
+    const fallbackInfo = ruleBasedFallback(email.subject, email.body_text || "");
+    const summary = fallbackInfo.summary || `Email from ${email.sender}.`;
+    
+    await dbUpdateEmailFields(messageId, {
+      summary,
+      action_required: false,
+      urgency_level: "Routine",
+      suggested_tag: "Informasi",
+      is_important: false,
+      folder_parent: "Operation",
+      folder_child: "General",
+      is_cit_order: false,
+      cit_type: "None",
+      suggested_bank: "",
+      extracted_notes: "",
+      currency: "IDR",
+      ai_status: 'FAILED',
+      is_summarized: false
+    });
+  }
 
     // Fetch final email data to broadcast to frontend
     const finalEmail = await dbGetEmailByMessageId(messageId);
@@ -2706,6 +2766,27 @@ export async function dbGetGroupedEmails(): Promise<any> {
   }
 
   return grouped;
+}
+
+export async function dbGetPendingSummaryEmails(): Promise<Email[]> {
+  const emails = await dbGetAllEmails();
+  return emails.filter(email => {
+    return !email.is_summarized || !email.summary || email.summary === 'Belum dianalisis (Menunggu AI...)';
+  });
+}
+
+export async function dbGetPendingIntelligenceEmails(): Promise<Email[]> {
+  const emails = await dbGetAllEmails();
+  const analysisList = await dbGetAllEmailAnalysis();
+  const analyzedMessageIds = new Set<string>(analysisList.map(a => a.message_id));
+
+  return emails.filter(email => {
+    const attachments = typeof email.attachments === 'string'
+      ? JSON.parse(email.attachments || '[]')
+      : (email.attachments || []);
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    return hasAttachments && !analyzedMessageIds.has(email.message_id);
+  });
 }
 
 

@@ -28,6 +28,25 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
+  // Pending count & bulk processing states
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [isBulkProcessing, setIsBulkProcessing] = useState<boolean>(false);
+  const [bulkProgress, setBulkProgress] = useState<number>(0);
+  const [bulkStatusText, setBulkStatusText] = useState<string>('');
+  const [bulkLog, setBulkLog] = useState<string[]>([]);
+
+  const fetchPendingCount = async () => {
+    try {
+      const res = await fetch('/api/emails/pending-intelligence');
+      const json = await res.json();
+      if (json.success) {
+        setPendingCount(json.count);
+      }
+    } catch (err) {
+      console.error('Failed to fetch pending intelligence count:', err);
+    }
+  };
+
   const fetchGroupedData = async () => {
     try {
       setLoading(true);
@@ -50,7 +69,55 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
 
   useEffect(() => {
     fetchGroupedData();
+    fetchPendingCount();
   }, []);
+
+  const startBulkIntelligence = () => {
+    setIsBulkProcessing(true);
+    setBulkProgress(0);
+    setBulkStatusText('Starting bulk intelligence processing...');
+    setBulkLog(['Memulai proses bulk...']);
+
+    const eventSource = new EventSource('/api/emails/bulk-intelligence/stream');
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.percentage !== undefined) {
+          setBulkProgress(data.percentage);
+        }
+        if (data.log) {
+          setBulkStatusText(data.log);
+          setBulkLog(prev => [data.log, ...prev].slice(0, 10));
+        }
+
+        if (data.status === 'complete') {
+          eventSource.close();
+          setIsBulkProcessing(false);
+          if (onAddToast) {
+            onAddToast('Bulk Complete', 'Semua email berhasil dianalisis!', 'success');
+          }
+          fetchGroupedData();
+          fetchPendingCount();
+        } else if (data.status === 'error') {
+          eventSource.close();
+          setIsBulkProcessing(false);
+          if (onAddToast) {
+            onAddToast('Bulk Error', data.log || 'Terjadi kesalahan saat memproses bulk', 'error');
+          }
+        }
+      } catch (err: any) {
+        console.error('SSE JSON parse error:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('SSE stream error:', err);
+      eventSource.close();
+      setIsBulkProcessing(false);
+      setBulkStatusText('Terjadi gangguan koneksi pada stream.');
+    };
+  };
 
   const toggleNode = (nodePath: string) => {
     setExpandedNodes(prev => ({
@@ -165,6 +232,49 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
+        </div>
+
+        {/* Pending Intelligence Info & Bulk Trigger */}
+        <div className="mx-3 my-2.5 p-3.5 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Status Antrean AI</span>
+            <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-extrabold rounded-full animate-pulse">
+              {pendingCount} Pending
+            </span>
+          </div>
+          
+          <p className="text-[11px] text-slate-500 leading-normal">
+            Terdapat {pendingCount} email berlampiran yang belum dianalisis secara mendalam oleh AI.
+          </p>
+
+          {!isBulkProcessing ? (
+            <button
+              onClick={startBulkIntelligence}
+              disabled={pendingCount === 0}
+              className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 text-white disabled:text-slate-400 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+            >
+              <Sparkles className="h-3.5 w-3.5 animate-pulse" />
+              <span>Bulk Analyze Attachments</span>
+            </button>
+          ) : (
+            <div className="space-y-2 pt-1">
+              <div className="flex justify-between text-[11px] font-bold text-indigo-700">
+                <span className="truncate max-w-[150px]">{bulkStatusText}</span>
+                <span>{bulkProgress}%</span>
+              </div>
+              <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                <div 
+                  className="bg-indigo-600 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${bulkProgress}%` }}
+                />
+              </div>
+              <div className="text-[9px] text-slate-400 font-mono max-h-16 overflow-y-auto leading-normal pt-1.5 border-t border-indigo-100/40 select-none">
+                {bulkLog.map((logLine, idx) => (
+                  <div key={idx} className="truncate">{logLine}</div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {loading ? (

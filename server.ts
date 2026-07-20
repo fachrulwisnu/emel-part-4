@@ -23,7 +23,9 @@ import {
   analyzeEmail,
   dbGetDailyReportData,
   dbGetGroupedEmails,
-  dbGetEmailAnalysis
+  dbGetEmailAnalysis,
+  dbGetPendingSummaryEmails,
+  dbGetPendingIntelligenceEmails
 } from "./src/database-service";
 import { initWhatsApp, sendMessage, getWhatsAppStatus, forceInitWhatsApp } from "./src/services/waService";
 import { 
@@ -380,6 +382,186 @@ async function startServer() {
       res.json({ success: true, analysis });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // GET pending summary count & list for general inbox
+  app.get("/api/emails/pending-summary", async (req, res) => {
+    try {
+      const emails = await dbGetPendingSummaryEmails();
+      res.json({ success: true, count: emails.length, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // GET pending intelligence count & list for attachments
+  app.get("/api/emails/pending-intelligence", async (req, res) => {
+    try {
+      const emails = await dbGetPendingIntelligenceEmails();
+      res.json({ success: true, count: emails.length, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // SSE Stream for bulk summary processing
+  app.get("/api/emails/bulk-summary/stream", async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const sendEvent = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const pending = await dbGetPendingSummaryEmails();
+      if (pending.length === 0) {
+        sendEvent({ status: 'complete', percentage: 100, processedCount: 0, log: 'Tidak ada email pending summary.' });
+        res.end();
+        return;
+      }
+
+      sendEvent({ status: 'started', percentage: 0, processedCount: 0, total: pending.length, log: `Memulai sinkronisasi bulk summary untuk ${pending.length} email...` });
+
+      const batchSize = 5;
+      const delayMs = 15000;
+      let processedCount = 0;
+
+      for (let i = 0; i < pending.length; i += batchSize) {
+        const batch = pending.slice(i, i + batchSize);
+        sendEvent({
+          status: 'processing',
+          percentage: Math.round((processedCount / pending.length) * 100),
+          processedCount,
+          total: pending.length,
+          log: `Memproses batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pending.length / batchSize)} (jumlah: ${batch.length} email)...`
+        });
+
+        await Promise.all(batch.map(async (email) => {
+          try {
+            await analyzeEmail(email.message_id);
+            processedCount++;
+          } catch (err: any) {
+            console.error(`[Bulk Summary] Failed to analyze ${email.message_id}:`, err);
+            processedCount++;
+          }
+        }));
+
+        sendEvent({
+          status: 'processing',
+          percentage: Math.round((processedCount / pending.length) * 100),
+          processedCount,
+          total: pending.length,
+          log: `Batch ${Math.floor(i / batchSize) + 1} selesai.`
+        });
+
+        if (i + batchSize < pending.length) {
+          sendEvent({
+            status: 'delaying',
+            percentage: Math.round((processedCount / pending.length) * 100),
+            processedCount,
+            total: pending.length,
+            log: `Menunggu jeda rate limit (15 detik)...`
+          });
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+
+      sendEvent({
+        status: 'complete',
+        percentage: 100,
+        processedCount,
+        total: pending.length,
+        log: `Bulk summary sync selesai! Berhasil memproses ${processedCount} email.`
+      });
+      res.end();
+
+    } catch (err: any) {
+      console.error('[Bulk Summary API] Error:', err);
+      sendEvent({ status: 'error', log: `Fatal error: ${err.message || String(err)}` });
+      res.end();
+    }
+  });
+
+  // SSE Stream for bulk attachment intelligence processing
+  app.get("/api/emails/bulk-intelligence/stream", async (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const sendEvent = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const pending = await dbGetPendingIntelligenceEmails();
+      if (pending.length === 0) {
+        sendEvent({ status: 'complete', percentage: 100, processedCount: 0, log: 'Tidak ada attachment pending analisis.' });
+        res.end();
+        return;
+      }
+
+      sendEvent({ status: 'started', percentage: 0, processedCount: 0, total: pending.length, log: `Memulai analisis bulk attachment untuk ${pending.length} email...` });
+
+      const batchSize = 5;
+      const delayMs = 15000;
+      let processedCount = 0;
+
+      for (let i = 0; i < pending.length; i += batchSize) {
+        const batch = pending.slice(i, i + batchSize);
+        sendEvent({
+          status: 'processing',
+          percentage: Math.round((processedCount / pending.length) * 100),
+          processedCount,
+          total: pending.length,
+          log: `Memproses batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pending.length / batchSize)} (jumlah: ${batch.length} email)...`
+        });
+
+        await Promise.all(batch.map(async (email) => {
+          try {
+            await analyzeEmail(email.message_id);
+            processedCount++;
+          } catch (err: any) {
+            console.error(`[Bulk Intelligence] Failed to analyze ${email.message_id}:`, err);
+            processedCount++;
+          }
+        }));
+
+        sendEvent({
+          status: 'processing',
+          percentage: Math.round((processedCount / pending.length) * 100),
+          processedCount,
+          total: pending.length,
+          log: `Batch ${Math.floor(i / batchSize) + 1} selesai.`
+        });
+
+        if (i + batchSize < pending.length) {
+          sendEvent({
+            status: 'delaying',
+            percentage: Math.round((processedCount / pending.length) * 100),
+            processedCount,
+            total: pending.length,
+            log: `Menunggu jeda rate limit (15 detik)...`
+          });
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+
+      sendEvent({
+        status: 'complete',
+        percentage: 100,
+        processedCount,
+        total: pending.length,
+        log: `Bulk attachment analysis selesai! Berhasil memproses ${processedCount} email.`
+      });
+      res.end();
+
+    } catch (err: any) {
+      console.error('[Bulk Intelligence API] Error:', err);
+      sendEvent({ status: 'error', log: `Fatal error: ${err.message || String(err)}` });
+      res.end();
     }
   });
 

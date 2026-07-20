@@ -21,6 +21,12 @@ Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data ma
 
 Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit ketat (NVIDIA NIM 40 RPM).
 
+### ⚡ Split-Task Parallel AI Execution
+Kini, alur analisis email berjalan secara **asinkron-paralel sesungguhnya** menggunakan `Promise.allSettled()`. Ketika sebuah email masuk ke sistem:
+1. **Task 1 (Summary & Tagging)**: Diproses asinkron menggunakan fungsi `generateSummaryAndTagging` untuk mengekstrak ringkasan operasional mendalam, level urgensi, mata uang, nominal transaksi, rekomendasi bank tujuan, hingga folder penempatan utama dalam Bahasa Indonesia.
+2. **Task 2 (Attachment Intelligence)**: Jika email memiliki berkas lampiran, tugas analisis mendalam `processEmailIntelligence` dipicu secara paralel. AI akan membedah isi dokumen/gambar lampiran secara ephemeral, mengekstrak ringkasan lampiran, serta merumuskan folder taktis operasional.
+3. **Parallel Settlement & Merge**: Kedua proses asinkron ini berjalan secara konkuren. Hasil keluaran masing-masing model digabungkan secara cerdas oleh mesin integrator, lalu disimpan dalam satu kali transaksi tulis ke database untuk memangkas waktu latensi pemrosesan hingga 50%.
+
 ### Alur Pemrosesan AI & Mekanisme Throttling
 ```
                     +------------------------------------+
@@ -32,66 +38,55 @@ Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI A
                     |     Analisis Asinkron Dipicu       |
                     +------------------------------------+
                                       |
-               +----------------------+----------------------+
-               |                                             |
-               v (Pemrosesan Paralel Core)                   v
-  +------------------------------------------+  +------------------------------------------+
-  |    PRIMARY SUMMARY CORE                  |  |    PRIMARY CONTEXTUAL TAGGING            |
-  |    Model: Nemotron 3 Ultra (550b)        |  |    Model: Inkling                        |
-  |    Engine: Axios Murni                   |  |    Engine: Axios Murni                   |
-  |    Fitur: `enable_thinking: true`        |  |    Fitur: `max_tokens: 8192`             |
-  +------------------------------------------+  +------------------------------------------+
-               |                                             |
-               +----------------------+----------------------+
-                                      | (Merge Output JSON)
+                +----------------------+----------------------+
+                |                                             |
+                v (Pemrosesan Paralel Konkuren)               v
+   +------------------------------------------+  +------------------------------------------+
+   |    TASK 1: SUMMARY & TAGGING CORE        |  |    TASK 2: ATTACHMENT INTELLIGENCE CORE  |
+   |    Model: Nemotron 3 Ultra / DeepSeek    |  |    Model: Inkling / Gemma / Minimax      |
+   |    Engine: Axios / OpenAI SDK             |  |    Engine: Ephemeral File Streamer       |
+   |    Tugas: Klasifikasi, Nominal, Folder    |  |    Tugas: Multimodal & OCR Dokumen       |
+   +------------------------------------------+  +------------------------------------------+
+                |                                             |
+                +----------------------+----------------------+
+                                      | (Parallel Settlement: Promise.allSettled)
                                       v
-                       +-----------------------------+
-                       | Sukses? -> Simpan ke DB     |
-                       +-----------------------------+
+                       +-------------------------------+
+                       |  Mekanisme Sanitasi Array DB  |
+                       |  Deteksi & Perbaikan Otomatis |
+                       +-------------------------------+
+                                      |
+                                      v
+                        +-----------------------------+
+                        | Sukses? -> Simpan ke DB     |
+                        +-----------------------------+
                                       |
                                       | (Jika Core Gagal / Limit 429)
                                       v
-                       +-----------------------------+
-                       | EXPONENTIAL BACKOFF ACTIVE  |
-                       | Deteksi 429 -> Delay 30s    |
-                       +-----------------------------+
+                        +-----------------------------+
+                        | EXPONENTIAL BACKOFF ACTIVE  |
+                        | Deteksi 429 -> Delay 30s    |
+                        +-----------------------------+
                                       |
                                       | (Jika Tetap Gagal)
                                       v
-                       +-----------------------------+
-                       | FALLBACK TIER 1             |
-                       | Model: DeepSeek V4 Pro      |
-                       | Engine: OpenAI SDK          |
-                       +-----------------------------+
-                                      |
-                                      | (Jika Tier 1 Gagal)
-                                      v
-                       +-----------------------------+
-                       | FALLBACK TIER 2             |
-                       | Model: Gemma 4 31B          |
-                       | Engine: Axios Murni         |
-                       +-----------------------------+
-                                      |
-                                      | (Jika Tier 2 Gagal)
-                                      v
-                       +-----------------------------+
-                       | ABSOLUTE LAST RESORT        |
-                       | Model: Minimax M3           |
-                       | Engine: Axios Murni         |
-                       +-----------------------------+
-                                      |
-                                      | (Jika Semua AI Gagal)
-                                      v
-                       +-----------------------------+
-                       | Regex / Rule-Based Fallback |
-                       +-----------------------------+
+                        +-----------------------------+
+                        | FALLBACK CASCADING TIER     |
+                        | Nemotron -> DeepSeek ->     |
+                        | Gemma -> Minimax -> Regex   |
+                        +-----------------------------+
 ```
 
-### ⚡ Proteksi Throttling & Anti-Timeout NVIDIA NIM
-Untuk mencegah kegagalan akibat batas **40 RPM (Requests Per Minute)** pada NVIDIA NIM, sistem mengadopsi taktik berikut:
-1. **Dynamic Queue Batching**: Pemrosesan massal email (*Bulk AI* / *Data Backfill* / *Queue Workers*) dipangkas dari ukuran besar menjadi maksimal **5 email saja per batch**.
-2. **Strict Time Throttling**: Ditambahkan jeda waktu aman (**15 hingga 20 detik**) antar batch pemrosesan untuk memberikan waktu regenerasi rate limit NVIDIA NIM secara berkala.
-3. **Exponential Backoff**: Jaringan interseptor otomatis mendeteksi HTTP `429 Too Many Requests`. Saat limit tercapai, sistem akan otomatis melakukan jeda tunggu aman selama **30 detik** sebelum mengulangi permintaan secara cerdas.
+### 🛡️ Robust DB Array Sanitizer & Parser
+Untuk menjamin kompatibilitas tanpa celah antara SQLite lokal (yang menyimpan metadata lampiran sebagai string JSON) dan Supabase PostgreSQL (yang mewajibkan tipe data array asli atau format literal terstruktur), sistem ini dilengkapi dengan **Dynamic Array Sanitizer**:
+- Mencegah error fatal Postgres `Malformed array literal` dengan melakukan normalisasi tipe data secara defensif sebelum data dikirim ke database cloud.
+- Secara cerdas memotong, merapikan karakter kurung kurawal `{}` / siku `[]`, memisahkan koma, serta membungkus string kosong agar transaksi tulis database selalu berjalan dengan status sukses (100% database-safe).
+
+### ⏳ Real-Time SSE Bulk Sync Engine
+Pengguna kini dapat memantau pengerjaan antrean email pending secara transparan melalui **Server-Sent Events (SSE) Streaming API** (`/api/emails/bulk-summary/stream` dan `/api/emails/bulk-intelligence/stream`):
+- **Dynamic Queue Counter & Status**: Dasbor secara berkala memantau antrean email pending dan menampilkan badge jumlah waktu nyata (*real-time pending counter*).
+- **Streaming Output Logs**: Konsol log beralur maju (*live-scrolling terminal logs*) langsung memproyeksikan status batch, waktu jeda, dan respons model AI ke monitor pengguna.
+- **Micro-batching Throttling**: Memproses email secara berkelompok (maksimal **5 email per batch**) dengan jeda tunggu otomatis **15 detik** di setiap siklus batch selesai untuk memulihkan batas kuota (Rate Limit) NVIDIA NIM API secara elegan tanpa mengganggu antrean utama.
 
 ### 🔮 Alur Analisis Ephemeral Attachment & Streaming File
 Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud melalui pemrosesan ephemeral serta menyajikannya kembali secara aman dan real-time:

@@ -16,6 +16,21 @@ const MODELS: ModelConfig[] = [
     name: 'Nemotron',
     id: 'nvidia/nemotron-3-ultra-550b-a55b',
     apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
+  },
+  {
+    name: 'DeepSeek',
+    id: 'deepseek-ai/deepseek-v4-pro',
+    apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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'
+  },
+  {
+    name: 'Gemma',
+    id: 'google/gemma-4-31b-it',
+    apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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'
+  },
+  {
+    name: 'Minimax',
+    id: 'minimaxai/minimax-m3',
+    apiKey: process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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'
   }
 ];
 

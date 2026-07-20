@@ -220,3 +220,41 @@ PENTING: Anda harus mengembalikan JSON murni tanpa markdown block, tanpa penjela
     }
   }
 }
+
+/**
+ * Generates the structural summary and tagging classification fields using the AI Rotator
+ */
+export async function generateSummaryAndTagging(email: {
+  subject: string;
+  body_text: string;
+  sender: string;
+  date: string;
+}): Promise<any> {
+  const prompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
+
+JSON schema yang harus dikembalikan:
+{
+  "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
+  "currency": "IDR" or "USD",
+  "total_amount": number or null,
+  "denomination_suggestion": number or null,
+  "suggested_bank": "BCA" or "MANDIRI" or "BRI" or "BNI" or "Lainnya" or "",
+  "suggested_folder_parent": "Bank Mandiri" or "Bank Maybank" or "Operation" or "Uncategorized",
+  "suggested_folder_child": "Collection" or "ATM" or "CIT" or "General" or "Uncategorized",
+  "extracted_notes": "Instruksi khusus atau catatan operasional",
+  "suggested_tag": "CIT" or "ATM" or "Lainnya",
+  "urgency_level": "High" or "Medium" or "Routine",
+  "action_required": true or false
+}
+
+Detail Email:
+Subject: ${email.subject || '(No Subject)'}
+From: ${email.sender || 'Unknown Sender'}
+Date: ${email.date || ''}
+Body Text:
+${email.body_text || '(No Body Content)'}
+`;
+
+  const responseText = await getAiCompletion(prompt);
+  return parseCleanJson(responseText);
+}
