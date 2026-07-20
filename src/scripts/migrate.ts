@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
-import { Email, EmailAnalysis } from '../models/mongodb';
+import { Email, EmailAnalysis } from '../models/mongodb.ts';
 
 // Load environment variables
 dotenv.config();
