@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import { getAiCompletion } from './aiService';
+import axios from 'axios';
+import { readFile } from 'node:fs/promises';
+import OpenAI from 'openai';
+import { getAiCompletion, generateWithGemini } from './aiService';
 
 /**
  * AI Processing Service
@@ -13,6 +16,57 @@ export const AI_CONFIG = {
   throttleDelay: 15000,       // Jeda waktu antar batch (15-20 detik)
   retryDelaySeconds: 30       // Detik tunggu jika kena limit 429
 };
+
+/**
+ * Image/Attachment OCR Extraction using NVIDIA Nemotron OCR v2
+ * Hardcoded API Key according to instructions
+ */
+export async function extractTextWithNvidiaOCR(filePath: string): Promise<any> {
+  const invokeUrl = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json"
+  };
+  
+  const data = await readFile(filePath);
+  const imageB64 = Buffer.from(data).toString('base64');
+  
+  if (imageB64.length > 180000) {
+    console.warn("[NVIDIA OCR] File over 180KB base64 limit, proceeding with caution or fallback.");
+  }
+
+  const payload = { input: [{ type: "image_url", url: `data:image/png;base64,${imageB64}` }] };
+  const response = await axios.post(invokeUrl, payload, { headers, responseType: 'json' });
+  return response.data;
+}
+
+/**
+ * Deep Reasoning & Analysis with NVIDIA Nemotron 3 Super 120B a12b
+ * Hardcoded API Key according to instructions
+ */
+export async function processWithNemoSuper(promptText: string): Promise<string> {
+  const nvidiaOpenAI = new OpenAI({
+    apiKey: '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',
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+  });
+
+  let fullContent = "";
+  const completion = await nvidiaOpenAI.chat.completions.create({
+    model: "nvidia/nemotron-3-super-120b-a12b",
+    messages: [{"role": "user", "content": promptText}],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 16384,
+    chat_template_kwargs: {"enable_thinking": true},
+    stream: true
+  } as any);
+
+  for await (const chunk of completion) {
+    const content = chunk.choices[0]?.delta?.content || '';
+    fullContent += content;
+  }
+  return fullContent;
+}
 
 /**
  * Executes a function with exponential backoff on HTTP 429 (Too Many Requests).
@@ -101,11 +155,12 @@ export function extractAttachmentContent(filePath: string, filename: string): st
  * Main Email Intelligence Processing logic:
  * 1. Creates a local temporary directory './temp'
  * 2. Decodes base64 attachments as actual files inside './temp'
- * 3. Extracts text representation from those files
- * 4. Construct AI Prompt to get folder, sub_folder, tags, summary_email, and summary_attachments
- * 5. Calls NVIDIA rotation model or fallback model
- * 6. Deletes temp files immediately (ephemeral processing)
- * 7. Returns parsed JSON results
+ * 3. Extracts text representation (using Nemotron OCR v2 for images, basic extract fallback for others)
+ * 4. Construct AI Retriever Prompt to retrieve folder, sub_folder, tags, summary_email, and summary_attachments
+ * 5. Calls Nemotron-3-Super 120B as Primary model
+ * 6. Falling back to Gemini -> DeepSeek -> Gemma on failures
+ * 7. Deletes temp files immediately (ephemeral processing)
+ * 8. Returns parsed JSON results
  */
 export async function processEmailIntelligence(email: {
   message_id: string;
@@ -144,42 +199,129 @@ export async function processEmailIntelligence(email: {
         fs.writeFileSync(filePath, buffer);
         savedFiles.push({ filePath, filename: att.filename });
 
-        // 2. Extract content
-        const extracted = extractAttachmentContent(filePath, att.filename);
+        // 2. OCR or Basic extract based on format
+        const ext = path.extname(att.filename).toLowerCase();
+        let extracted = "";
+        
+        if (['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'].includes(ext)) {
+          try {
+            console.log(`[NVIDIA OCR] Invoking Nemotron OCR v2 for image file: ${att.filename}`);
+            const ocrRes = await extractTextWithNvidiaOCR(filePath);
+            const ocrText = typeof ocrRes === 'string' ? ocrRes : (ocrRes?.text || ocrRes?.description || JSON.stringify(ocrRes));
+            extracted = `[NVIDIA Nemotron OCR Extracted Text from ${att.filename}]:\n"""\n${ocrText}\n"""`;
+          } catch (ocrErr: any) {
+            console.error(`[NVIDIA OCR Fail] Failed to run Nemotron OCR on ${att.filename}, falling back to basic extraction:`, ocrErr.message);
+            extracted = extractAttachmentContent(filePath, att.filename);
+          }
+        } else {
+          extracted = extractAttachmentContent(filePath, att.filename);
+        }
+        
         extractedContents.push(extracted);
       } else if (att.filename) {
         extractedContents.push(`[File: ${att.filename} (No file data payload stored in database)]`);
       }
     }
 
-    // 3. Prompt Engineering
-    const prompt = `Analisis email beserta isi attachment-nya dan berikan output JSON dengan struktur berikut:
-{
-  "folder": "BCA",
-  "sub_folder": "CIT BCA",
-  "tags": ["ORDER CIT", "URGENT", "NEED Action"],
-  "summary_email": "Ringkasan tindakan yang harus diambil...",
-  "summary_attachments": [
-    { "filename": "A.png", "desc": "file untuk approval dan trip" },
-    { "filename": "order.xlsx", "desc": "master untuk trip, terdapat 9 trip yaitu..." }
-  ]
-}
+    // 3. Prompt Engineering using Nemo Retriever Skills Adaptation
+    const prompt = `[NEMO RETRIEVER CONTEXT]
+Below is the structured raw email metadata and raw text/OCR content from the email attachments.
+Your task is to "retrieve" and extract specific fields strictly based on the provided context without introducing hallucinations or assumptions.
 
-Detail Email:
-Subject: ${email.subject || '(No Subject)'}
-From: ${email.sender || 'Unknown Sender'}
+--- START EMAIL CONTEXT ---
+Sender: ${email.sender || 'Unknown Sender'}
 Date: ${email.date || ''}
+Subject: ${email.subject || '(No Subject)'}
 Body Text:
 ${email.body_text || '(No Body Content)'}
+--- END EMAIL CONTEXT ---
 
-Isi Lampiran/Attachment (Temporary):
+--- START ATTACHMENT OCR CONTEXT ---
 ${extractedContents.length > 0 ? extractedContents.join('\n\n') : 'Tidak ada lampiran.'}
+--- END ATTACHMENT OCR CONTEXT ---
 
-PENTING: Anda harus mengembalikan JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON. Pastikan JSON valid.`;
+--- INSTRUCTIONS ---
+Strictly retrieve and construct the output JSON structure. No explanations, no markdown blocks, no conversational preamble. Valid JSON only.
+If a value is not explicitly findable or retrievable, use standard operational defaults (e.g., "Operation" or "General"). All summaries must be in Bahasa Indonesia.
 
-    // 4. Call rotating AI model
-    console.log(`[Email Intelligence] Calling AI models for message_id: ${email.message_id}...`);
-    const aiResponse = await getAiCompletion(prompt);
+Expected JSON schema to return:
+{
+  "folder": "Major category retrieved from context (e.g., BCA, MANDIRI, BRI, BNI, Maybank, or Operation)",
+  "sub_folder": "Specific child category or transaction type (e.g., CIT, ATM, Collection, General, Uncategorized)",
+  "tags": ["Retrieve relevant operational keywords, codes, status tags. E.g., ORDER CIT, URGENT, NEED ACTION, etc."],
+  "summary_email": "A deep, concise operational summary of the email text and actions to take in Bahasa Indonesia",
+  "summary_attachments": [
+    {
+      "filename": "Exact file name from context",
+      "desc": "Retrieve and summarize the specific details, transaction values, or key data points found in this file's OCR/text content in Bahasa Indonesia"
+    }
+  ]
+}
+`;
+
+    // 4. Primary & Cascading Fallback Chain Execution
+    console.log(`[Email Intelligence] Calling Nemotron-3-Super 120B for message_id: ${email.message_id}...`);
+    let aiResponse = "";
+    
+    try {
+      aiResponse = await executeWithBackoff(async () => {
+        return await processWithNemoSuper(prompt);
+      });
+      console.log(`[Email Intelligence] Success with Nemotron-3-Super 120B!`);
+    } catch (nemoErr: any) {
+      console.warn(`[Email Intelligence] Primary model Nemotron-3-Super 120B failed: ${nemoErr.message || nemoErr}. Falling back to Gemini 1.5 Flash...`);
+      try {
+        aiResponse = await executeWithBackoff(async () => {
+          return await generateWithGemini(prompt);
+        });
+        console.log(`[Email Intelligence] Success with Gemini 1.5 Flash fallback!`);
+      } catch (geminiErr: any) {
+        console.warn(`[Email Intelligence] Gemini 1.5 Flash failed: ${geminiErr.message || geminiErr}. Falling back to DeepSeek...`);
+        try {
+          // Direct fallback to DeepSeek via OpenAI SDK configured with DeepSeek parameters
+          aiResponse = await executeWithBackoff(async () => {
+            const deepseekOpenAI = new OpenAI({
+              apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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',
+              baseURL: 'https://integrate.api.nvidia.com/v1'
+            });
+            const completion = await deepseekOpenAI.chat.completions.create({
+              model: 'deepseek-ai/deepseek-v4-pro',
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 1,
+              top_p: 0.95,
+              max_tokens: 4096,
+              stream: false
+            });
+            return completion.choices[0]?.message?.content || '';
+          });
+          console.log(`[Email Intelligence] Success with DeepSeek fallback!`);
+        } catch (dsErr: any) {
+          console.warn(`[Email Intelligence] DeepSeek failed: ${dsErr.message || dsErr}. Falling back to Gemma...`);
+          try {
+            // Direct fallback to Gemma via OpenAI SDK configured with Gemma parameters
+            aiResponse = await executeWithBackoff(async () => {
+              const gemmaOpenAI = new OpenAI({
+                apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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',
+                baseURL: 'https://integrate.api.nvidia.com/v1'
+              });
+              const completion = await gemmaOpenAI.chat.completions.create({
+                model: 'google/gemma-4-31b-it',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 1,
+                top_p: 0.95,
+                max_tokens: 4096,
+                stream: false
+              });
+              return completion.choices[0]?.message?.content || '';
+            });
+            console.log(`[Email Intelligence] Success with Gemma fallback!`);
+          } catch (gemmaErr: any) {
+            console.error(`[Email Intelligence] All models in cascade failed!`);
+            throw new Error(`Cascade Failure: NemoSuper, Gemini, DeepSeek, and Gemma all failed. Last error: ${gemmaErr.message}`);
+          }
+        }
+      }
+    }
     
     // 5. Clean & parse response
     const parsedResult = parseCleanJson(aiResponse);
@@ -199,7 +341,7 @@ PENTING: Anda harus mengembalikan JSON murni tanpa markdown block, tanpa penjela
     return {
       folder: 'Operation',
       sub_folder: 'General',
-      tags: ['Error', 'NVIDIA Fail'],
+      tags: ['Error', 'Cascade Fail'],
       summary_email: `Gagal menganalisis email secara cerdas. Error: ${err.message || String(err)}`,
       summary_attachments: rawAttachments.map((att: any) => ({
         filename: att.filename || 'Attachment',
@@ -258,3 +400,69 @@ ${email.body_text || '(No Body Content)'}
   const responseText = await getAiCompletion(prompt);
   return parseCleanJson(responseText);
 }
+
+/**
+ * Processes a list of pending emails using Controlled Concurrency Batching (BAGIAN 1)
+ */
+export async function executeControlledBulkProcess(
+  pendingEmails: any[],
+  analyzeSingleEmailFn: (messageId: string) => Promise<any>,
+  onProgress?: (data: { current: number; total: number; percentage: number; log: string; status: string }) => void
+): Promise<void> {
+  const BATCH_SIZE = 3;
+  const DELAY_MS = 15000;
+  const total = pendingEmails.length;
+
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    const batch = pendingEmails.slice(i, i + BATCH_SIZE);
+    
+    if (onProgress) {
+      onProgress({
+        status: 'processing',
+        current: i,
+        total,
+        percentage: Math.round((i / total) * 100),
+        log: `Memproses batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(total / BATCH_SIZE)} (jumlah: ${batch.length} email)...`
+      });
+    }
+
+    const tasks = batch.map(async (email) => {
+      try {
+        await analyzeSingleEmailFn(email.message_id);
+        console.log(`[Controlled Concurrency] Selesai memproses email: ${email.message_id}`);
+      } catch (err: any) {
+        console.error(`[Controlled Concurrency] Gagal memproses email ${email.message_id}:`, err);
+      }
+    });
+
+    await Promise.allSettled(tasks); // Tunggu batch pararel selesai
+
+    const currentProcessed = Math.min(i + BATCH_SIZE, total);
+    if (onProgress) {
+      onProgress({
+        status: 'processing',
+        current: currentProcessed,
+        total,
+        percentage: Math.round((currentProcessed / total) * 100),
+        log: `Batch ${Math.floor(i / BATCH_SIZE) + 1} selesai diproses (${currentProcessed}/${total}).`
+      });
+    }
+
+    console.log(`[Batch] Selesai memproses ${currentProcessed} dari ${total}`);
+
+    if (i + BATCH_SIZE < total) {
+      if (onProgress) {
+        onProgress({
+          status: 'delaying',
+          current: currentProcessed,
+          total,
+          percentage: Math.round((currentProcessed / total) * 100),
+          log: `Menunggu jeda wajib ${DELAY_MS / 1000} detik sebelum batch berikutnya...`
+        });
+      }
+      console.log(`[Batch] Menunggu ${DELAY_MS}ms sebelum batch berikutnya...`);
+      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
+    }
+  }
+}
+

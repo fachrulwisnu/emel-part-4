@@ -1,7 +1,7 @@
 # 📖 Panduan Penggunaan Sistem (User Guide) - Workflow Email Ticketing System
 *Untuk PIC Operasional & Administrator Sistem*
 
-Selamat datang di **Workflow Email Ticketing System**! Dokumen ini dirancang secara komprehensif untuk membantu Anda (PIC) dalam mengoperasikan, mengelola, serta memaksimalkan efisiensi penanganan email masuk menggunakan kecerdasan buatan (**AI Operational Copilot**) bertenaga NVIDIA API yang kini dilengkapi dengan fitur pecahan dinamis dan pertahanan rate-limit otomatis.
+Selamat datang di **Workflow Email Ticketing System**! Dokumen ini dirancang secara komprehensif untuk membantu Anda (PIC) dalam mengoperasikan, mengelola, serta memaksimalkan efisiensi penanganan email masuk menggunakan kecerdasan buatan (**AI Operational Copilot**) bertenaga NVIDIA API dan Google Gemini yang kini dilengkapi dengan fitur pecahan dinamis, pertahanan rate-limit otomatis, dan monitor kesehatan AI secara real-time.
 
 ---
 
@@ -9,7 +9,7 @@ Selamat datang di **Workflow Email Ticketing System**! Dokumen ini dirancang sec
 
 Aplikasi ini mengotomatiskan proses penanganan email masuk dari klien maupun server perbankan dengan alur kerja pintar:
 1. **Syncing & Fetching**: Menarik pesan email dari server POP3 secara berkala (otomatis setiap 3 menit atau manual melalui tombol).
-2. **AI Analysis (NVIDIA AI)**: Setiap email dianalisis isinya untuk mendeteksi ringkasan (Summary), urgensi, kebutuhan tindakan, dan rekomendasi penempatan folder operasional secara instan.
+2. **AI Analysis (NVIDIA AI & Gemini)**: Setiap email dianalisis isinya untuk mendeteksi ringkasan (Summary), urgensi, kebutuhan tindakan, dan rekomendasi penempatan folder operasional secara instan.
 3. **Smart Actions**: Memungkinkan Anda untuk mengonfirmasi penempatan folder operasional, mengubah rekomendasi, membuat aturan filter otomatis (*Automation Filter Routing*), serta menerbitkan tiket Cash In Transit (CIT) / ATM Dispatch secara langsung.
 
 ---
@@ -54,46 +54,42 @@ Guna meningkatkan fungsionalitas pengarsipan dan analisis dokumen, Anda kini dib
    * **Level 1 (Parent)**: Menunjukkan Bank Utama atau Kategori Operasional (misal: *Bank Mandiri*, *Bank Maybank*, *Operation*, *Uncategorized*).
    * **Level 2 (Child)**: Menunjukkan sub-klasifikasi operasional seperti *Collection*, *ATM*, *CIT*, atau *General*.
    * Di setiap level folder, terdapat **Badge Counter** berwarna kontras yang memperlihatkan secara akurat berapa jumlah tiket email yang tersarang di dalamnya. Klik nama folder untuk membentangkan (*expand*) atau melipat kembali (*collapse*).
-3. **Pemicu On-Demand (Analyze Intelligence)**:
-   * Pilih email mana pun dari struktur navigasi pohon folder. Klik tombol **"Analyze Intelligence"** di sudut kanan panel detail.
-   * AI akan memproses ulang email serta seluruh berkas lampiran pendukungnya dengan instruksi ekstraksi yang sangat tinggi.
-4. **Analisis Ephemeral Berkas Lampiran (Attachment Summary)**:
-   * Menghindari penumpukan data (*storage bloat*) pada server lokal, lampiran diproses secara ephemeral oleh AI. Hasilnya adalah teks deskripsi operasional yang informatif mengenai isi berkas tersebut tanpa perlu menyimpan file mentahnya di penyimpanan terdistribusi yang berat.
+3. **Tombol "Kelola Antrean Intelligence" & Queue Management Modal**:
+   * Di bawah menu navigasi pohon folder sebelah kiri, Anda akan melihat tombol **"Kelola Antrean Intelligence (X Pending)"**.
+   * Klik tombol ini untuk membuka **AI Intelligence Queue Management Modal**.
+   * Di dalam modal, Anda dapat memantau bar progres "Diproses: X dari Y Email" beserta persentasenya, daftar antrean pending, dan terminal log box hitam yang terhubung ke Server-Sent Events (SSE). Anda dapat memulai proses massal dengan mengeklik tombol **"Bulk Analyze"**.
+4. **Analisis Berkas Lampiran (NVIDIA OCR & Nemotron 3 Super)**:
+   * AI akan memproses file lampiran secara ephemeral menggunakan NVIDIA Nemotron OCR v2 untuk mengekstrak teks, dan menyuapnya ke NVIDIA Nemotron 3 Super 120B (dengan fallback Gemini 1.5 Flash). Hasilnya adalah teks deskripsi operasional yang informatif mengenai isi berkas tersebut tanpa perlu menyimpan file mentahnya secara redundan.
 5. **Secure Real-time Streaming & Download**:
    * Jika Anda memerlukan berkas lampiran aslinya, cukup tekan tombol **"Download"** pada baris lampiran yang diinginkan.
    * Sistem akan mengonversi biner terkompresi Base64 dari database, membungkusnya ke dalam struktur stream biner real-time, lalu mengalirkannya langsung ke peramban web PIC secara aman dan cepat.
 
-#### 📊 Diagram Alur Pemrosesan Ephemeral Attachment & Streaming
-```
- [User Dashboard] ---> Klik "Analyze Intelligence" ---> Ambil Attachment Base64 dari DB
-                                                                  |
-                                                                  v
- [AI Gateway] <------- Terjemahkan secara Ephemeral <------- Bungkus File Sementara
-      |
-      +---> [Core Parsing AI] ------> Ekstrak Konten Dokumen (PDF/DOC)
-      |
-      +---> [Multimodal Core AI] ---> Analisis Gambar/Visual Lampiran (JPG/PNG)
-                                                                  |
-                                                                  v
- [Analisis Terintegrasi] ----------> Simpan ke Tabel `email_analysis` (Metadata Deskripsi)
-                                                                  |
-                                                                  v
- [Download Trigger] ---------> Mengalirkan Stream Biner Aman langsung ke Browser PIC
-```
+---
+
+## 🟢 3. Sistem AI Health Check & Diagnostics (Real-time Monitor)
+
+Di pojok kiri atas sistem header (bersebelahan dengan indikator Database status), Anda akan melihat tombol indikator **"AI Health: Online"** atau **"AI Health: Degraded"**:
+* **Lampu Indikator**:
+  * 🟢 **Hijau**: Menandakan seluruh sistem kecerdasan utama (**Nemotron OCR v2**, **Nemotron 3 Super 120B**, dan **Gemini 1.5 Fallback**) berfungsi penuh dengan status online.
+  * 🔴 **Merah**: Menunjukkan satu atau lebih model mengalami kegagalan, kehabisan kuota, atau waktu habis (timeout).
+* **Popover Panel**:
+  * Klik tombol indikator tersebut untuk menampilkan panel detail monitor.
+  * Anda akan disuguhi status aktif, latensi respons aktual (Response Time) dalam milidetik, serta rincian pesan kesalahan saat kegagalan terjadi untuk setiap model secara terpisah.
+  * Tekan tombol **"Refresh Now"** di dalam panel untuk memicu pemeriksaan kesehatan instan secara manual. Sistem juga melakukan pembaruan otomatis di latar belakang setiap **60 detik**.
 
 ---
 
-## 💵 3. Manajemen Pecahan & Denominasi Dinamis (CIT / ATM Order)
+## 💵 4. Manajemen Pecahan & Denominasi Dinamis (CIT / ATM Order)
 
 Saat Anda membuat atau menyunting rincian pesanan **Cash In Transit (CIT)** atau pengiriman **ATM** melalui modal disposisi, Anda akan disajikan dengan bagian **Pecahan & Denominasi Dynamic**:
 
-### 📊 3.1. Penyesuaian Mata Uang Otomatis (IDR vs USD)
+### 📊 4.1. Penyesuaian Mata Uang Otomatis (IDR vs USD)
 * **Sinkronisasi Mata Uang**: Label bagian pecahan akan mengikuti jenis mata uang yang dipilih pada kolom pilihan mata uang (misal: **IDR** atau **USD**).
 * **Dropdown Pilihan Dinamis**:
   * Jika mata uang aktif adalah **USD**, sistem secara otomatis memuat pilihan pecahan nominal USD: `[USD 1, USD 2, USD 5, USD 10, USD 20, USD 50, USD 100]`.
   * Jika mata uang aktif adalah **IDR**, sistem secara otomatis beralih memuat pilihan pecahan rupiah: `[IDR 1000, IDR 2000, IDR 5000, IDR 10000, IDR 20000, IDR 50000, IDR 100000]`.
 
-### 🧮 3.2. Logika Hitung & Validasi Selisih
+### 🧮 4.2. Logika Hitung & Validasi Selisih
 * **Total Hasil Hitung (`totalHitung`)**: Setiap kali Anda mengubah nominal pecahan maupun kuantitas lembar uang, subtotal per baris dan total keseluruhan hasil perhitungan akan diperbarui secara real-time.
 * **Deteksi Selisih Otomatis**: Sistem akan membandingkan **Total Nominal Form** (jumlah pesanan utama) dengan **Total Hasil Hitung Pecahan**.
   * Jika terjadi ketidaksesuaian nominal, sistem menampilkan kotak peringatan berwarna kuning beserta rincian jumlah selisih secara transparan (Pecahan kurang atau berlebih).
@@ -102,56 +98,11 @@ Saat Anda membuat atau menyunting rincian pesanan **Cash In Transit (CIT)** atau
 
 ---
 
-## ⚙️ 4. Menu Pengaturan & Penanganan Rate-Limit
-
-Klik menu **"Settings"** di bilah navigasi kiri untuk masuk ke halaman konfigurasi sistem tingkat lanjut:
-
-### 🔍 4.1. Custom Filter Rules
-Halaman untuk mengelola aturan filter otomatis yang telah Anda buat:
-* Aturan mencakup kriteria pengirim, kata kunci subjek, atau kata kunci isi pesan, serta menetapkan ke folder tujuan mana email tersebut harus diarahkan secara otomatis di masa mendatang.
-
-### 🧪 4.2. AI Health & Diagnostics Tab
-* Memungkinkan administrator untuk melihat status kesehatan real-time dari model AI (**Nemotron 3 Ultra**, **Inkling**, **DeepSeek V4 Pro**, **Gemma 4**, dan **Minimax M3**).
-* Jika model tertentu mengalami status sibuk/penuh (HTTP 503) atau tidak merespons, status akan menampilkan indikator peringatan detail agar PIC dapat beralih atau memantau performa model cadangan.
-
-### 🕒 4.3. Historical Data Backfill & Mekanisme Pengaman API
-Fitur khusus bagi PIC saat melakukan migrasi atau jika terdapat data email lama dalam jumlah besar yang belum teranalisis AI:
-1. **Throttling Cerdas**: Sistem memproses antrean email secara bertahap dalam kelompok kecil berisi **5 email per batch**.
-2. **Jeda Waktu Aman (15-20 Detik)**: Antar batch diberi jeda istirahat selama 15 hingga 20 detik untuk mengembalikan kuota batas pemanggilan pada NVIDIA NIM API secara berkala agar terhindar dari pemblokiran.
-3. **Resiliensi Auto-Retry**: Jika batas **40 RPM** NVIDIA tercapai, sistem akan memicu respons *Exponential Backoff*—menunda aktivitas selama **30 detik** sebelum mengulangi proses pengerjaan secara otomatis.
-4. **Alur Paralel Ganda (Asinkron Sejati)**: Untuk mempercepat pemrosesan, email-email dalam batch kini dianalisis secara konkuren menggunakan `Promise.allSettled()`. Analisis umum email (*Summary & Tagging*) dan analisis berkas lampiran (*Attachment Intelligence*) berjalan berdampingan secara simultan, sehingga mempersingkat total durasi pengerjaan backlog hingga setengahnya.
-
----
-
-## 🔒 5. Integrasi Database & Sanitasi Array Supabase
-Sistem ini menggunakan sinkronisasi hybrid antara SQLite lokal dan database cloud Supabase PostgreSQL. Untuk memastikan transaksi data berjalan lancar tanpa terganggu inkonsistensi tipe data:
-* **Mekanisme Sanitasi Defensif**: Database PostgreSQL sangat ketat terhadap format data array. Jika format string JSON lampiran langsung ditulis apa adanya, Postgres dapat melempar error `Malformed array literal`.
-* **Solusi Otomatis**: Backend secara aktif mendeteksi, mengonversi, dan menyembuhkan bentuk lampiran yang tidak standar sebelum disimpan ke Supabase. Data lampiran dibersihkan, divalidasi, dan diubah ke dalam array objek yang terstruktur dengan aman. PIC tidak perlu khawatir tentang kesalahan sinkronisasi data biner di latar belakang.
-
----
-
-## ⚡ 6. Monitoring Real-Time dengan Server-Sent Events (SSE)
-Untuk memberikan pengalaman operasional yang interaktif, pengerjaan antrean email pending kini dilengkapi dengan dashboard pemantauan **Server-Sent Events (SSE)** langsung pada antarmuka pengguna:
-1. **Status Antrean Visual (Real-Time Counter)**:
-   * **Inbox Utama**: Menampilkan tombol antrean beserta indikator jumlah email pending yang belum dianalisis ringkasannya oleh AI.
-   * **Dasbor Intelijen**: Menampilkan info antrean lampiran (*Pending Attachments*) dengan badge berdenyut (*pulse animation*) untuk mempermudah deteksi berkas belum teranalisis.
-2. **Tombol "Bulk Analyze"**:
-   * PIC dapat memicu pemrosesan seluruh antrean dalam sekali klik.
-   * Saat pengerjaan berjalan, progress bar (%) akan bergerak secara dinamis seiring rampungnya pengerjaan email.
-3. **Live Terminal Logging**:
-   * Konsol logs interaktif pada antarmuka secara berurutan menampilkan aksi yang sedang dilakukan oleh server (misal: pengerjaan batch, jeda pemulihan rate-limit, atau penanganan retry).
-
----
-
-## ⚠️ 7. Penanganan Masalah (Troubleshooting) & Tips Operasional
+## ⚠️ 5. Penanganan Masalah (Troubleshooting) & Tips Operasional
 
 * **Tanya**: Mengapa proses sinkronisasi massal (*Bulk AI*) atau *Backfill* terasa berjalan lebih lambat dibanding versi awal?
-  * **Jawab**: Ini adalah fitur pengaman baru yang dirancang agar sistem Anda tidak diblokir oleh server AI NVIDIA (limit 40 RPM). Memproses email dalam batch berisi 5 item dengan jeda 15 detik menjamin stabilitas 100% tanpa adanya error crash di tengah jalan.
+  * **Jawab**: Ini adalah fitur pengaman baru yang dirancang agar sistem Anda tidak diblokir oleh server AI NVIDIA (limit 40 RPM). Memproses email dalam batch berisi 3 item secara konkuren dengan jeda 15 detik menjamin stabilitas 100% tanpa adanya error crash di tengah jalan.
 * **Tanya**: Mengapa muncul kotak peringatan berwarna kuning saat mengisi pecahan CIT?
   * **Jawab**: Itu menunjukkan jumlah perkalian pecahan uang Anda (misal: 100 lembar x $50 = $5000) berbeda dengan nilai nominal utama yang Anda input pada form atas. Anda dapat mengecek kembali jumlah lembar uang atau mengklik tombol **"Samakan Nominal"** untuk membetulkannya secara cepat.
 * **Tanya**: Apa yang terjadi jika seluruh sistem AI NVIDIA mendadak down atau mati?
-  * **Jawab**: Aplikasi ini dilengkapi dengan **Rule-Based Regex Fallback** serta database lokal SQLite. Data email Anda tidak akan pernah hilang dan tetap tersimpan utuh. Setelah server AI pulih, Anda cukup menggunakan menu **Historical Data Backfill** untuk mengisi ulang seluruh analisis AI yang tertunda.
-
----
-
-*Terima kasih atas dedikasi Anda dalam menjaga kelancaran operasional ticketing! Jika ada kendala sistem lebih lanjut, silakan hubungi tim administrator IT.*
+  * **Jawab**: Sistem secara dinamis akan beralih (*cascading fallback*) ke model Google Gemini 1.5 Flash, dilanjutkan ke DeepSeek dan Gemma, lalu beralih ke Rule-Based Regex Fallback yang tersimpan lokal di SQLite. Operasional penanganan tiket Anda dijamin tetap stabil berjalan 100% tanpa hambatan.

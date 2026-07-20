@@ -2,6 +2,7 @@ import express, { Response } from "express";
 import path from "path";
 import axios from "axios";
 import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createServer as createViteServer } from "vite";
 import { 
   initDatabaseService, 
@@ -41,6 +42,7 @@ import importEmlDirHandler from "./api/import-eml-dir";
 import foldersHandler from "./api/folders";
 import customFiltersHandler from "./api/custom-filters";
 import retroactiveFilterHandler from "./api/retroactive-filter";
+import { executeControlledBulkProcess } from "./src/services/aiProcessingService";
 
 async function startServer() {
   const app = express();
@@ -294,6 +296,114 @@ async function startServer() {
     }
   });
 
+  // GET AI System Health Check Endpoint
+  app.get("/api/system/ai-health", async (req, res) => {
+    try {
+      const results = await Promise.all([
+        // 1. Nemotron OCR v2
+        (async () => {
+          const start = Date.now();
+          try {
+            const invokeUrl = "https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2";
+            const headers = {
+              "Authorization": "Bearer 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",
+              "Accept": "application/json",
+              "Content-Type": "application/json"
+            };
+            const payload = {
+              input: [{
+                type: "image_url",
+                url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+              }]
+            };
+            const response = await axios.post(invokeUrl, payload, { headers, timeout: 8000 });
+            const latency = Date.now() - start;
+            return {
+              name: "nemotron-ocr-v2",
+              status: response.status === 200 ? "Online" : "Offline",
+              statusCode: response.status,
+              latency: `${latency}ms`
+            };
+          } catch (err: any) {
+            const latency = Date.now() - start;
+            return {
+              name: "nemotron-ocr-v2",
+              status: "Offline",
+              statusCode: err.response?.status || 500,
+              latency: `${latency}ms`,
+              error: err.message
+            };
+          }
+        })(),
+
+        // 2. Nemotron-3-Super-120B
+        (async () => {
+          const start = Date.now();
+          try {
+            const openai = new OpenAI({
+              apiKey: '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',
+              baseURL: 'https://integrate.api.nvidia.com/v1',
+            });
+            const completion = await openai.chat.completions.create({
+              model: "nvidia/nemotron-3-super-120b-a12b",
+              messages: [{"role": "user", "content": "ping"}],
+              max_tokens: 5,
+              stream: false
+            });
+            const latency = Date.now() - start;
+            return {
+              name: "nemotron-3-super-120b",
+              status: "Online",
+              statusCode: 200,
+              latency: `${latency}ms`
+            };
+          } catch (err: any) {
+            const latency = Date.now() - start;
+            return {
+              name: "nemotron-3-super-120b",
+              status: "Offline",
+              statusCode: err.status || err.response?.status || 500,
+              latency: `${latency}ms`,
+              error: err.message
+            };
+          }
+        })(),
+
+        // 3. Gemini 1.5 Flash (Primary Fallback)
+        (async () => {
+          const start = Date.now();
+          try {
+            const GEMINI_API_KEY = "AIzaSyAM5OQ6yxiY2Us9esJzhub3MgFjPb9chkA"; 
+            const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const result = await model.generateContent("ping");
+            const responseText = result.response.text();
+            const latency = Date.now() - start;
+            return {
+              name: "gemini-1.5-flash",
+              status: responseText ? "Online" : "Offline",
+              statusCode: 200,
+              latency: `${latency}ms`
+            };
+          } catch (err: any) {
+            const latency = Date.now() - start;
+            return {
+              name: "gemini-1.5-flash",
+              status: "Offline",
+              statusCode: err.status || 500,
+              latency: `${latency}ms`,
+              error: err.message
+            };
+          }
+        })()
+      ]);
+
+      res.json({ success: true, health: results });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Get saved emails from active DB (Supabase if credentials filled, otherwise SQLite)
   app.get("/api/emails", async (req, res) => {
     try {
@@ -425,50 +535,17 @@ async function startServer() {
 
       sendEvent({ status: 'started', percentage: 0, processedCount: 0, total: pending.length, log: `Memulai sinkronisasi bulk summary untuk ${pending.length} email...` });
 
-      const batchSize = 5;
-      const delayMs = 15000;
-      let processedCount = 0;
-
-      for (let i = 0; i < pending.length; i += batchSize) {
-        const batch = pending.slice(i, i + batchSize);
+      await executeControlledBulkProcess(pending, analyzeEmail, (progressData) => {
         sendEvent({
-          status: 'processing',
-          percentage: Math.round((processedCount / pending.length) * 100),
-          processedCount,
-          total: pending.length,
-          log: `Memproses batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pending.length / batchSize)} (jumlah: ${batch.length} email)...`
+          status: progressData.status,
+          percentage: progressData.percentage,
+          processedCount: progressData.current,
+          total: progressData.total,
+          log: progressData.log
         });
+      });
 
-        await Promise.all(batch.map(async (email) => {
-          try {
-            await analyzeEmail(email.message_id);
-            processedCount++;
-          } catch (err: any) {
-            console.error(`[Bulk Summary] Failed to analyze ${email.message_id}:`, err);
-            processedCount++;
-          }
-        }));
-
-        sendEvent({
-          status: 'processing',
-          percentage: Math.round((processedCount / pending.length) * 100),
-          processedCount,
-          total: pending.length,
-          log: `Batch ${Math.floor(i / batchSize) + 1} selesai.`
-        });
-
-        if (i + batchSize < pending.length) {
-          sendEvent({
-            status: 'delaying',
-            percentage: Math.round((processedCount / pending.length) * 100),
-            processedCount,
-            total: pending.length,
-            log: `Menunggu jeda rate limit (15 detik)...`
-          });
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-      }
-
+      const processedCount = pending.length;
       sendEvent({
         status: 'complete',
         percentage: 100,
@@ -505,50 +582,17 @@ async function startServer() {
 
       sendEvent({ status: 'started', percentage: 0, processedCount: 0, total: pending.length, log: `Memulai analisis bulk attachment untuk ${pending.length} email...` });
 
-      const batchSize = 5;
-      const delayMs = 15000;
-      let processedCount = 0;
-
-      for (let i = 0; i < pending.length; i += batchSize) {
-        const batch = pending.slice(i, i + batchSize);
+      await executeControlledBulkProcess(pending, analyzeEmail, (progressData) => {
         sendEvent({
-          status: 'processing',
-          percentage: Math.round((processedCount / pending.length) * 100),
-          processedCount,
-          total: pending.length,
-          log: `Memproses batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(pending.length / batchSize)} (jumlah: ${batch.length} email)...`
+          status: progressData.status,
+          percentage: progressData.percentage,
+          processedCount: progressData.current,
+          total: progressData.total,
+          log: progressData.log
         });
+      });
 
-        await Promise.all(batch.map(async (email) => {
-          try {
-            await analyzeEmail(email.message_id);
-            processedCount++;
-          } catch (err: any) {
-            console.error(`[Bulk Intelligence] Failed to analyze ${email.message_id}:`, err);
-            processedCount++;
-          }
-        }));
-
-        sendEvent({
-          status: 'processing',
-          percentage: Math.round((processedCount / pending.length) * 100),
-          processedCount,
-          total: pending.length,
-          log: `Batch ${Math.floor(i / batchSize) + 1} selesai.`
-        });
-
-        if (i + batchSize < pending.length) {
-          sendEvent({
-            status: 'delaying',
-            percentage: Math.round((processedCount / pending.length) * 100),
-            processedCount,
-            total: pending.length,
-            log: `Menunggu jeda rate limit (15 detik)...`
-          });
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-      }
-
+      const processedCount = pending.length;
       sendEvent({
         status: 'complete',
         percentage: 100,

@@ -17,17 +17,11 @@ Dengan integrasi cerdas ini, tim operasional dapat memangkas waktu entri data ma
 
 ---
 
-## 🤖 2. Arsitektur AI & Mekanisme Pengendalian Rate-Limit
+## 🤖 2. Arsitektur AI Mekanik & Aliran Fallback Cascading
 
 Sistem ini didesain tangguh (*resilient*) menggunakan **Split-Task Parallel AI Architecture** yang berfokus pada kecepatan respon, ketahanan terhadap kegagalan API, pemadaman jaringan, maupun kuota rate limit ketat (NVIDIA NIM 40 RPM).
 
-### ⚡ Split-Task Parallel AI Execution
-Kini, alur analisis email berjalan secara **asinkron-paralel sesungguhnya** menggunakan `Promise.allSettled()`. Ketika sebuah email masuk ke sistem:
-1. **Task 1 (Summary & Tagging)**: Diproses asinkron menggunakan fungsi `generateSummaryAndTagging` untuk mengekstrak ringkasan operasional mendalam, level urgensi, mata uang, nominal transaksi, rekomendasi bank tujuan, hingga folder penempatan utama dalam Bahasa Indonesia.
-2. **Task 2 (Attachment Intelligence)**: Jika email memiliki berkas lampiran, tugas analisis mendalam `processEmailIntelligence` dipicu secara paralel. AI akan membedah isi dokumen/gambar lampiran secara ephemeral, mengekstrak ringkasan lampiran, serta merumuskan folder taktis operasional.
-3. **Parallel Settlement & Merge**: Kedua proses asinkron ini berjalan secara konkuren. Hasil keluaran masing-masing model digabungkan secara cerdas oleh mesin integrator, lalu disimpan dalam satu kali transaksi tulis ke database untuk memangkas waktu latensi pemrosesan hingga 50%.
-
-### Alur Pemrosesan AI & Mekanisme Throttling
+### ⚡ Alur Pemrosesan AI & Mekanisme Throttling
 ```
                     +------------------------------------+
                     |       Email Masuk Terdeteksi       |
@@ -38,57 +32,72 @@ Kini, alur analisis email berjalan secara **asinkron-paralel sesungguhnya** meng
                     |     Analisis Asinkron Dipicu       |
                     +------------------------------------+
                                       |
-                +----------------------+----------------------+
-                |                                             |
-                v (Pemrosesan Paralel Konkuren)               v
-   +------------------------------------------+  +------------------------------------------+
-   |    TASK 1: SUMMARY & TAGGING CORE        |  |    TASK 2: ATTACHMENT INTELLIGENCE CORE  |
-   |    Model: Nemotron 3 Ultra / DeepSeek    |  |    Model: Inkling / Gemma / Minimax      |
-   |    Engine: Axios / OpenAI SDK             |  |    Engine: Ephemeral File Streamer       |
-   |    Tugas: Klasifikasi, Nominal, Folder    |  |    Tugas: Multimodal & OCR Dokumen       |
-   +------------------------------------------+  +------------------------------------------+
-                |                                             |
-                +----------------------+----------------------+
-                                      | (Parallel Settlement: Promise.allSettled)
+               +----------------------+----------------------+
+               |                                             |
+               v (Pemrosesan Paralel Core)                   v
+  +------------------------------------------+  +------------------------------------------+
+  |    PRIMARY SUMMARY CORE                  |  |    PRIMARY CONTEXTUAL TAGGING            |
+  |    Model: Nemotron-3-Super-120B          |  |    Model: Nemotron-3-Super-120B          |
+  |    Engine: OpenAI SDK / NVIDIA NIM       |  |    Engine: OpenAI SDK / NVIDIA NIM       |
+  |    Fitur: Split-Task Parallel AI         |  |    Fitur: Async Promise.allSettled()     |
+  +------------------------------------------+  +------------------------------------------+
+               |                                             |
+               +----------------------+----------------------+
+                                      | (Merge Output JSON)
                                       v
-                       +-------------------------------+
-                       |  Mekanisme Sanitasi Array DB  |
-                       |  Deteksi & Perbaikan Otomatis |
-                       +-------------------------------+
-                                      |
-                                      v
-                        +-----------------------------+
-                        | Sukses? -> Simpan ke DB     |
-                        +-----------------------------+
+                       +-----------------------------+
+                       | Sukses? -> Simpan ke DB     |
+                       +-----------------------------+
                                       |
                                       | (Jika Core Gagal / Limit 429)
                                       v
-                        +-----------------------------+
-                        | EXPONENTIAL BACKOFF ACTIVE  |
-                        | Deteksi 429 -> Delay 30s    |
-                        +-----------------------------+
+                       +-----------------------------+
+                       | EXPONENTIAL BACKOFF ACTIVE  |
+                       | Deteksi 429 -> Delay 30s    |
+                       +-----------------------------+
                                       |
                                       | (Jika Tetap Gagal)
                                       v
-                        +-----------------------------+
-                        | FALLBACK CASCADING TIER     |
-                        | Nemotron -> DeepSeek ->     |
-                        | Gemma -> Minimax -> Regex   |
-                        +-----------------------------+
+                       +-----------------------------+
+                       | FALLBACK TIER 1             |
+                       | Model: Gemini 1.5 Flash     |
+                       | Engine: Google GenAI SDK    |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Tier 1 Gagal)
+                                      v
+                       +-----------------------------+
+                       | FALLBACK TIER 2             |
+                       | Model: DeepSeek             |
+                       | Engine: Axios / NVIDIA NIM  |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Tier 2 Gagal)
+                                      v
+                       +-----------------------------+
+                       | FALLBACK TIER 3             |
+                       | Model: Gemma                |
+                       | Engine: Axios / NVIDIA NIM  |
+                       +-----------------------------+
+                                      |
+                                      | (Jika Semua AI Gagal)
+                                      v
+                       +-----------------------------+
+                       | Regex / Rule-Based Fallback |
+                       +-----------------------------+
 ```
 
-### 🛡️ Robust DB Array Sanitizer & Parser
-Untuk menjamin kompatibilitas tanpa celah antara SQLite lokal (yang menyimpan metadata lampiran sebagai string JSON) dan Supabase PostgreSQL (yang mewajibkan tipe data array asli atau format literal terstruktur), sistem ini dilengkapi dengan **Dynamic Array Sanitizer**:
-- Mencegah error fatal Postgres `Malformed array literal` dengan melakukan normalisasi tipe data secara defensif sebelum data dikirim ke database cloud.
-- Secara cerdas memotong, merapikan karakter kurung kurawal `{}` / siku `[]`, memisahkan koma, serta membungkus string kosong agar transaksi tulis database selalu berjalan dengan status sukses (100% database-safe).
+### ⚡ Proteksi Throttling & Anti-Timeout NVIDIA NIM
+Untuk mencegah kegagalan akibat batas 40 RPM (Requests Per Minute) pada NVIDIA NIM, sistem mengadopsi taktik berikut:
+* **Dynamic Queue Batching**: Pemrosesan massal email (Bulk AI / Data Backfill / Queue Workers) dipangkas dari ukuran besar menjadi maksimal **3 email** saja per batch secara konkuren menggunakan `Promise.allSettled()`.
+* **Strict Time Throttling**: Ditambahkan jeda waktu aman (**15 detik**) antar batch pemrosesan untuk memberikan waktu regenerasi rate limit NVIDIA NIM secara berkala.
+* **Exponential Backoff**: Jaringan interseptor otomatis mendeteksi HTTP 429 Too Many Requests atau batas rate limit. Saat limit tercapai, sistem akan otomatis melakukan jeda tunggu aman selama **30 detik** sebelum mengulangi permintaan secara cerdas.
+* **Live Terminal Logging**: Konsol log beralur maju (*live-scrolling terminal logs*) langsung memproyeksikan status batch, waktu jeda, dan respons model AI ke monitor pengguna pada modal terpadu secara real-time via Server-Sent Events (SSE).
 
-### ⏳ Real-Time SSE Bulk Sync Engine
-Pengguna kini dapat memantau pengerjaan antrean email pending secara transparan melalui **Server-Sent Events (SSE) Streaming API** (`/api/emails/bulk-summary/stream` dan `/api/emails/bulk-intelligence/stream`):
-- **Dynamic Queue Counter & Status**: Dasbor secara berkala memantau antrean email pending dan menampilkan badge jumlah waktu nyata (*real-time pending counter*).
-- **Streaming Output Logs**: Konsol log beralur maju (*live-scrolling terminal logs*) langsung memproyeksikan status batch, waktu jeda, dan respons model AI ke monitor pengguna.
-- **Micro-batching Throttling**: Memproses email secara berkelompok (maksimal **5 email per batch**) dengan jeda tunggu otomatis **15 detik** di setiap siklus batch selesai untuk memulihkan batas kuota (Rate Limit) NVIDIA NIM API secara elegan tanpa mengganggu antrean utama.
+---
 
-### 🔮 Alur Analisis Ephemeral Attachment & Streaming File
+## 🔮 3. Alur Analisis Ephemeral Attachment & Streaming File
+
 Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud melalui pemrosesan ephemeral serta menyajikannya kembali secara aman dan real-time:
 
 ```
@@ -117,11 +126,17 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
                      |                                   |
                      v                                   v
        +----------------------------+      +----------------------------+
-       |   Ekstraksi Teks (PDF/Doc) |      |   Analisis Visual Lampiran |
-       |   oleh Core AI Parsing     |      |   oleh Multimodal Core AI  |
+       |   Ekstraksi Gambar/Doc     |      |   Analisis Visual/Teks     |
+       |   oleh NVIDIA Nemotron OCR v2|    |   oleh Nemotron-3-Super    |
        +----------------------------+      +----------------------------+
                      |                                   |
                      +-----------------+-----------------+
+                                       |
+                                       v
+                     +------------------------------------+
+                     |  Fallback: Gemini 1.5 Flash        |
+                     |  (Jika NVIDIA mengalami kegagalan) |
+                     +------------------------------------+
                                        |
                                        v
                      +------------------------------------+
@@ -132,7 +147,7 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
                                        v
                      +------------------------------------+
                      |   Menyimpan Metadata Analisis ke   |
-                     |   Tabel `email_analysis` (SQLite)  |
+                     |   Tabel `email_analysis` / DB      |
                      +------------------------------------+
                                        |
                      +-----------------+-----------------+
@@ -155,37 +170,35 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
 
 ---
 
-## ✨ 3. Fitur Unggulan Terbaru
+## ✨ 4. Fitur Unggulan Terbaru
 
 * **🔮 Dasbor Intelijen Email AI (AI Email Intelligence Dashboard)**:
   * Antarmuka visual terpisah yang diakses via menu **Sparkles Icon** untuk analisis mendalam tanpa mengotori ruang kerja inbox harian.
   * **Tree Navigation Folder Accordion**: Mengelompokkan seluruh email secara otomatis dan hierarkis ke dalam folder induk (*Folder Parent* seperti nama bank/kategori) dan folder anak (*Folder Child* seperti sub-kategori operasional) lengkap dengan indikator jumlah (badge counter) di tiap tingkatan folder.
-  * **Ephemeral Attachment Analysis**: Model kecerdasan buatan NVIDIA / Gemini memproses file lampiran secara asinkron dan menghasilkan deskripsi teks ringkas tanpa harus menyimpan file biner di penyimpanan cloud permanen, meminimalkan biaya penyimpanan (*storage bloat*) dan risiko kebocoran data.
-  * **Real-time Secure File Streaming Engine**: Menyediakan endpoint `/api/emails/:message_id/attachment/:filename` untuk mengekstrak data lampiran Base64 secara instan langsung dari database SQLite/Supabase dan mengalirkannya kembali (*stream*) ke peramban pengguna lengkap dengan metadata header biner (`Content-Type`, `Content-Disposition`, `Content-Length`) sehingga file dapat diunduh secara real-time dan aman.
+  * **AI Intelligence Queue Management Modal**: Dialog modal komprehensif yang menampilkan bar progres "Diproses: X dari Y Email" beserta persentasenya, daftar antrean pending, dan terminal log box hitam yang terhubung ke Server-Sent Events (SSE).
+* **🟢 Sistem AI Health Check & Diagnostics**:
+  * Widget monitor real-time yang diletakkan di pojok atas sistem header.
+  * Menampilkan lampu indikator hijau (Aktif/Online) dan merah (Gangguan/Offline) untuk masing-masing model operasional utama: **Nemotron OCR v2**, **Nemotron 3 Super 120B**, dan **Gemini 1.5 Flash**.
+  * Dilengkapi info latency (Response Time) aktual dalam hitungan milidetik dan deskripsi error terperinci saat disentuh/diklik.
 * **💵 Pecahan & Denominasi Dynamic (IDR/USD)**:
   * Antarmuka entri pecahan kini berubah secara dinamis berdasarkan state mata uang (`mataUang`) aktif yang dipilih.
-  * Opsi pecahan diperbarui secara dinamis:
-    * **USD**: `[USD 1, USD 2, USD 5, USD 10, USD 20, USD 50, USD 100]`
-    * **IDR**: `[IDR 1000, IDR 2000, IDR 5000, IDR 10000, IDR 20000, IDR 50000, IDR 100000]`
-  * Seluruh perhitungan subtotal, fungsi `handleDenominationChange`, dan visualisasi selisih (`totalHitung`) didesain adaptif terhadap simbol mata uang aktif (bebas dari hardcode label "IDR/Rp").
-* **🤖 Smart Split-Task JSON Extraction**: Memilah tugas pemrosesan email yang rumit menjadi sub-tugas paralel ke beberapa model AI terbaik di kelasnya untuk menghasilkan data terstruktur dengan format JSON yang sangat akurat.
-* **🟢 Sistem AI Health Check & Diagnostics**: Endpoint `/api/settings/ai-health` mendiagnosis kesehatan masing-masing model AI secara real-time. Jika terjadi kegagalan, timeout, atau status 503 (Server Penuh/Sibuk), sistem memberikan respons informatif yang mendetail pada dasbor.
-* **📧 UI Dasbor Tiket Interaktif (Gmail-Style)**: Desain antarmuka modern yang nyaman dipandang. Menampilkan indikator status model AI yang memproses (misalnya Nemotron/Inkling, DeepSeek, Gemma, Minimax) secara dinamis.
+  * USD: `[USD 1, USD 2, USD 5, USD 10, USD 20, USD 50, USD 100]`
+  * IDR: `[IDR 1000, IDR 2000, IDR 5000, IDR 10000, IDR 20000, IDR 50000, IDR 100000]`
 * **💬 WhatsApp Dispatch Dispatcher**: Notifikasi otomatis siap kirim ke pihak ketiga dan pengawal melalui WhatsApp Gateway dengan template yang telah disesuaikan dengan nilai pecahan dari denominasi dinamis.
-* **📎 Dukungan Base64 Attachments**: File lampiran dikodekan langsung menjadi Base64 string terkompresi (maksimal 3MB) dan disimpan di database, meniadakan ketergantungan pada penyimpanan cloud eksternal yang rawan kebocoran data.
+* **📎 Dukungan Base64 Attachments & Secure File Streaming**: Endpoint `/api/emails/:message_id/attachment/:filename` mengekstrak data lampiran Base64 secara instan langsung dari database SQLite/Supabase dan mengalirkannya kembali (*stream*) ke peramban pengguna secara aman.
 
 ---
 
-## 🛠️ 4. Tech Stack (Spesifikasi Teknologi)
+## 🛠️ 5. Tech Stack (Spesifikasi Teknologi)
 
 * **Frontend Framework**: React 18, Vite, Tailwind CSS, Lucide Icons, Framer Motion (Animasi Micro-interaction).
 * **Backend Runtime**: Node.js Express Server, tsx (TypeScript Execution), esbuild (Ultra-fast bundler).
 * **Databases**: Supabase PostgreSQL (Cloud State Sync) & SQLite 3 (Durable Local Storage Engine).
-* **AI & Integration**: Axios murni & SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
+* **AI & Integration**: Axios murni, SDK `@google/generative-ai`, dan SDK `openai` yang dikombinasikan dengan NVIDIA NIM API endpoints.
 
 ---
 
-## 🚀 5. Memulai (Getting Started)
+## 🚀 6. Memulai (Getting Started)
 
 ### Prasyarat Sistem
 * Node.js v18 atau versi yang lebih baru.
@@ -237,7 +250,7 @@ Sistem memproses lampiran email tanpa membebani penyimpanan lokal maupun cloud m
 
 ---
 
-## 🛡️ 6. Penanganan Kesalahan & Ketahanan Sistem
+## 🛡️ 7. Penanganan Kesalahan & Ketahanan Sistem
 
 * **API Timeout Protection**: Seluruh permintaan eksternal AI dipasangi batas waktu (timeout) 60 detik menggunakan Axios untuk meminimalkan penumpukan proses hanging.
 * **Server 503 Detection**: Jendela Health Check mendeteksi status server sibuk (HTTP 503) pada model AI secara akurat dan menampilkan label "Server Penuh/Sibuk (503)" daripada crash senyap.

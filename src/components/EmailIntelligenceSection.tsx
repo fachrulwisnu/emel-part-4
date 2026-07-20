@@ -30,20 +30,25 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
 
   // Pending count & bulk processing states
   const [pendingCount, setPendingCount] = useState<number>(0);
+  const [pendingEmails, setPendingEmails] = useState<any[]>([]);
+  const [isQueueModalOpen, setIsQueueModalOpen] = useState<boolean>(false);
   const [isBulkProcessing, setIsBulkProcessing] = useState<boolean>(false);
   const [bulkProgress, setBulkProgress] = useState<number>(0);
   const [bulkStatusText, setBulkStatusText] = useState<string>('');
   const [bulkLog, setBulkLog] = useState<string[]>([]);
 
-  const fetchPendingCount = async () => {
+  const logsEndRef = React.useRef<HTMLDivElement | null>(null);
+
+  const fetchPendingQueue = async () => {
     try {
       const res = await fetch('/api/emails/pending-intelligence');
       const json = await res.json();
-      if (json.success) {
+      if (json.success && json.emails) {
+        setPendingEmails(json.emails);
         setPendingCount(json.count);
       }
     } catch (err) {
-      console.error('Failed to fetch pending intelligence count:', err);
+      console.error('Failed to fetch pending intelligence queue:', err);
     }
   };
 
@@ -69,8 +74,20 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
 
   useEffect(() => {
     fetchGroupedData();
-    fetchPendingCount();
+    fetchPendingQueue();
   }, []);
+
+  useEffect(() => {
+    if (isQueueModalOpen) {
+      fetchPendingQueue();
+    }
+  }, [isQueueModalOpen]);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [bulkLog]);
 
   const startBulkIntelligence = () => {
     setIsBulkProcessing(true);
@@ -88,7 +105,7 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
         }
         if (data.log) {
           setBulkStatusText(data.log);
-          setBulkLog(prev => [data.log, ...prev].slice(0, 10));
+          setBulkLog(prev => [...prev, data.log]);
         }
 
         if (data.status === 'complete') {
@@ -98,7 +115,7 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
             onAddToast('Bulk Complete', 'Semua email berhasil dianalisis!', 'success');
           }
           fetchGroupedData();
-          fetchPendingCount();
+          fetchPendingQueue();
         } else if (data.status === 'error') {
           eventSource.close();
           setIsBulkProcessing(false);
@@ -234,47 +251,15 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
           </button>
         </div>
 
-        {/* Pending Intelligence Info & Bulk Trigger */}
-        <div className="mx-3 my-2.5 p-3.5 bg-indigo-50/60 border border-indigo-100 rounded-xl space-y-2.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Status Antrean AI</span>
-            <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-extrabold rounded-full animate-pulse">
-              {pendingCount} Pending
-            </span>
-          </div>
-          
-          <p className="text-[11px] text-slate-500 leading-normal">
-            Terdapat {pendingCount} email berlampiran yang belum dianalisis secara mendalam oleh AI.
-          </p>
-
-          {!isBulkProcessing ? (
-            <button
-              onClick={startBulkIntelligence}
-              disabled={pendingCount === 0}
-              className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 text-white disabled:text-slate-400 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
-            >
-              <Sparkles className="h-3.5 w-3.5 animate-pulse" />
-              <span>Bulk Analyze Attachments</span>
-            </button>
-          ) : (
-            <div className="space-y-2 pt-1">
-              <div className="flex justify-between text-[11px] font-bold text-indigo-700">
-                <span className="truncate max-w-[150px]">{bulkStatusText}</span>
-                <span>{bulkProgress}%</span>
-              </div>
-              <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                <div 
-                  className="bg-indigo-600 h-full rounded-full transition-all duration-300"
-                  style={{ width: `${bulkProgress}%` }}
-                />
-              </div>
-              <div className="text-[9px] text-slate-400 font-mono max-h-16 overflow-y-auto leading-normal pt-1.5 border-t border-indigo-100/40 select-none">
-                {bulkLog.map((logLine, idx) => (
-                  <div key={idx} className="truncate">{logLine}</div>
-                ))}
-              </div>
-            </div>
-          )}
+        {/* Kelola Antrean Button */}
+        <div className="mx-3 my-2.5">
+          <button
+            onClick={() => setIsQueueModalOpen(true)}
+            className="w-full py-2.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/60 text-indigo-700 hover:text-indigo-800 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-indigo-500 animate-pulse" />
+            <span>Kelola Antrean Intelligence ({pendingCount} Pending)</span>
+          </button>
         </div>
 
         {loading ? (
@@ -534,6 +519,146 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
           </div>
         )}
       </section>
+
+      {/* AI Intelligence Queue Management Modal Overlay (BAGIAN 2 & 3) */}
+      {isQueueModalOpen && (
+        <div className="fixed inset-0 z-45 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  AI Intelligence Queue Management
+                </h3>
+                <p className="text-[10px] text-slate-500 font-medium mt-0.5 font-sans">
+                  Kelola pemrosesan massal analisis attachment email dengan Batched Parallelism (maks. 5 per batch, jeda 15s) dan AI Rotator.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 text-lg"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-5">
+              {/* Active Process Log Terminal */}
+              {isBulkProcessing && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700">
+                      Diproses: {Math.round((bulkProgress / 100) * pendingEmails.length)} dari {pendingEmails.length} Email
+                    </span>
+                    <span className="font-mono text-blue-600 font-bold">
+                      {bulkProgress}%
+                    </span>
+                  </div>
+                  {/* Progress Bar Container */}
+                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden border border-slate-200">
+                    <div 
+                      className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                      style={{ width: `${bulkProgress}%` }}
+                    />
+                  </div>
+
+                  {/* Terminal Logs */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 font-mono text-[10px] text-slate-300 space-y-1 max-h-[160px] overflow-y-auto h-[160px] leading-relaxed">
+                    {bulkLog.map((log, index) => (
+                      <div key={index} className="flex items-start gap-1">
+                        <span className="text-slate-500 select-none">&gt;</span>
+                        <span>{log}</span>
+                      </div>
+                    ))}
+                    <div ref={logsEndRef} />
+                  </div>
+                </div>
+              )}
+
+              {/* Pending Queue List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">
+                    Daftar Email Pending ({pendingEmails.length})
+                  </span>
+                  {!isBulkProcessing && pendingEmails.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={startBulkIntelligence}
+                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs shadow-xs transition-colors flex items-center gap-1"
+                    >
+                      🚀 Mulai Bulk Process
+                    </button>
+                  )}
+                </div>
+
+                {pendingEmails.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed border-slate-200 rounded-xl">
+                    <p className="text-xs text-slate-400 italic">Tidak ada email dalam antrean pending.</p>
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[250px] overflow-y-auto">
+                    <table className="w-full border-collapse text-left text-[11px] font-medium text-slate-600">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[9px] font-bold">
+                        <tr>
+                          <th className="px-4 py-2.5">Pengirim</th>
+                          <th className="px-4 py-2.5">Subjek</th>
+                          <th className="px-4 py-2.5 w-32">Waktu Terima</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {pendingEmails.map((email) => (
+                          <tr key={email.message_id} className="hover:bg-slate-50/50">
+                            <td className="px-4 py-2.5 truncate max-w-[150px] font-semibold text-slate-700">
+                              {email.sender}
+                            </td>
+                            <td className="px-4 py-2.5 truncate max-w-[250px]">
+                              {email.subject}
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-400 whitespace-nowrap font-mono text-[10px]">
+                              {new Date(email.date).toLocaleString('id-ID', {
+                                dateStyle: 'short',
+                                timeStyle: 'short'
+                              })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isBulkProcessing) {
+                    if (!confirm("Proses bulk sedang berjalan. Menutup modal tidak akan menghentikan proses latar belakang, tetapi Anda akan kehilangan pemantauan log langsung. Tetap tutup?")) return;
+                  }
+                  setIsQueueModalOpen(false);
+                }}
+                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold rounded-lg cursor-pointer transition-all text-xs"
+              >
+                {isBulkProcessing ? 'Tutup (Pantau di Latar Belakang)' : 'Tutup'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

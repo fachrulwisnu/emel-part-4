@@ -46,6 +46,7 @@ import PlainTextTree from './components/PlainTextTree';
 import AttachmentGallery from './components/AttachmentGallery';
 import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
+import { AiHealthIndicators } from './components/AiHealthIndicators';
 
 interface Email {
   id?: number;
@@ -1512,6 +1513,7 @@ export default function App() {
               <span className={`h-2 w-2 rounded-full ${appSettings.supabaseUrl ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
               {appSettings.supabaseUrl ? 'Supabase Active' : 'SQLite Standalone'}
             </span>
+            <AiHealthIndicators />
           </div>
 
           <div className="flex items-center space-x-2.5">
