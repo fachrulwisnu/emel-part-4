@@ -15,7 +15,7 @@ export interface DbServiceInstance {
  */
 export async function getDbService(): Promise<DbServiceInstance> {
   const driver = getDbDriver();
-  if (driver === 'mongodb') {
+  if (driver === 'mongodb' || !process.env.DB_DRIVER || process.env.DB_DRIVER === 'mongodb') {
     try {
       const db = await getMongoDb();
       return {
@@ -24,11 +24,12 @@ export async function getDbService(): Promise<DbServiceInstance> {
         mongoDb: db,
       };
     } catch (err) {
-      console.error('[dbManager] Failed to get MongoDB connection. Falling back to Supabase...', err);
+      console.error('[dbManager] Failed to get MongoDB connection. Throwing error...', err);
+      throw err;
     }
   }
 
-  // Fallback to Supabase
+  // Fallback to Supabase ONLY if explicitly requested/configured
   return {
     type: 'supabase',
     supabaseClient: getSupabaseClient(),

@@ -5,6 +5,7 @@ import axios from 'axios';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
+import { getDbDriver } from './config/dbSwitcher';
 import { classifyEmail, classifyFolder } from './sqlite-db';
 import { getAiCompletion } from './services/aiService';
 import { executeWithBackoff } from './services/aiProcessingService';
@@ -108,13 +109,21 @@ export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
 let supabaseInstance: SupabaseClient | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
+  // If active driver is mongodb or DB_DRIVER is unset/mongodb, we must completely ignore/not call Supabase.
+  const activeDriver = getDbDriver();
+  if (activeDriver === 'mongodb' || !process.env.DB_DRIVER || process.env.DB_DRIVER === 'mongodb') {
+    return null;
+  }
+
   const settings = getAppSettings();
   const url = process.env.SUPABASE_URL || settings.supabaseUrl;
   const key = process.env.SUPABASE_KEY || settings.supabaseKey;
 
   if (url && key) {
     if (!supabaseInstance) {
-      supabaseInstance = createClient(url, key);
+      // COMMENTED OUT as per high-priority global disable instructions:
+      // supabaseInstance = createClient(url, key);
+      console.log('[Supabase] Inisialisasi Supabase diblokir secara global untuk mencegah error statement timeout.');
     }
     return supabaseInstance;
   }
@@ -123,6 +132,7 @@ export function getSupabaseClient(): SupabaseClient | null {
 
 // Helper to check if Supabase is connected
 export function isSupabaseActive(): boolean {
+  if (getDbDriver() === 'mongodb') return false;
   return getSupabaseClient() !== null;
 }
 
@@ -266,7 +276,27 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
   const existingSet = new Set<string>();
   if (!uids || uids.length === 0) return existingSet;
 
-  // 1. Check local SQLite
+  // 1. Check active database first
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find({ message_id: { $in: uids } }).project({ message_id: 1 }).toArray();
+        for (const r of rows) {
+          if (r.message_id) existingSet.add(r.message_id);
+        }
+        return existingSet; // Avoid querying SQLite or Supabase
+      }
+    } catch (err) {
+      console.error('[dbCheckExistingUids] MongoDB check exception:', err);
+    }
+  }
+
+  // 2. Check local SQLite
   try {
     const db = getSqliteDb();
     const placeholders = uids.map(() => '?').join(',');
@@ -283,7 +313,7 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
     console.error('[dbCheckExistingUids] SQLite error:', err);
   }
 
-  // 2. Check Supabase
+  // 3. Check Supabase
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
@@ -320,6 +350,57 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
 
 // Get all emails (merges Supabase and SQLite)
 export async function dbGetAllEmails(): Promise<Email[]> {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find().sort({ date: -1 }).toArray();
+        return rows.map((row: any) => ({
+          id: row.id,
+          message_id: row.message_id,
+          subject: row.subject || '',
+          sender: row.sender || '',
+          receiver: row.receiver || '',
+          date: row.date || '',
+          body_text: row.body_text || '',
+          html_body: row.html_body || '',
+          tags: row.tags || [],
+          category: row.category || '',
+          sub_category: row.sub_category || '',
+          folder_parent: row.folder_parent || '',
+          folder_child: row.folder_child || '',
+          api_workflow_status: row.api_workflow_status || 'none',
+          api_workflow_log: row.api_workflow_log || '',
+          attachments: row.attachments || [],
+          is_read: !!row.is_read,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: !!row.action_required,
+          suggested_tag: row.suggested_tag || '',
+          is_important: !!row.is_important,
+          urgency_level: row.urgency_level || 'Routine',
+          suggested_folder_parent: row.suggested_folder_parent || '',
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: !!row.is_cit_order,
+          cit_type: row.cit_type || 'None',
+          suggested_bank: row.suggested_bank || '',
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING',
+          is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        }));
+      }
+    } catch (err) {
+      console.error('[dbGetAllEmails] Error fetching from MongoDB:', err);
+    }
+  }
+
   const supabase = getSupabaseClient();
   if (supabase) {
     try {
@@ -1313,6 +1394,61 @@ export async function processEmailQueue(): Promise<void> {
  */
 export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
   console.log(`Mencari data dengan message_id: ${messageId}`);
+  
+  // 1. Check active database MongoDB
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const row = await col.findOne({ message_id: messageId });
+        if (row) {
+          return {
+            id: row.id,
+            message_id: row.message_id,
+            subject: row.subject || '',
+            sender: row.sender || '',
+            receiver: row.receiver || '',
+            date: row.date || '',
+            body_text: row.body_text || '',
+            html_body: row.html_body || '',
+            tags: row.tags || [],
+            category: row.category || '',
+            sub_category: row.sub_category || '',
+            folder_parent: row.folder_parent || '',
+            folder_child: row.folder_child || '',
+            api_workflow_status: row.api_workflow_status || 'none',
+            api_workflow_log: row.api_workflow_log || '',
+            attachments: row.attachments || [],
+            is_read: !!row.is_read,
+            tag_type: row.tag_type || '',
+            summary: row.summary || '',
+            action_required: !!row.action_required,
+            suggested_tag: row.suggested_tag || '',
+            is_important: !!row.is_important,
+            urgency_level: row.urgency_level || 'Routine',
+            suggested_folder_parent: row.suggested_folder_parent || '',
+            suggested_folder_child: row.suggested_folder_child || '',
+            is_cit_order: !!row.is_cit_order,
+            cit_type: row.cit_type || 'None',
+            suggested_bank: row.suggested_bank || '',
+            extracted_notes: row.extracted_notes || '',
+            currency: row.currency || 'IDR',
+            denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
+            total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
+            ai_status: row.ai_status || 'PENDING',
+            is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+          };
+        }
+      }
+    } catch (err) {
+      console.error('[dbGetEmailByMessageId] MongoDB error:', err);
+    }
+  }
+
   const db = getSqliteDb();
   
   const localEmail = await new Promise<Email | null>((resolve) => {
@@ -1594,69 +1730,74 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     );
   });
 
-  // Upsert to Supabase
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // Save to active remote database (Supabase or MongoDB)
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+
+  const message_id = normalizedEmail.message_id;
+  let dateIso = new Date().toISOString();
+  if (normalizedEmail.date) {
     try {
-      const message_id = normalizedEmail.message_id;
-      let dateIso = new Date().toISOString();
-      if (normalizedEmail.date) {
-        try {
-          dateIso = new Date(normalizedEmail.date).toISOString();
-        } catch (e) {
-          console.warn('[Supabase Worker] Invalid date value, defaulting to now:', normalizedEmail.date);
-        }
-      }
+      dateIso = new Date(normalizedEmail.date).toISOString();
+    } catch (e) {
+      console.warn('[Remote Worker] Invalid date value, defaulting to now:', normalizedEmail.date);
+    }
+  }
 
-      const payload = {
-        message_id: normalizedEmail.message_id !== undefined ? normalizedEmail.message_id : null,
-        subject: normalizedEmail.subject !== undefined ? normalizedEmail.subject : null,
-        sender: normalizedEmail.sender !== undefined ? normalizedEmail.sender : null,
-        receiver: normalizedEmail.receiver !== undefined ? normalizedEmail.receiver : null,
-        date: dateIso,
-        body_text: normalizedEmail.body_text !== undefined ? normalizedEmail.body_text : null,
-        html_body: normalizedEmail.html_body !== undefined ? normalizedEmail.html_body : null,
-        tags: tags,
-        category: normalizedEmail.category !== undefined ? normalizedEmail.category : null,
-        sub_category: normalizedEmail.sub_category !== undefined ? normalizedEmail.sub_category : null,
-        folder_parent: normalizedEmail.folder_parent !== undefined ? normalizedEmail.folder_parent : null,
-        folder_child: normalizedEmail.folder_child !== undefined ? normalizedEmail.folder_child : null,
-        api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
-        api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null,
-        // AI fields
-        is_read: !!isRead,
-        tag_type: tagType || null,
-        summary: summary || null,
-        action_required: !!actionRequired,
-        suggested_tag: suggestedTag || null,
-        is_important: !!isImportant,
-        urgency_level: urgencyLevel || null,
-        suggested_folder_parent: suggestedFolderParent || null,
-        suggested_folder_child: suggestedFolderChild || null,
-        is_cit_order: !!isCitOrder,
-        cit_type: citType || 'None',
-        suggested_bank: suggestedBank || '',
-        extracted_notes: extractedNotes || '',
-        currency: currency || 'IDR',
-        denomination_suggestion: denominationSuggestion !== undefined ? denominationSuggestion : null,
-        total_amount: totalAmount !== undefined ? totalAmount : null,
-        ai_status: normalizedEmail.ai_status || 'PENDING',
-        attachments: normalizedEmail.attachments !== undefined ? normalizedEmail.attachments : null
-      };
+  const payload = {
+    message_id: normalizedEmail.message_id !== undefined ? normalizedEmail.message_id : null,
+    subject: normalizedEmail.subject !== undefined ? normalizedEmail.subject : null,
+    sender: normalizedEmail.sender !== undefined ? normalizedEmail.sender : null,
+    receiver: normalizedEmail.receiver !== undefined ? normalizedEmail.receiver : null,
+    date: dateIso,
+    body_text: normalizedEmail.body_text !== undefined ? normalizedEmail.body_text : null,
+    html_body: normalizedEmail.html_body !== undefined ? normalizedEmail.html_body : null,
+    tags: tags,
+    category: normalizedEmail.category !== undefined ? normalizedEmail.category : null,
+    sub_category: normalizedEmail.sub_category !== undefined ? normalizedEmail.sub_category : null,
+    folder_parent: normalizedEmail.folder_parent !== undefined ? normalizedEmail.folder_parent : null,
+    folder_child: normalizedEmail.folder_child !== undefined ? normalizedEmail.folder_child : null,
+    api_workflow_status: normalizedEmail.api_workflow_status !== undefined ? normalizedEmail.api_workflow_status : null,
+    api_workflow_log: normalizedEmail.api_workflow_log !== undefined ? normalizedEmail.api_workflow_log : null,
+    // AI fields
+    is_read: !!isRead,
+    tag_type: tagType || null,
+    summary: summary || null,
+    action_required: !!actionRequired,
+    suggested_tag: suggestedTag || null,
+    is_important: !!isImportant,
+    urgency_level: urgencyLevel || null,
+    suggested_folder_parent: suggestedFolderParent || null,
+    suggested_folder_child: suggestedFolderChild || null,
+    is_cit_order: !!isCitOrder,
+    cit_type: citType || 'None',
+    suggested_bank: suggestedBank || '',
+    extracted_notes: extractedNotes || '',
+    currency: currency || 'IDR',
+    denomination_suggestion: denominationSuggestion !== undefined ? denominationSuggestion : null,
+    total_amount: totalAmount !== undefined ? totalAmount : null,
+    ai_status: normalizedEmail.ai_status || 'PENDING',
+    attachments: normalizedEmail.attachments !== undefined ? normalizedEmail.attachments : null
+  };
 
-      const { getDbDriver } = await import('./config/dbSwitcher');
-      const driver = getDbDriver();
-      if (driver === 'mongodb') {
-        const { dbSaveEmail } = await import('./services/dbManager');
-        await dbSaveEmail(message_id, payload);
-      } else {
+  if (driver === 'mongodb') {
+    try {
+      const { dbSaveEmail } = await import('./services/dbManager');
+      await dbSaveEmail(message_id, payload);
+    } catch (err) {
+      console.error('[MongoDB Upsert Exception]:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
         const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
         if (error) {
           console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
         }
+      } catch (err) {
+        console.error('[Supabase Upsert Exception]:', err);
       }
-    } catch (err) {
-      console.error('[Database Upsert Exception]:', err);
     }
   }
 }
@@ -2385,6 +2526,33 @@ export async function initSupabaseRealtime() {
  * Fetches all unsummarized emails from Supabase and SQLite.
  */
 export async function dbGetUnsummarizedEmails(): Promise<any[]> {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find({
+          $or: [
+            { summary: null },
+            { summary: "" },
+            { summary: "No summary generated" },
+            { summary: "Data historis tidak terbaca jelas" }
+          ]
+        }).toArray();
+        return rows.map((row: any) => ({
+          ...row,
+          tags: row.tags || [],
+          attachments: row.attachments || []
+        }));
+      }
+    } catch (err) {
+      console.error('[dbGetUnsummarizedEmails] MongoDB query error:', err);
+    }
+  }
+
   const supabase = getSupabaseClient();
   let emails: any[] = [];
   
@@ -2443,6 +2611,26 @@ export async function dbGetUnsummarizedEmails(): Promise<any[]> {
  * Fetches all emails with ai_status = 'PENDING' from Supabase and SQLite.
  */
 export async function dbGetAllPendingEmails(): Promise<Email[]> {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find({ ai_status: 'PENDING' }).sort({ date: -1 }).toArray();
+        return rows.map((row: any) => ({
+          ...row,
+          tags: row.tags || [],
+          attachments: row.attachments || []
+        }));
+      }
+    } catch (err) {
+      console.error('[dbGetAllPendingEmails] MongoDB query error:', err);
+    }
+  }
+
   const supabase = getSupabaseClient();
   let pendingEmails: Email[] = [];
 
@@ -2566,29 +2754,54 @@ function generateRuleBasedConclusion(emails: Email[]): string {
 }
 
 export async function dbGetDailyReportData(): Promise<DailyReportData> {
-  const supabase = getSupabaseClient();
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
   let emails: Email[] = [];
 
-  if (supabase) {
+  if (driver === 'mongodb') {
     try {
-      const { data, error } = await supabase
-        .from('emails')
-        .select('*');
-      
-      if (!error && data) {
-        emails = data.map((row: any) => ({
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find().toArray();
+        emails = rows.map((row: any) => ({
           ...row,
-          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
-          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
-          action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
-          is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
-          is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
-          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true',
-          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+          tags: row.tags || [],
+          attachments: row.attachments || [],
+          action_required: !!row.action_required,
+          is_read: !!row.is_read,
+          is_important: !!row.is_important,
+          is_cit_order: !!row.is_cit_order,
+          is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
         }));
       }
-    } catch (e) {
-      console.error('[dbGetDailyReportData] Supabase error:', e);
+    } catch (err) {
+      console.error('[dbGetDailyReportData] MongoDB error:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('emails')
+          .select('*');
+        
+        if (!error && data) {
+          emails = data.map((row: any) => ({
+            ...row,
+            tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+            attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+            action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
+            is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
+            is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
+            is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true',
+            is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+          }));
+        }
+      } catch (e) {
+        console.error('[dbGetDailyReportData] Supabase error:', e);
+      }
     }
   }
 
@@ -2904,6 +3117,29 @@ export async function dbGetEmailAnalysis(messageId: string): Promise<any | null>
 }
 
 export async function dbGetAllEmailAnalysis(): Promise<any[]> {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('email_analysis');
+        const rows = await col.find().toArray();
+        return rows.map(row => ({
+          message_id: row.message_id,
+          folder: row.folder,
+          sub_folder: row.sub_folder,
+          tags: row.tags || [],
+          summary_email: row.summary_email,
+          summary_attachments: row.summary_attachments || []
+        }));
+      }
+    } catch (err) {
+      console.error('[dbGetAllEmailAnalysis] MongoDB query error:', err);
+    }
+  }
+
   const db = getSqliteDb();
   return new Promise<any[]>((resolve) => {
     db.all('SELECT * FROM email_analysis', (err, rows: any[]) => {

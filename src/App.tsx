@@ -56,7 +56,9 @@ let lastUsedKey = '';
 function getClientSupabase(url: string, key: string) {
   if (!url || !key) return null;
   if (!sharedSupabaseInstance || lastUsedUrl !== url || lastUsedKey !== key) {
-    sharedSupabaseInstance = createClient(url, key);
+    // COMMENTED OUT as per high-priority global disable instructions:
+    // sharedSupabaseInstance = createClient(url, key);
+    console.log('[Supabase Client] Inisialisasi Supabase diblokir secara global di frontend.');
     lastUsedUrl = url;
     lastUsedKey = key;
   }
@@ -569,7 +571,7 @@ export default function App() {
     const url = activeSettings.supabaseUrl;
     const key = activeSettings.supabaseKey;
 
-    if (url && key) {
+    if (dbDriver !== 'mongodb' && url && key) {
       try {
         const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
@@ -689,7 +691,7 @@ export default function App() {
     const url = activeSettings.supabaseUrl;
     const key = activeSettings.supabaseKey;
 
-    if (url && key) {
+    if (dbDriver !== 'mongodb' && url && key) {
       try {
         const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase.from('custom_filters').select('*');
@@ -726,7 +728,7 @@ export default function App() {
     const url = activeSettings.supabaseUrl;
     const key = activeSettings.supabaseKey;
 
-    if (url && key) {
+    if (dbDriver !== 'mongodb' && url && key) {
       try {
         const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase
@@ -778,7 +780,18 @@ export default function App() {
           key = settingsData.settings.supabaseKey;
         }
 
-        if (url && key) {
+        // Fetch active DB driver first to check if Supabase is bypassed
+        let activeDriver: 'supabase' | 'mongodb' = 'supabase';
+        try {
+          const drvRes = await fetch('/api/settings/db-driver');
+          const drvData = await drvRes.json();
+          if (drvData.success && drvData.dbDriver) {
+            setDbDriver(drvData.dbDriver);
+            activeDriver = drvData.dbDriver;
+          }
+        } catch (err) {}
+
+        if (activeDriver !== 'mongodb' && url && key) {
           const supabase = getClientSupabase(url, key);
           const { data, error } = await supabase
             .from('custom_filters')
@@ -835,7 +848,18 @@ export default function App() {
           finalSettings = settingsData.settings;
         }
 
-        if (finalUrl && finalKey) {
+        // Fetch active DB driver first to check if Supabase is bypassed
+        let activeDriver: 'supabase' | 'mongodb' = 'supabase';
+        try {
+          const drvRes = await fetch('/api/settings/db-driver');
+          const drvData = await drvRes.json();
+          if (drvData.success && drvData.dbDriver) {
+            setDbDriver(drvData.dbDriver);
+            activeDriver = drvData.dbDriver;
+          }
+        } catch (err) {}
+
+        if (activeDriver !== 'mongodb' && finalUrl && finalKey) {
           // Mount initial fetch to Supabase
           const supabase = getClientSupabase(finalUrl, finalKey);
           const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
@@ -1135,6 +1159,21 @@ export default function App() {
     const url = appSettings.supabaseUrl;
     const key = appSettings.supabaseKey;
 
+    if (dbDriver === 'mongodb') {
+      // Direct local API update for MongoDB active database
+      try {
+        await fetch('/api/retroactive-filter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filter: newFilter })
+        });
+        addToast('Retroactive Filter Applied', 'Successfully processed retroactive filters via active MongoDB database.');
+      } catch (localErr) {
+        console.error('Failed to sync retroactive updates:', localErr);
+      }
+      return;
+    }
+
     if (!url || !key) {
       console.warn('Supabase not fully configured. Skipping retroactive filter execution.');
       return;
@@ -1233,7 +1272,7 @@ export default function App() {
     let savedToSupabase = false;
     let newFilterObj: any = null;
 
-    if (url && key) {
+    if (dbDriver !== 'mongodb' && url && key) {
       try {
         const supabase = getClientSupabase(url, key);
         const payload: any = {
@@ -1359,7 +1398,7 @@ export default function App() {
     const key = appSettings.supabaseKey;
     let deletedFromSupabase = false;
 
-    if (url && key) {
+    if (dbDriver !== 'mongodb' && url && key) {
       try {
         const supabase = getClientSupabase(url, key);
         const { error } = await supabase.from('custom_filters').delete().eq('id', id);
