@@ -1,7 +1,7 @@
 import PostalMime from 'postal-mime';
 import { Pop3Client, parsePop3Message } from '../src/pop3';
 import { getAutoTags } from '../src/tags';
-import { getAllEmails, upsertEmail } from '../src/sqlite-db';
+import { getExistingEmailsMetadata, upsertEmail } from '../src/sqlite-db';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -17,12 +17,12 @@ export default async function handler(req: any, res: any) {
   const client = new Pop3Client();
   let existingEmails: any[] = [];
   try {
-    existingEmails = await getAllEmails();
+    existingEmails = await getExistingEmailsMetadata();
   } catch (dbErr) {
-    console.error('Failed to query existing emails:', dbErr);
+    console.error('Failed to query existing emails metadata:', dbErr);
   }
   
-  const existingSet = new Set<string>(existingEmails.map(e => e.uid));
+  const existingSet = new Set<string>(existingEmails.map(e => e.message_id));
   const existingSubjectDates = new Set<string>(existingEmails.map(e => `${e.subject?.trim()}|||${e.date}`));
 
   console.log(`\n--- [LOCAL POP3 FULL SYNC START] ---`);

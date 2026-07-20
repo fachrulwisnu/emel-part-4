@@ -230,6 +230,94 @@ export async function initDatabaseService(): Promise<void> {
   });
 }
 
+// Check if a single email exists by UID (Supabase 'uid' or 'message_id')
+export async function checkIfExists(emailUid: string): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+  try {
+    // Attempt checking 'uid' column first (as indexed by the user)
+    const { data, error } = await supabase
+      .from('emails')
+      .select('uid')
+      .eq('uid', emailUid)
+      .maybeSingle();
+
+    if (!error && data) {
+      return true;
+    }
+
+    // Fallback to 'message_id' column if 'uid' check failed
+    const { data: fallbackData, error: fallbackError } = await supabase
+      .from('emails')
+      .select('message_id')
+      .eq('message_id', emailUid)
+      .maybeSingle();
+
+    return !fallbackError && !!fallbackData;
+  } catch (err) {
+    console.error('[checkIfExists] Error checking email UID existence:', err);
+    return false;
+  }
+}
+
+// Bulk check existing email UIDs/message_ids from Supabase and SQLite.
+// Uses .in() query for extremely high-performance bulk lookup in a single request.
+export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> {
+  const existingSet = new Set<string>();
+  if (!uids || uids.length === 0) return existingSet;
+
+  // 1. Check local SQLite
+  try {
+    const db = getSqliteDb();
+    const placeholders = uids.map(() => '?').join(',');
+    const sqliteRows = await new Promise<any[]>((resolve, reject) => {
+      db.all(`SELECT message_id FROM emails WHERE message_id IN (${placeholders})`, uids, (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+    for (const r of sqliteRows) {
+      if (r.message_id) existingSet.add(r.message_id);
+    }
+  } catch (err) {
+    console.error('[dbCheckExistingUids] SQLite error:', err);
+  }
+
+  // 2. Check Supabase
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      // Check 'uid' column first
+      const { data, error } = await supabase
+        .from('emails')
+        .select('uid')
+        .in('uid', uids);
+
+      if (!error && data) {
+        for (const r of data) {
+          if (r.uid) existingSet.add(r.uid);
+        }
+      }
+
+      // Also check 'message_id' column
+      const { data: msgData, error: msgError } = await supabase
+        .from('emails')
+        .select('message_id')
+        .in('message_id', uids);
+
+      if (!msgError && msgData) {
+        for (const r of msgData) {
+          if (r.message_id) existingSet.add(r.message_id);
+        }
+      }
+    } catch (err) {
+      console.error('[dbCheckExistingUids] Supabase check exception:', err);
+    }
+  }
+
+  return existingSet;
+}
+
 // Get all emails (merges Supabase and SQLite)
 export async function dbGetAllEmails(): Promise<Email[]> {
   const supabase = getSupabaseClient();

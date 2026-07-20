@@ -16,7 +16,9 @@ export default defineConfig(() => {
         clientPort: 443,
         overlay: false,
       } : false,
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      watch: {
+        ignored: ['**/auth_info/**', '**/baileys_auth/**', '**/emails.db*', '**/emails_db.json*']
+      },
     },
   };
 });

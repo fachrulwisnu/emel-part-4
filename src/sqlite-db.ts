@@ -268,6 +268,21 @@ export async function initDb(): Promise<void> {
 }
 
 /**
+ * Retrieves only light metadata (message_id, subject, date) of all emails for fast checking.
+ */
+export async function getExistingEmailsMetadata(): Promise<Array<{ message_id: string; subject: string; date: string }>> {
+  const db = await getDbConnection();
+  return new Promise((resolve, reject) => {
+    db.all('SELECT message_id, subject, date FROM emails', (err, rows: any[]) => {
+      if (err) {
+        return reject(err);
+      }
+      resolve(rows || []);
+    });
+  });
+}
+
+/**
  * Retrieves all emails from the database, sorted by date descending (newest first).
  */
 export async function getAllEmails(): Promise<any[]> {

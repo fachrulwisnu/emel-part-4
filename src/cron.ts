@@ -7,7 +7,8 @@ import {
   dbUpsertEmail, 
   dbGetCustomFilters,
   Email,
-  syncAndAnalyzeEmail
+  syncAndAnalyzeEmail,
+  dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 
@@ -43,14 +44,6 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       return { success: false, count: 0, message: 'POP3 settings not fully configured' };
     }
 
-    let existingEmails: Email[] = [];
-    try {
-      existingEmails = await dbGetAllEmails();
-    } catch (dbErr) {
-      console.error('[Cron Sync] Failed to query existing emails:', dbErr);
-    }
-
-    const existingMessageIds = new Set<string>(existingEmails.map(e => e.message_id).filter(Boolean));
     let addedCount = 0;
 
     try {
@@ -90,6 +83,10 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       }
 
       console.log(`[Cron Sync] Server reports ${emailItems.length} total messages.`);
+
+      // Highly optimized bulk check of existing messages using .in() query
+      const serverUids = emailItems.map(item => item.uid);
+      const existingMessageIds = await dbCheckExistingUids(serverUids);
 
       // Check which ones are new
       const newItems = emailItems.filter(item => !existingMessageIds.has(item.uid));
