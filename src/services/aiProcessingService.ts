@@ -4,8 +4,7 @@ import axios from 'axios';
 import { readFile } from 'node:fs/promises';
 import OpenAI from 'openai';
 import sharp from 'sharp';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { getAiCompletion, generateWithGemini } from './aiService';
+import { getAiCompletion } from './aiService';
 
 /**
  * AI Processing Service
@@ -18,10 +17,6 @@ export const AI_CONFIG = {
   throttleDelay: 15000,       // Jeda waktu antar batch (15-20 detik)
   retryDelaySeconds: 30       // Detik tunggu jika kena limit 429
 };
-
-// Wajib menggunakan Environment Variable untuk keamanan.
-// Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 /**
  * Automatically compress images to keep the payload size under 180KB for API calls.
@@ -56,15 +51,17 @@ async function compressImageForNvidia(filePath: string): Promise<string> {
 }
 
 /**
- * Cosmos3-Nano-Reasoner call
+ * Nemotron-3-Nano-Omni-30B call via axios
  */
-async function callCosmos3(imageB64: string | null, promptText: string): Promise<string> {
-  const client = new OpenAI({
-    apiKey: "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",
-    baseURL: "https://integrate.api.nvidia.com/v1",
-  });
+async function processWithNanoOmni(promptText: string, imageB64: string | null = null): Promise<string> {
+  const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+  const headers = {
+    "Authorization": "Bearer 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",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
 
-  const contentPayload: any = imageB64 ? [
+  const content: any = imageB64 ? [
     { type: "text", text: promptText },
     {
       type: "image_url",
@@ -74,40 +71,45 @@ async function callCosmos3(imageB64: string | null, promptText: string): Promise
     }
   ] : promptText;
 
-  const response = await client.chat.completions.create({
-    model: "nvidia/cosmos3-nano-reasoner",
-    messages: [
-      {
-        role: "user",
-        content: contentPayload
-      }
-    ] as any,
-    max_tokens: 4096,
-    stream: false
-  });
-  return response.choices[0]?.message?.content || "";
+  const payload = {
+    "messages": [{"role": "user", "content": content}],
+    "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "max_tokens": 65536,
+    "reasoning_budget": 16384,
+    "stream": false, // Parse hasil JSON secara utuh (bukan stream)
+    "temperature": 0.6,
+    "top_p": 0.95
+  };
+
+  const response = await axios.post(invokeUrl, payload, { headers, responseType: 'json' });
+  return response.data?.choices?.[0]?.message?.content || "";
 }
 
 /**
- * Gemini 1.5 Flash call
+ * Nemotron-3-Super-120B call via OpenAI SDK (streamed)
  */
-async function callGemini(imageB64: string | null, promptText: string): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-  if (imageB64) {
-    const response = await model.generateContent([
-      promptText,
-      {
-        inlineData: {
-          mimeType: "image/jpeg",
-          data: imageB64,
-        },
-      }
-    ]);
-    return response.response.text() || "";
-  } else {
-    const response = await model.generateContent(promptText);
-    return response.response.text() || "";
+const super120Client = new OpenAI({
+  apiKey: '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',
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+});
+
+async function processWithSuper120(promptText: string): Promise<string> {
+  let fullContent = "";
+  const completion: any = await super120Client.chat.completions.create({
+    model: "nvidia/nemotron-3-super-120b-a12b",
+    messages: [{"role": "user", "content": promptText}],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 16384,
+    reasoning_budget: 16384,
+    chat_template_kwargs: {"enable_thinking": true},
+    stream: true
+  } as any);
+
+  for await (const chunk of completion) {
+    fullContent += chunk.choices[0]?.delta?.content || '';
   }
+  return fullContent;
 }
 
 /**
@@ -185,15 +187,14 @@ async function callStepFun(imageB64: string | null, promptText: string): Promise
 }
 
 /**
- * Image Rotator (Cosmos3 -> Gemini -> Qwen3 -> StepFun)
+ * Image Rotator (Nano Omni 30B -> Qwen3 -> StepFun)
  */
 export async function processImageAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
   const imageB64 = await compressImageForNvidia(filePath);
   const promptText = `Ekstrak semua teks penting, angka, tabel, dan data penting dari gambar lampiran bernama "${filename}" dengan teliti, lengkap, dan rapi dalam Bahasa Indonesia.`;
   
   const models = [
-    { name: 'Cosmos3-Nano-Reasoner', fn: () => callCosmos3(imageB64, promptText) },
-    { name: 'Gemini 3.5 Flash', fn: () => callGemini(imageB64, promptText) },
+    { name: 'Nemotron-3-Nano-Omni-30B', fn: () => processWithNanoOmni(promptText, imageB64) },
     { name: 'Qwen3-Next-80B', fn: () => callQwen3(imageB64, promptText) },
     { name: 'StepFun-3.7-Flash', fn: () => callStepFun(imageB64, promptText) }
   ];
@@ -221,7 +222,7 @@ export async function processImageAttachmentWithRotator(filePath: string, filena
 }
 
 /**
- * Document Rotator (Qwen3 -> StepFun -> Gemini)
+ * Document Rotator (Super 120B -> Nano Omni 30B -> Qwen3 -> StepFun)
  */
 export async function processDocumentAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
   const rawText = extractAttachmentContent(filePath, filename);
@@ -233,9 +234,10 @@ ${rawText}
 Harap ringkas dan analisis semua data penting, angka, transaksi, tabel, instruksi, atau informasi penting dari dokumen ini dalam Bahasa Indonesia secara mendalam, terstruktur, dan rapi.`;
 
   const models = [
+    { name: 'Nemotron-3-Super-120B', fn: () => processWithSuper120(promptText) },
+    { name: 'Nemotron-3-Nano-Omni-30B', fn: () => processWithNanoOmni(promptText) },
     { name: 'Qwen3-Next-80B', fn: () => callQwen3(null, promptText) },
-    { name: 'StepFun-3.7-Flash', fn: () => callStepFun(null, promptText) },
-    { name: 'Gemini 3.5 Flash', fn: () => callGemini(null, promptText) }
+    { name: 'StepFun-3.7-Flash', fn: () => callStepFun(null, promptText) }
   ];
 
   let lastError: Error | null = null;
@@ -286,27 +288,7 @@ export async function extractTextWithNvidiaOCR(filePath: string): Promise<any> {
  * Hardcoded API Key according to instructions
  */
 export async function processWithNemoSuper(promptText: string): Promise<string> {
-  const nvidiaOpenAI = new OpenAI({
-    apiKey: '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',
-    baseURL: 'https://integrate.api.nvidia.com/v1',
-  });
-
-  let fullContent = "";
-  const completion: any = await nvidiaOpenAI.chat.completions.create({
-    model: "nvidia/nemotron-3-super-120b-a12b",
-    messages: [{"role": "user", "content": promptText}],
-    temperature: 1,
-    top_p: 0.95,
-    max_tokens: 16384,
-    chat_template_kwargs: {"enable_thinking": true},
-    stream: true
-  } as any);
-
-  for await (const chunk of completion) {
-    const content = chunk.choices[0]?.delta?.content || '';
-    fullContent += content;
-  }
-  return fullContent;
+  return processWithSuper120(promptText);
 }
 
 /**
@@ -507,59 +489,33 @@ Expected JSON schema to return:
     
     try {
       aiResponse = await executeWithBackoff(async () => {
-        return await processWithNemoSuper(prompt);
+        return await processWithSuper120(prompt);
       });
       console.log(`[Email Intelligence] Success with Nemotron-3-Super 120B!`);
     } catch (nemoErr: any) {
-      console.warn(`[Email Intelligence] Primary model Nemotron-3-Super 120B failed: ${nemoErr.message || nemoErr}. Falling back to Gemini 3.5 Flash...`);
+      console.warn(`[Email Intelligence] Primary model Nemotron-3-Super 120B failed: ${nemoErr.message || nemoErr}. Falling back to Nemotron-3-Nano-Omni-30B...`);
       try {
         aiResponse = await executeWithBackoff(async () => {
-          return await callGemini(null, prompt);
+          return await processWithNanoOmni(prompt);
         });
-        console.log(`[Email Intelligence] Success with Gemini 3.5 Flash fallback!`);
-      } catch (geminiErr: any) {
-        console.warn(`[Email Intelligence] Gemini 3.5 Flash failed: ${geminiErr.message || geminiErr}. Falling back to DeepSeek...`);
+        console.log(`[Email Intelligence] Success with Nemotron-3-Nano-Omni-30B fallback!`);
+      } catch (nanoErr: any) {
+        console.warn(`[Email Intelligence] Nemotron-3-Nano-Omni-30B failed: ${nanoErr.message || nanoErr}. Falling back to Qwen3-Next-80B...`);
         try {
-          // Direct fallback to DeepSeek via OpenAI SDK configured with DeepSeek parameters
           aiResponse = await executeWithBackoff(async () => {
-            const deepseekOpenAI = new OpenAI({
-              apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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',
-              baseURL: 'https://integrate.api.nvidia.com/v1'
-            });
-            const completion = await deepseekOpenAI.chat.completions.create({
-              model: 'deepseek-ai/deepseek-v4-pro',
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 1,
-              top_p: 0.95,
-              max_tokens: 4096,
-              stream: false
-            });
-            return completion.choices[0]?.message?.content || '';
+            return await callQwen3(null, prompt);
           });
-          console.log(`[Email Intelligence] Success with DeepSeek fallback!`);
-        } catch (dsErr: any) {
-          console.warn(`[Email Intelligence] DeepSeek failed: ${dsErr.message || dsErr}. Falling back to Gemma...`);
+          console.log(`[Email Intelligence] Success with Qwen3 fallback!`);
+        } catch (qwenErr: any) {
+          console.warn(`[Email Intelligence] Qwen3 failed: ${qwenErr.message || qwenErr}. Falling back to StepFun-AI Step-3.7-Flash...`);
           try {
-            // Direct fallback to Gemma via OpenAI SDK configured with Gemma parameters
             aiResponse = await executeWithBackoff(async () => {
-              const gemmaOpenAI = new OpenAI({
-                apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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',
-                baseURL: 'https://integrate.api.nvidia.com/v1'
-              });
-              const completion = await gemmaOpenAI.chat.completions.create({
-                model: 'google/gemma-4-31b-it',
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 1,
-                top_p: 0.95,
-                max_tokens: 4096,
-                stream: false
-              });
-              return completion.choices[0]?.message?.content || '';
+              return await callStepFun(null, prompt);
             });
-            console.log(`[Email Intelligence] Success with Gemma fallback!`);
-          } catch (gemmaErr: any) {
+            console.log(`[Email Intelligence] Success with StepFun fallback!`);
+          } catch (stepErr: any) {
             console.error(`[Email Intelligence] All models in cascade failed!`);
-            throw new Error(`Cascade Failure: NemoSuper, Gemini, DeepSeek, and Gemma all failed. Last error: ${gemmaErr.message}`);
+            throw new Error(`Cascade Failure: Super120, NanoOmni, Qwen3, and StepFun all failed. Last error: ${stepErr.message}`);
           }
         }
       }

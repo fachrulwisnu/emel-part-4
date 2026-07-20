@@ -2975,11 +2975,10 @@ export default function App() {
                                       <span className="font-mono font-bold text-slate-700">{item.model}</span>
                                     </td>
                                     <td className="p-3 text-slate-500 font-medium">
-                                      {item.model === 'nvidia/nemotron-3-ultra-550b-a55b' && 'Primary Summary Core'}
-                                      {item.model === 'thinkingmachines/inkling' && 'Primary Contextual Tagging'}
-                                      {item.model === 'deepseek-ai/deepseek-v4-pro' && 'Fallback Tier 1'}
-                                      {item.model === 'google/gemma-4-31b-it' && 'Fallback Tier 2'}
-                                      {item.model === 'minimaxai/minimax-m3' && 'Absolute Last Resort'}
+                                      {item.model === 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning' && 'Primary Vision & Image OCR Rotator'}
+                                      {item.model === 'nvidia/nemotron-3-super-120b-a12b' && 'Primary Document & Core Reasoning Engine'}
+                                      {item.model === 'qwen/qwen3-next-80b-a3b-instruct' && 'Cascade Fallback Tier 1'}
+                                      {item.model === 'stepfun-ai/step-3.7-flash' && 'Cascade Fallback Tier 2'}
                                     </td>
                                     <td className="p-3">
                                       {isHealthy && (
@@ -3521,7 +3520,7 @@ export default function App() {
                   AI Pending Queue Management
                 </h3>
                 <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 5 per batch, jeda 15s) dan AI Rotator (Nemotron &rarr; DeepSeek &rarr; Gemma &rarr; Minimax).
+                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 2 per batch, jeda 15s) dan AI Rotator (Nemotron-3-Super &rarr; Nemotron-3-Nano-Omni &rarr; Qwen3 &rarr; StepFun).
                 </p>
               </div>
               <button

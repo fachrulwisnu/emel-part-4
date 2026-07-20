@@ -2,7 +2,6 @@ import express, { Response } from "express";
 import path from "path";
 import axios from "axios";
 import OpenAI from "openai";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { createServer as createViteServer } from "vite";
 import { 
   initDatabaseService, 
@@ -121,104 +120,26 @@ async function startServer() {
   });
 
   // Helper to ping a model for AI Health Check
-  async function pingModel(modelName: string, apiKey: string, defaultKey: string) {
+  async function pingModel(modelName: string, apiKey: string) {
     const start = Date.now();
-    let actualKey = process.env.NVIDIA_API_KEY || apiKey || defaultKey;
-    if (modelName === "thinkingmachines/inkling" && process.env.NVIDIA_API_KEY_INKLING) {
-      actualKey = process.env.NVIDIA_API_KEY_INKLING;
-    } else if (modelName === "minimaxai/minimax-m3" && process.env.NVIDIA_API_KEY_MINIMAX) {
-      actualKey = process.env.NVIDIA_API_KEY_MINIMAX;
-    } else if (modelName === "nvidia/nemotron-3-ultra-550b-a55b" && process.env.NVIDIA_API_KEY_NEMOTRON) {
-      actualKey = process.env.NVIDIA_API_KEY_NEMOTRON;
-    } else if (modelName === "deepseek-ai/deepseek-v4-pro" && process.env.NVIDIA_API_KEY_DEEPSEEK) {
-      actualKey = process.env.NVIDIA_API_KEY_DEEPSEEK;
-    } else if (modelName === "google/gemma-4-31b-it" && (process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA)) {
-      actualKey = process.env.NVIDIA_API_KEY_GEMMA4 || process.env.NVIDIA_API_KEY_GEMMA || "";
-    }
-    
     try {
-      if (modelName === "deepseek-ai/deepseek-v4-pro") {
-        const openaiDeepseek = new OpenAI({
-          apiKey: actualKey || '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',
-          baseURL: 'https://integrate.api.nvidia.com/v1',
-        });
-        const completion = await openaiDeepseek.chat.completions.create({
-          model: "deepseek-ai/deepseek-v4-pro",
-          messages: [{"role": "user", "content": "Balas dengan kata OK"}],
-          temperature: 1,
-          top_p: 0.95,
-          max_tokens: 16384,
-          chat_template_kwargs: {"thinking": false},
-          stream: false
-        } as any);
-
-        const latency = Date.now() - start;
-        return {
-          model: modelName,
-          status: "Active",
-          latency: `${latency}ms`
-        };
-      }
-
-      if (modelName === "google/gemma-4-31b-it") {
-        const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
-        const headers = {
-          "Authorization": "Bearer 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",
-          "Accept": "application/json"
-        };
-        const payload = {
-          "messages": [{"role": "user", "content": "Balas dengan kata OK"}],
-          "model": "google/gemma-4-31b-it",
-          "chat_template_kwargs": {"enable_thinking": true},
-          "max_tokens": 16384,
-          "stream": false,
-          "temperature": 1,
-          "top_p": 0.95
-        };
-
-        const response = await axios.post(invokeUrl, payload, { headers, timeout: 60000 });
-        const latency = Date.now() - start;
-        if (response.status === 200) {
-          return {
-            model: modelName,
-            status: "Active",
-            latency: `${latency}ms`
-          };
-        } else {
-          return {
-            model: modelName,
-            status: "Error",
-            message: `HTTP Status ${response.status}`,
-            latency: `${latency}ms`
-          };
-        }
-      }
-
-      // Default axios flow for other models
-      const payload: any = {
+      const payload = {
         model: modelName,
-        messages: [{ role: "user", content: "Balas dengan kata OK" }],
-        temperature: 1,
-        top_p: 0.95,
-        max_tokens: 10,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 5,
         stream: false
       };
-
-      if (modelName === "nvidia/nemotron-3-ultra-550b-a55b") {
-        payload.chat_template_kwargs = { enable_thinking: true };
-        payload.reasoning_budget = 1024;
-      }
 
       const response = await axios.post(
         "https://integrate.api.nvidia.com/v1/chat/completions",
         payload,
         {
           headers: {
-            "Authorization": `Bearer ${actualKey}`,
+            "Authorization": `Bearer ${apiKey}`,
             "Accept": "application/json",
             "Content-Type": "application/json"
           },
-          timeout: 60000 // 60 second timeout for health check
+          timeout: 10000 // 10 second timeout for health check
         }
       );
 
@@ -226,13 +147,13 @@ async function startServer() {
       if (response.status === 200) {
         return {
           model: modelName,
-          status: "Active",
+          status: "Active" as const,
           latency: `${latency}ms`
         };
       } else {
         return {
           model: modelName,
-          status: "Error",
+          status: "Error" as const,
           message: `HTTP Status ${response.status}`,
           latency: `${latency}ms`
         };
@@ -240,10 +161,8 @@ async function startServer() {
     } catch (err: any) {
       const latency = Date.now() - start;
       let errMsg = err.message || String(err);
-      let is503 = false;
       
       if (err.status === 503 || err.statusCode === 503 || (err.response && err.response.status === 503)) {
-        is503 = true;
         errMsg = "Server Penuh/Sibuk (503)";
       } else if (err.response) {
         const errorData = err.response.data;
@@ -253,7 +172,7 @@ async function startServer() {
       
       return {
         model: modelName,
-        status: is503 ? "Warning" : (latency >= 60000 ? "Timeout" : "Error"),
+        status: "Error" as const,
         message: errMsg,
         latency: `${latency}ms`
       };
@@ -265,29 +184,20 @@ async function startServer() {
     try {
       const results = await Promise.all([
         pingModel(
-          "nvidia/nemotron-3-ultra-550b-a55b",
-          "",
-          "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"
+          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "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"
         ),
         pingModel(
-          "thinkingmachines/inkling",
-          "",
-          "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"
+          "nvidia/nemotron-3-super-120b-a12b",
+          "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"
         ),
         pingModel(
-          "deepseek-ai/deepseek-v4-pro",
-          "",
-          "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"
+          "qwen/qwen3-next-80b-a3b-instruct",
+          "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"
         ),
         pingModel(
-          "google/gemma-4-31b-it",
-          "",
-          "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"
-        ),
-        pingModel(
-          "minimaxai/minimax-m3",
-          "",
-          "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"
+          "stepfun-ai/step-3.7-flash",
+          "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"
         )
       ]);
       res.json({ success: true, health: results });
@@ -299,139 +209,68 @@ async function startServer() {
   // GET AI System Health Check Endpoint
   app.get("/api/system/ai-health", async (req, res) => {
     try {
-      const results = await Promise.all([
-        // 1. Cosmos3-Nano-Reasoner (Vision & Reasoning)
-        (async () => {
+      const modelsToPing = [
+        {
+          name: "Nemotron-3-Nano-Omni-30B",
+          id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          key: "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"
+        },
+        {
+          name: "Nemotron-3-Super-120B",
+          id: "nvidia/nemotron-3-super-120b-a12b",
+          key: "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"
+        },
+        {
+          name: "Qwen3-Next-80B",
+          id: "qwen/qwen3-next-80b-a3b-instruct",
+          key: "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"
+        },
+        {
+          name: "StepFun-AI-Step-3.7-Flash",
+          id: "stepfun-ai/step-3.7-flash",
+          key: "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"
+        }
+      ];
+
+      const results = await Promise.all(
+        modelsToPing.map(async (m) => {
           const start = Date.now();
           try {
-            const openai = new OpenAI({
-              apiKey: "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",
-              baseURL: "https://integrate.api.nvidia.com/v1",
-            });
-            await openai.chat.completions.create({
-              model: "nvidia/cosmos3-nano-reasoner",
+            const payload = {
+              model: m.id,
               messages: [{"role": "user", "content": "ping"}],
               max_tokens: 5,
               stream: false
-            });
-            const latency = Date.now() - start;
-            return {
-              name: "cosmos3-nano-reasoner",
-              status: "Online" as const,
-              statusCode: 200,
-              latency: `${latency}ms`
             };
-          } catch (err: any) {
-            const latency = Date.now() - start;
-            return {
-              name: "cosmos3-nano-reasoner",
-              status: "Offline" as const,
-              statusCode: err.status || err.response?.status || 500,
-              latency: `${latency}ms`,
-              error: err.message
-            };
-          }
-        })(),
-
-        // 2. Gemini 1.5 Flash (Primary Fallback)
-        (async () => {
-          const start = Date.now();
-          try {
-            // Wajib menggunakan Environment Variable untuk keamanan.
-            // Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
-            const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''; 
-            const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-            const result = await model.generateContent("ping");
-            const responseText = result.response.text();
-            const latency = Date.now() - start;
-            return {
-              name: "Gemini 1.5 Flash",
-              status: responseText ? "Online" : "Offline",
-              statusCode: 200,
-              latency: `${latency}ms`
-            };
-          } catch (err: any) {
-            const latency = Date.now() - start;
-            return {
-              name: "Gemini 1.5 Flash",
-              status: "Offline" as const,
-              statusCode: err.status || 500,
-              latency: `${latency}ms`,
-              error: err.message
-            };
-          }
-        })(),
-
-        // 3. Qwen3-Next-80B-A3B-Instruct
-        (async () => {
-          const start = Date.now();
-          try {
-            const openai = new OpenAI({
-              apiKey: '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',
-              baseURL: 'https://integrate.api.nvidia.com/v1',
-            });
-            await openai.chat.completions.create({
-              model: "qwen/qwen3-next-80b-a3b-instruct",
-              messages: [{"role": "user", "content": "ping"}],
-              max_tokens: 5,
-              stream: false
-            });
-            const latency = Date.now() - start;
-            return {
-              name: "qwen3-next-80b-a3b-instruct",
-              status: "Online" as const,
-              statusCode: 200,
-              latency: `${latency}ms`
-            };
-          } catch (err: any) {
-            const latency = Date.now() - start;
-            return {
-              name: "qwen3-next-80b-a3b-instruct",
-              status: "Offline" as const,
-              statusCode: err.status || err.response?.status || 500,
-              latency: `${latency}ms`,
-              error: err.message
-            };
-          }
-        })(),
-
-        // 4. StepFun-AI Step-3.7-Flash
-        (async () => {
-          const start = Date.now();
-          try {
-            const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
             const headers = {
-              "Authorization": "Bearer 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",
+              "Authorization": `Bearer ${m.key}`,
               "Accept": "application/json",
               "Content-Type": "application/json"
             };
-            const payload = {
-              model: "stepfun-ai/step-3.7-flash",
-              messages: [{"role": "user", "content": "ping"}],
-              max_tokens: 5,
-              stream: false
-            };
-            const response = await axios.post(invokeUrl, payload, { headers, timeout: 8000 });
+            const response = await axios.post(
+              "https://integrate.api.nvidia.com/v1/chat/completions",
+              payload,
+              { headers, timeout: 8000 }
+            );
             const latency = Date.now() - start;
             return {
-              name: "stepfun-ai-step-3.7-flash",
-              status: response.status === 200 ? "Online" : "Offline",
+              name: m.name,
+              status: response.status === 200 ? "Online" as const : "Offline" as const,
               statusCode: response.status,
               latency: `${latency}ms`
             };
           } catch (err: any) {
             const latency = Date.now() - start;
             return {
-              name: "stepfun-ai-step-3.7-flash",
+              name: m.name,
               status: "Offline" as const,
               statusCode: err.response?.status || 500,
               latency: `${latency}ms`,
-              error: err.message
+              error: err.message || String(err)
             };
           }
-        })()
-      ]);
+        })
+      );
 
       res.json({ success: true, health: results });
     } catch (err: any) {

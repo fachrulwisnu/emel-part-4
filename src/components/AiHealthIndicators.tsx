@@ -127,7 +127,7 @@ export function AiHealthIndicators() {
             </div>
 
             <div className="mt-3 pt-2.5 border-t border-slate-100 text-[9px] text-slate-400 leading-normal">
-              Status diperbarui otomatis setiap 60 detik. Memantau integrasi model NVIDIA OCR, Reasoning (Nemotron 3 Super), dan Gemini Fallback secara aktif.
+              Status diperbarui otomatis setiap 60 detik. Memantau integrasi model Nemotron-3-Nano-Omni, Nemotron-3-Super, Qwen3-Next-80B, dan StepFun-3.7-Flash secara aktif.
             </div>
           </div>
         </>

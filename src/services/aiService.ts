@@ -1,72 +1,107 @@
 import OpenAI from 'openai';
+import axios from 'axios';
 import dotenv from 'dotenv';
 import { executeWithBackoff } from './aiProcessingService';
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Load environment variables
 dotenv.config();
 
-// Wajib menggunakan Environment Variable untuk keamanan.
-// Developer harus menambahkan variabel GEMINI_API_KEY=xxx di dalam file .env mereka.
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''; 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-export async function generateWithGemini(prompt: string | any[]): Promise<string> {
-  let textPrompt = "";
-  if (typeof prompt === 'string') {
-    textPrompt = prompt;
-  } else if (Array.isArray(prompt)) {
-    textPrompt = prompt.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
-  }
-
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-  const result = await model.generateContent(textPrompt);
-  const responseText = result.response.text();
-  if (!responseText) {
-    throw new Error("Empty response from Gemini 1.5 Flash");
-  }
-  return responseText;
-}
-
 export interface ModelConfig {
   name: string;
   id: string;
-  apiKey: string | undefined;
+  fn: (messages: any[]) => Promise<string>;
 }
 
 const MODELS: ModelConfig[] = [
   {
-    name: 'Nemotron',
-    id: 'nvidia/nemotron-3-ultra-550b-a55b',
-    apiKey: process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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'
+    name: 'Nemotron-3-Nano-Omni-30B',
+    id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
+    fn: async (messages: any[]) => {
+      const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+      const headers = {
+        "Authorization": "Bearer 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",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      };
+      const payload = {
+        messages,
+        model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        max_tokens: 16384,
+        reasoning_budget: 4096,
+        stream: false,
+        temperature: 0.6,
+        top_p: 0.95
+      };
+      const response = await axios.post(invokeUrl, payload, { headers, timeout: 30000 });
+      return response.data?.choices?.[0]?.message?.content || "";
+    }
   },
   {
-    name: 'Gemini',
-    id: 'gemini-1.5-flash',
-    apiKey: GEMINI_API_KEY
+    name: 'Nemotron-3-Super-120B',
+    id: 'nvidia/nemotron-3-super-120b-a12b',
+    fn: async (messages: any[]) => {
+      const openai = new OpenAI({
+        apiKey: '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',
+        baseURL: 'https://integrate.api.nvidia.com/v1'
+      });
+      const completion = await openai.chat.completions.create({
+        model: "nvidia/nemotron-3-super-120b-a12b",
+        messages,
+        temperature: 1,
+        top_p: 0.95,
+        max_tokens: 16384,
+        chat_template_kwargs: {"enable_thinking": true},
+        stream: false
+      } as any);
+      return completion.choices[0]?.message?.content || "";
+    }
   },
   {
-    name: 'DeepSeek',
-    id: 'deepseek-ai/deepseek-v4-pro',
-    apiKey: process.env.NVIDIA_API_KEY_DEEPSEEK || process.env.NVIDIA_API_KEY || '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'
+    name: 'Qwen3-Next-80B',
+    id: 'qwen/qwen3-next-80b-a3b-instruct',
+    fn: async (messages: any[]) => {
+      const openai = new OpenAI({
+        apiKey: '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',
+        baseURL: 'https://integrate.api.nvidia.com/v1'
+      });
+      const completion = await openai.chat.completions.create({
+        model: "qwen/qwen3-next-80b-a3b-instruct",
+        messages,
+        temperature: 0.6,
+        top_p: 0.7,
+        max_tokens: 4096,
+        stream: false
+      });
+      return completion.choices[0]?.message?.content || "";
+    }
   },
   {
-    name: 'Gemma',
-    id: 'google/gemma-4-31b-it',
-    apiKey: process.env.NVIDIA_API_KEY_GEMMA || process.env.NVIDIA_API_KEY || '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'
-  },
-  {
-    name: 'Minimax',
-    id: 'minimaxai/minimax-m3',
-    apiKey: process.env.NVIDIA_API_KEY_MINIMAX || process.env.NVIDIA_API_KEY || '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'
+    name: 'StepFun-3.7-Flash',
+    id: 'stepfun-ai/step-3.7-flash',
+    fn: async (messages: any[]) => {
+      const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+      const headers = {
+        "Authorization": "Bearer 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",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      };
+      const payload = {
+        model: "stepfun-ai/step-3.7-flash",
+        messages,
+        temperature: 1,
+        top_p: 0.95,
+        max_tokens: 4096,
+        stream: false
+      };
+      const response = await axios.post(invokeUrl, payload, { headers, timeout: 30000 });
+      return response.data?.choices?.[0]?.message?.content || "";
+    }
   }
 ];
 
 /**
- * Executes a completion across NVIDIA and Google Gemini models with Auto-Model Rotation.
+ * Executes a completion across our 4 active models with Auto-Model Rotation.
  * If one model fails, it automatically continues to the next model in rotation.
- * 
- * Supports both a raw string prompt or structured OpenAI messages array.
  */
 export async function getAiCompletion(prompt: string | any[]): Promise<string> {
   const messages = typeof prompt === 'string'
@@ -78,38 +113,12 @@ export async function getAiCompletion(prompt: string | any[]): Promise<string> {
   for (const model of MODELS) {
     try {
       console.log(`[AI Rotator] Attempting generation with model: ${model.name} (${model.id})`);
-      if (!model.apiKey) {
-        throw new Error(`API Key for model ${model.name} is not configured.`);
-      }
+      const rawContent = await executeWithBackoff(async () => {
+        return await model.fn(messages);
+      });
 
-      let rawContent = "";
-      if (model.name === 'Gemini') {
-        rawContent = await executeWithBackoff(async () => {
-          return await generateWithGemini(prompt);
-        });
-      } else {
-        rawContent = await executeWithBackoff(async () => {
-          const openai = new OpenAI({
-            apiKey: model.apiKey,
-            baseURL: 'https://integrate.api.nvidia.com/v1',
-            timeout: 60000,
-          });
-
-          const completion = await openai.chat.completions.create({
-            model: model.id,
-            messages: messages,
-            temperature: 1,
-            top_p: 0.95,
-            max_tokens: 4096,
-            stream: false
-          });
-
-          const content = completion.choices[0]?.message?.content || '';
-          if (!content) {
-            throw new Error(`Empty response from model: ${model.name}`);
-          }
-          return content;
-        });
+      if (!rawContent) {
+        throw new Error(`Empty response from model: ${model.name}`);
       }
 
       console.log(`[AI Rotator] Success with model: ${model.name}`);
