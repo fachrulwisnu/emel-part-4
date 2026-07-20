@@ -1470,6 +1470,22 @@ export default function App() {
             </span>
           </button>
 
+          {/* Email Intelligence button */}
+          <button 
+            onClick={() => setCurrentMenu('intelligence')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'intelligence' 
+                ? 'bg-slate-800 text-blue-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Email Intelligence"
+          >
+            <Sparkles className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Email Intelligence
+            </span>
+          </button>
+
           {/* CIT Dispatch Dashboard button */}
           <button 
             onClick={() => setCurrentMenu('cit-dashboard')}
@@ -1499,22 +1515,6 @@ export default function App() {
             <Settings className="h-5.5 w-5.5" />
             <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
               Workflow Settings
-            </span>
-          </button>
-
-          {/* Email Intelligence button */}
-          <button 
-            onClick={() => setCurrentMenu('intelligence')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'intelligence' 
-                ? 'bg-slate-800 text-blue-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Email Intelligence"
-          >
-            <Sparkles className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Email Intelligence
             </span>
           </button>
         </div>

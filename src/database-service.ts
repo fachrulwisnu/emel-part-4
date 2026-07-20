@@ -2654,6 +2654,15 @@ export async function dbGetGroupedEmails(): Promise<any> {
   const grouped: any = {};
 
   for (const email of emails) {
+    // FILTER ATTACHMENT ONLY: Only include emails with attachments
+    const attachments = typeof email.attachments === 'string'
+      ? JSON.parse(email.attachments || '[]')
+      : (email.attachments || []);
+
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      continue; // Skip if no attachment
+    }
+
     const analysis = analysisMap.get(email.message_id);
     
     const folder = (analysis?.folder || email.folder_parent || email.suggested_folder_parent || 'Uncategorized').trim();
