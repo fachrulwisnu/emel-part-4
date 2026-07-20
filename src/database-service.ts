@@ -1644,12 +1644,19 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
         attachments: normalizedEmail.attachments !== undefined ? normalizedEmail.attachments : null
       };
 
-      const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
-      if (error) {
-        console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
+      const { getDbDriver } = await import('./config/dbSwitcher');
+      const driver = getDbDriver();
+      if (driver === 'mongodb') {
+        const { dbSaveEmail } = await import('./services/dbManager');
+        await dbSaveEmail(message_id, payload);
+      } else {
+        const { error } = await supabase.from('emails').upsert(payload, { onConflict: 'message_id' });
+        if (error) {
+          console.error(`[Supabase Error] Failed to insert message ${message_id}:`, error.message, error.details);
+        }
       }
     } catch (err) {
-      console.error('[Supabase Upsert Exception]:', err);
+      console.error('[Database Upsert Exception]:', err);
     }
   }
 }
@@ -1667,47 +1674,70 @@ export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): P
     });
   });
 
-  // Supabase
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // Hybrid Switcher
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const { error } = await supabase
-        .from('emails')
-        .update({ is_read: is_read })
-        .eq('message_id', message_id);
-      if (error) {
-        console.error('[Supabase Update is_read Error]:', error);
-      }
+      const { dbUpdateEmailReadStatus } = await import('./services/dbManager');
+      await dbUpdateEmailReadStatus(message_id, is_read);
     } catch (err) {
-      console.error('[Supabase Update is_read Exception]:', err);
+      console.error('[MongoDB Update is_read Exception]:', err);
+    }
+  } else {
+    // Supabase
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { error } = await supabase
+          .from('emails')
+          .update({ is_read: is_read })
+          .eq('message_id', message_id);
+        if (error) {
+          console.error('[Supabase Update is_read Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Update is_read Exception]:', err);
+      }
     }
   }
 }
 
-// Get all custom filters (from Supabase if configured, fallback to SQLite)
+// Get all custom filters (from Supabase/MongoDB if configured, fallback to SQLite)
 export async function dbGetCustomFilters(): Promise<CustomFilter[]> {
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const { data, error } = await supabase
-        .from('custom_filters')
-        .select('*')
-        .order('id', { ascending: true });
-
-      if (!error && data) {
-        return data.map((row: any) => ({
-          id: row.id,
-          name: row.name || '',
-          match_from: row.match_from || '',
-          match_subject: row.match_subject || '',
-          match_body: row.match_body || '',
-          action_parent: row.action_parent || '',
-          action_child: row.action_child || '',
-          trigger_api: !!row.trigger_api
-        }));
-      }
+      const { dbGetCustomFilters: mongoGetFilters } = await import('./services/dbManager');
+      return await mongoGetFilters();
     } catch (err) {
-      console.error('Error connecting to Supabase for custom filters:', err);
+      console.error('Error connecting to MongoDB for custom filters:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('custom_filters')
+          .select('*')
+          .order('id', { ascending: true });
+
+        if (!error && data) {
+          return data.map((row: any) => ({
+            id: row.id,
+            name: row.name || '',
+            match_from: row.match_from || '',
+            match_subject: row.match_subject || '',
+            match_body: row.match_body || '',
+            action_parent: row.action_parent || '',
+            action_child: row.action_child || '',
+            trigger_api: !!row.trigger_api
+          }));
+        }
+      } catch (err) {
+        console.error('Error connecting to Supabase for custom filters:', err);
+      }
     }
   }
 
@@ -1764,28 +1794,39 @@ export async function dbSaveCustomFilter(filter: CustomFilter): Promise<void> {
     }
   });
 
-  // Save to Supabase
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // Save to Remote (Supabase or MongoDB)
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const payload: any = {
-        name: filter.name,
-        match_from: filter.match_from,
-        match_subject: filter.match_subject,
-        match_body: filter.match_body,
-        action_parent: filter.action_parent,
-        action_child: filter.action_child,
-        trigger_api: !!filter.trigger_api
-      };
-      if (filter.id) {
-        payload.id = filter.id;
-      }
-      const { error } = await supabase.from('custom_filters').upsert(payload);
-      if (error) {
-        console.error('[Supabase Custom Filter Save Error]:', error);
-      }
+      const { dbSaveCustomFilter: mongoSaveFilter } = await import('./services/dbManager');
+      await mongoSaveFilter(filter);
     } catch (err) {
-      console.error('[Supabase Custom Filter Save Exception]:', err);
+      console.error('[MongoDB Custom Filter Save Exception]:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const payload: any = {
+          name: filter.name,
+          match_from: filter.match_from,
+          match_subject: filter.match_subject,
+          match_body: filter.match_body,
+          action_parent: filter.action_parent,
+          action_child: filter.action_child,
+          trigger_api: !!filter.trigger_api
+        };
+        if (filter.id) {
+          payload.id = filter.id;
+        }
+        const { error } = await supabase.from('custom_filters').upsert(payload);
+        if (error) {
+          console.error('[Supabase Custom Filter Save Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Custom Filter Save Exception]:', err);
+      }
     }
   }
 }
@@ -1800,15 +1841,26 @@ export async function dbDeleteCustomFilter(id: number): Promise<void> {
     });
   });
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const { error } = await supabase.from('custom_filters').delete().eq('id', id);
-      if (error) {
-        console.error('[Supabase Custom Filter Delete Error]:', error);
-      }
+      const { dbDeleteCustomFilter: mongoDeleteFilter } = await import('./services/dbManager');
+      await mongoDeleteFilter(id);
     } catch (err) {
-      console.error('[Supabase Custom Filter Delete Exception]:', err);
+      console.error('[MongoDB Custom Filter Delete Exception]:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { error } = await supabase.from('custom_filters').delete().eq('id', id);
+        if (error) {
+          console.error('[Supabase Custom Filter Delete Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Custom Filter Delete Exception]:', err);
+      }
     }
   }
 }
@@ -1823,15 +1875,26 @@ export async function dbClearEmails(): Promise<void> {
     });
   });
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const { error } = await supabase.from('emails').delete().neq('id', 0); // deletes all rows
-      if (error) {
-        console.error('[Supabase Clear Emails Error]:', error);
-      }
+      const { dbClearAllEmails } = await import('./services/dbManager');
+      await dbClearAllEmails();
     } catch (err) {
-      console.error('[Supabase Clear Emails Exception]:', err);
+      console.error('[MongoDB Clear Emails Exception]:', err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { error } = await supabase.from('emails').delete().neq('id', 0); // deletes all rows
+        if (error) {
+          console.error('[Supabase Clear Emails Error]:', error);
+        }
+      } catch (err) {
+        console.error('[Supabase Clear Emails Exception]:', err);
+      }
     }
   }
 }
@@ -2702,48 +2765,71 @@ export async function dbSaveEmailAnalysis(
     console.error(`[Database Service] Failed to sync fields to emails table:`, err);
   });
 
-  // 3. Save to Supabase (if active)
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  // 3. Save to Remote (Supabase or MongoDB)
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      // 1. Sanitasi Tags (text[])
+      const { dbSaveEmailAnalysis: mongoSaveAnalysis } = await import('./services/dbManager');
       let formattedTags = analysis.tags || [];
-      if (typeof formattedTags === 'string') {
-        try {
-          formattedTags = JSON.parse(formattedTags);
-        } catch (e) {
-          formattedTags = [String(formattedTags).replace(/[\[\]"]/g, '')]; 
-        }
-      }
-
-      // 2. Sanitasi Summary Attachments (jsonb)
       let formattedAttachments = analysis.summary_attachments || [];
-      if (typeof formattedAttachments === 'string') {
-        try {
-          formattedAttachments = JSON.parse(formattedAttachments);
-        } catch (e) {
-          formattedAttachments = [];
-        }
-      }
-
       const payload = {
         message_id: messageId,
         folder: analysis.folder,
         sub_folder: analysis.sub_folder,
-        tags: Array.isArray(formattedTags) ? formattedTags : [],
+        tags: formattedTags,
         summary_email: analysis.summary_email,
         summary_attachments: formattedAttachments,
+        attachment_summary: formattedAttachments, // For Mongoose model compatibility
         created_at: createdAt
       };
-      const { error } = await supabase
-        .from('email_analysis')
-        .upsert(payload, { onConflict: 'message_id' });
-      
-      if (error) {
-        console.warn(`[Database Service] Supabase email_analysis upsert error:`, error);
-      }
+      await mongoSaveAnalysis(messageId, payload);
     } catch (err) {
-      console.error(`[Database Service] Supabase email_analysis sync failed:`, err);
+      console.error(`[Database Service] MongoDB email_analysis sync failed:`, err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        // 1. Sanitasi Tags (text[])
+        let formattedTags = analysis.tags || [];
+        if (typeof formattedTags === 'string') {
+          try {
+            formattedTags = JSON.parse(formattedTags);
+          } catch (e) {
+            formattedTags = [String(formattedTags).replace(/[\[\]"]/g, '')]; 
+          }
+        }
+
+        // 2. Sanitasi Summary Attachments (jsonb)
+        let formattedAttachments = analysis.summary_attachments || [];
+        if (typeof formattedAttachments === 'string') {
+          try {
+            formattedAttachments = JSON.parse(formattedAttachments);
+          } catch (e) {
+            formattedAttachments = [];
+          }
+        }
+
+        const payload = {
+          message_id: messageId,
+          folder: analysis.folder,
+          sub_folder: analysis.sub_folder,
+          tags: Array.isArray(formattedTags) ? formattedTags : [],
+          summary_email: analysis.summary_email,
+          summary_attachments: formattedAttachments,
+          created_at: createdAt
+        };
+        const { error } = await supabase
+          .from('email_analysis')
+          .upsert(payload, { onConflict: 'message_id' });
+        
+        if (error) {
+          console.warn(`[Database Service] Supabase email_analysis upsert error:`, error);
+        }
+      } catch (err) {
+        console.error(`[Database Service] Supabase email_analysis sync failed:`, err);
+      }
     }
   }
 }
@@ -2769,27 +2855,48 @@ export async function dbGetEmailAnalysis(messageId: string): Promise<any | null>
     };
   }
 
-  const supabase = getSupabaseClient();
-  if (supabase) {
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
     try {
-      const { data, error } = await supabase
-        .from('email_analysis')
-        .select('*')
-        .eq('message_id', messageId)
-        .single();
-      
-      if (!error && data) {
+      const { dbGetEmailAnalysis: mongoGetAnalysis } = await import('./services/dbManager');
+      const data = await mongoGetAnalysis(messageId);
+      if (data) {
         return {
           message_id: data.message_id,
           folder: data.folder,
           sub_folder: data.sub_folder,
-          tags: typeof data.tags === 'string' ? JSON.parse(data.tags || '[]') : (data.tags || []),
+          tags: Array.isArray(data.tags) ? data.tags : (typeof data.tags === 'string' ? JSON.parse(data.tags || '[]') : []),
           summary_email: data.summary_email,
-          summary_attachments: typeof data.summary_attachments === 'string' ? JSON.parse(data.summary_attachments || '[]') : (data.summary_attachments || [])
+          summary_attachments: Array.isArray(data.summary_attachments) ? data.summary_attachments : (typeof data.summary_attachments === 'string' ? JSON.parse(data.summary_attachments || '[]') : [])
         };
       }
     } catch (err) {
-      console.error(`[Database Service] Supabase email_analysis fetch failed:`, err);
+      console.error(`[Database Service] MongoDB email_analysis fetch failed:`, err);
+    }
+  } else {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('email_analysis')
+          .select('*')
+          .eq('message_id', messageId)
+          .single();
+        
+        if (!error && data) {
+          return {
+            message_id: data.message_id,
+            folder: data.folder,
+            sub_folder: data.sub_folder,
+            tags: typeof data.tags === 'string' ? JSON.parse(data.tags || '[]') : (data.tags || []),
+            summary_email: data.summary_email,
+            summary_attachments: typeof data.summary_attachments === 'string' ? JSON.parse(data.summary_attachments || '[]') : (data.summary_attachments || [])
+          };
+        }
+      } catch (err) {
+        console.error(`[Database Service] Supabase email_analysis fetch failed:`, err);
+      }
     }
   }
 

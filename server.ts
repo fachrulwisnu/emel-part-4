@@ -119,6 +119,29 @@ async function startServer() {
     }
   });
 
+  app.get("/api/settings/db-driver", async (req, res) => {
+    try {
+      const { getDbDriver } = await import("./src/config/dbSwitcher.js");
+      res.json({ success: true, dbDriver: getDbDriver() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post("/api/settings/db-driver", async (req, res) => {
+    try {
+      const { switchDatabase } = await import("./src/config/dbSwitcher.js");
+      const { dbDriver } = req.body;
+      if (dbDriver !== 'supabase' && dbDriver !== 'mongodb') {
+        return res.status(400).json({ success: false, message: "Invalid dbDriver value. Must be 'supabase' or 'mongodb'." });
+      }
+      switchDatabase(dbDriver);
+      res.json({ success: true, dbDriver });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
   // Helper to ping a model for AI Health Check
   async function pingModel(modelName: string, apiKey: string) {
     const start = Date.now();

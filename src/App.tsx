@@ -155,6 +155,35 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
+  // Database Switcher state
+  const [dbDriver, setDbDriver] = useState<'supabase' | 'mongodb'>('supabase');
+  const [isUpdatingDbDriver, setIsUpdatingDbDriver] = useState(false);
+
+  const handleToggleDbDriver = async () => {
+    const targetDriver = dbDriver === 'supabase' ? 'mongodb' : 'supabase';
+    setIsUpdatingDbDriver(true);
+    try {
+      const res = await fetch('/api/settings/db-driver', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ dbDriver: targetDriver }),
+      });
+      const data = await res.json();
+      if (data.success && data.dbDriver) {
+        setDbDriver(data.dbDriver);
+        addToast('Database Diubah', `Database yang aktif sekarang: ${data.dbDriver === 'mongodb' ? 'MongoDB' : 'Supabase (PostgreSQL)'}`);
+      } else {
+        addToast('Gagal Mengubah Database', data.message || 'Terjadi kesalahan saat memproses.');
+      }
+    } catch (err: any) {
+      addToast('Gagal Mengubah Database', err.message || String(err));
+    } finally {
+      setIsUpdatingDbDriver(false);
+    }
+  };
+
   // Loaders and State
   const [tickets, setTickets] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
@@ -521,6 +550,16 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to load settings:', err);
+    }
+
+    try {
+      const res = await fetch('/api/settings/db-driver');
+      const data = await res.json();
+      if (data.success && data.dbDriver) {
+        setDbDriver(data.dbDriver);
+      }
+    } catch (err) {
+      console.error('Failed to load DB driver:', err);
     }
   };
 
@@ -2640,6 +2679,61 @@ export default function App() {
                 {/* TAB 3: POP3 SECURE MAIL CONFIG & SUPABASE CREDS */}
                 {settingsTab === 'mail' && (
                   <form onSubmit={handleSaveSettings} className="space-y-6">
+                    {/* Database Switcher Block */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-5" id="db_switcher_card">
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-1">
+                          <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                            <Database className="h-4 w-4 text-blue-600" />
+                            Hybrid Database Switcher
+                          </h3>
+                          <p className="text-[11px] text-slate-500 leading-relaxed">
+                            Beralih secara real-time antara <strong>Supabase (PostgreSQL)</strong> dan <strong>MongoDB Atlas</strong> sebagai database remote aktif untuk sinkronisasi, analisis, dan integrasi WhatsApp.
+                          </p>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+                            Database Aktif: {dbDriver === 'mongodb' ? 'MongoDB' : 'Supabase'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex items-center justify-between bg-white border border-slate-100 rounded-xl p-3">
+                        <div className="flex items-center space-x-3">
+                          <div className={`p-2 rounded-lg ${dbDriver === 'mongodb' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                            <Server className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-slate-700">
+                              {dbDriver === 'mongodb' ? 'Koneksi Selesai: MongoDB Atlas Cluster' : 'Koneksi Selesai: Supabase PostgreSQL Server'}
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {dbDriver === 'mongodb' ? 'Menggunakan koleksi native wa_sessions, emails, dan email_analysis.' : 'Menggunakan table relasional wa_sessions, emails, dan custom_filters.'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Switch Toggle */}
+                        <button
+                          type="button"
+                          onClick={handleToggleDbDriver}
+                          disabled={isUpdatingDbDriver}
+                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                            dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-slate-300'
+                          } ${isUpdatingDbDriver ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          id="toggle_db_switch"
+                        >
+                          <span className="sr-only">Toggle Database</span>
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                              dbDriver === 'mongodb' ? 'translate-x-5' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+
                     <div>
                       <h2 className="text-sm font-bold text-slate-800">Mail Connection & Supabase Client Config</h2>
                       <p className="text-[11px] text-slate-400 mt-1">
