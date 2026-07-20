@@ -10,22 +10,50 @@ export interface DbServiceInstance {
   mongoDb: Db | null;
 }
 
+let hasLoggedMongoFailure = false;
+let isMongoUnavailable = false;
+let mongoFailureCooldownUntil = 0;
+
 /**
  * Returns the currently active database client (Supabase or MongoDB) based on configuration.
  */
 export async function getDbService(): Promise<DbServiceInstance> {
   const driver = getDbDriver();
   if (driver === 'mongodb' || !process.env.DB_DRIVER || process.env.DB_DRIVER === 'mongodb') {
+    // If MongoDB is known to be unavailable, don't try to connect until cooldown passes
+    if (isMongoUnavailable && Date.now() < mongoFailureCooldownUntil) {
+      return {
+        type: 'mongodb',
+        supabaseClient: null,
+        mongoDb: null,
+      };
+    }
+
     try {
       const db = await getMongoDb();
+      // Reset failure state if connection succeeds
+      isMongoUnavailable = false;
+      hasLoggedMongoFailure = false;
       return {
         type: 'mongodb',
         supabaseClient: null,
         mongoDb: db,
       };
     } catch (err) {
-      console.error('[dbManager] Failed to get MongoDB connection. Throwing error...', err);
-      throw err;
+      if (!hasLoggedMongoFailure) {
+        console.error('[dbManager] Failed to get MongoDB connection. Falling back cleanly to SQLite...', err);
+        hasLoggedMongoFailure = true;
+      }
+      isMongoUnavailable = true;
+      // Cooldown for 30 seconds before attempting to connect again
+      mongoFailureCooldownUntil = Date.now() + 30000;
+      
+      // Return a clean offline instance rather than throwing, allowing clean fallback to local SQLite
+      return {
+        type: 'mongodb',
+        supabaseClient: null,
+        mongoDb: null,
+      };
     }
   }
 

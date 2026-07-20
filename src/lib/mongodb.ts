@@ -3,29 +3,43 @@ import { MongoClient, Db } from 'mongodb';
 // Password @BosskuBabi2021 is URL-encoded as %40BosskuBabi2021 to prevent connection string parsing issues.
 const uri = "mongodb://fachrulwisnunovianto_db_user:%40BosskuBabi2021@ac-jjfqkcv-shard-00-00.4sfcd75.mongodb.net:27017,ac-jjfqkcv-shard-00-01.4sfcd75.mongodb.net:27017,ac-jjfqkcv-shard-00-02.4sfcd75.mongodb.net:27017/?ssl=true&replicaSet=atlas-3mdncx-shard-0&authSource=admin&appName=Cluster0";
 
-let cachedClient: MongoClient | null = null;
+let client: MongoClient | null = null;
+let connectPromise: Promise<MongoClient> | null = null;
 let cachedDb: Db | null = null;
 
 /**
  * Returns a cached singleton MongoClient instance.
  */
 export async function getMongoClient(): Promise<MongoClient> {
-  if (cachedClient) {
-    return cachedClient;
+  if (client) {
+    return client;
+  }
+  if (connectPromise) {
+    return connectPromise;
   }
 
-  console.log('[MongoDB] Connecting to MongoDB Atlas (Singleton)...');
-  const client = new MongoClient(uri, {
-    connectTimeoutMS: 15000,
-    socketTimeoutMS: 45000,
-    maxPoolSize: 10,
-    minPoolSize: 2,
-  });
+  connectPromise = (async () => {
+    console.log('[MongoDB] Connecting to MongoDB Atlas (Singleton)...');
+    const newClient = new MongoClient(uri, {
+      connectTimeoutMS: 15000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+      minPoolSize: 2,
+    });
+    await newClient.connect();
+    console.log('[MongoDB] Connected successfully to MongoDB Atlas.');
+    client = newClient;
+    return client;
+  })();
 
-  await client.connect();
-  console.log('[MongoDB] Connected successfully to MongoDB Atlas.');
-  cachedClient = client;
-  return cachedClient;
+  try {
+    const connectedClient = await connectPromise;
+    return connectedClient;
+  } catch (err) {
+    // Reset connection promise if connection failed so we can retry on next attempt
+    connectPromise = null;
+    throw err;
+  }
 }
 
 /**
@@ -36,8 +50,8 @@ export async function getMongoDb(): Promise<Db> {
     return cachedDb;
   }
   
-  const client = await getMongoClient();
-  cachedDb = client.db('emails');
+  const connectedClient = await getMongoClient();
+  cachedDb = connectedClient.db('emails');
   return cachedDb;
 }
 
@@ -45,48 +59,35 @@ export async function getMongoDb(): Promise<Db> {
  * Direct implementation of getDb returning the cached/connected client as per instructions.
  */
 export async function getDb(): Promise<MongoClient> {
-  if (cachedClient) {
-    return cachedClient;
-  }
-
-  console.log('[MongoDB] Connecting to MongoDB Atlas (Cached Pattern)...');
-  const client = new MongoClient(uri, {
-    connectTimeoutMS: 15000,
-    socketTimeoutMS: 45000,
-    maxPoolSize: 10,
-    minPoolSize: 2,
-  });
-
-  await client.connect();
-  console.log('[MongoDB] Connected successfully.');
-  cachedClient = client;
-  return cachedClient;
+  return getMongoClient();
 }
 
 // Ensure the connection is gracefully closed ONLY when the app is terminating
 process.on('SIGINT', async () => {
-  if (cachedClient) {
+  if (client) {
     console.log('[MongoDB] SIGINT received. Gracefully closing MongoDB connection...');
     try {
-      await cachedClient.close();
+      await client.close();
     } catch (err) {
       console.error('[MongoDB] Error closing connection on SIGINT:', err);
     }
-    cachedClient = null;
+    client = null;
+    connectPromise = null;
     cachedDb = null;
   }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  if (cachedClient) {
+  if (client) {
     console.log('[MongoDB] SIGTERM received. Gracefully closing MongoDB connection...');
     try {
-      await cachedClient.close();
+      await client.close();
     } catch (err) {
       console.error('[MongoDB] Error closing connection on SIGTERM:', err);
     }
-    cachedClient = null;
+    client = null;
+    connectPromise = null;
     cachedDb = null;
   }
   process.exit(0);
