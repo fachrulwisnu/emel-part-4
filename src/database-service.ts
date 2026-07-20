@@ -2275,7 +2275,7 @@ async function _runHistoricalBackfillAsync(): Promise<void> {
 /**
  * Initializes postgres_changes realtime subscription for the emails table
  */
-export function initSupabaseRealtime() {
+export async function initSupabaseRealtime() {
   const supabase = getSupabaseClient();
   if (!supabase) {
     console.log('[Supabase Realtime] Supabase is not active/configured. Realtime channel not started.');
@@ -2283,6 +2283,13 @@ export function initSupabaseRealtime() {
   }
 
   console.log('[Supabase Realtime] Initializing event-driven Supabase real-time listener...');
+
+  try {
+    await supabase.removeAllChannels();
+    console.log('[Supabase Realtime] Successfully cleared all existing database channels.');
+  } catch (err: any) {
+    console.warn('[Supabase Realtime] Warning cleaning up existing channels:', err.message || err);
+  }
 
   const channel = supabase
     .channel('public:emails')

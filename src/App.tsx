@@ -48,6 +48,21 @@ import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 import { AiHealthIndicators } from './components/AiHealthIndicators';
 
+// Shared Supabase Client singleton in App.tsx
+let sharedSupabaseInstance: any = null;
+let lastUsedUrl = '';
+let lastUsedKey = '';
+
+function getClientSupabase(url: string, key: string) {
+  if (!url || !key) return null;
+  if (!sharedSupabaseInstance || lastUsedUrl !== url || lastUsedKey !== key) {
+    sharedSupabaseInstance = createClient(url, key);
+    lastUsedUrl = url;
+    lastUsedKey = key;
+  }
+  return sharedSupabaseInstance;
+}
+
 interface Email {
   id?: number;
   message_id: string;
@@ -517,7 +532,7 @@ export default function App() {
 
     if (url && key) {
       try {
-        const supabase = createClient(url, key);
+        const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
         if (!error && data) {
           const mapped: Email[] = data.map((email: any) => {
@@ -637,7 +652,7 @@ export default function App() {
 
     if (url && key) {
       try {
-        const supabase = createClient(url, key);
+        const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase.from('custom_filters').select('*');
         if (!error && data) {
           setCustomFilters(data);
@@ -674,7 +689,7 @@ export default function App() {
 
     if (url && key) {
       try {
-        const supabase = createClient(url, key);
+        const supabase = getClientSupabase(url, key);
         const { data, error } = await supabase
           .from('custom_filters')
           .select('*')
@@ -725,7 +740,7 @@ export default function App() {
         }
 
         if (url && key) {
-          const supabase = createClient(url, key);
+          const supabase = getClientSupabase(url, key);
           const { data, error } = await supabase
             .from('custom_filters')
             .select('*')
@@ -783,7 +798,7 @@ export default function App() {
 
         if (finalUrl && finalKey) {
           // Mount initial fetch to Supabase
-          const supabase = createClient(finalUrl, finalKey);
+          const supabase = getClientSupabase(finalUrl, finalKey);
           const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
           if (!error && data) {
             const mapped: Email[] = data.map((email: any) => {
@@ -1087,7 +1102,7 @@ export default function App() {
     }
 
     try {
-      const supabase = createClient(url, key);
+      const supabase = getClientSupabase(url, key);
       // 1. Fetch emails with folder_parent = 'Lainnya'
       const { data, error } = await supabase
         .from('emails')
@@ -1181,7 +1196,7 @@ export default function App() {
 
     if (url && key) {
       try {
-        const supabase = createClient(url, key);
+        const supabase = getClientSupabase(url, key);
         const payload: any = {
           name: filterForm.name.trim(),
           match_from: filterForm.match_from?.trim() || null,
@@ -1307,7 +1322,7 @@ export default function App() {
 
     if (url && key) {
       try {
-        const supabase = createClient(url, key);
+        const supabase = getClientSupabase(url, key);
         const { error } = await supabase.from('custom_filters').delete().eq('id', id);
         if (!error) {
           deletedFromSupabase = true;

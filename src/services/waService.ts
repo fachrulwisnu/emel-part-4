@@ -7,12 +7,15 @@ import { toDataURL } from 'qrcode';
 
 let sock: WASocket | null = null;
 let isConnected = false;
+let isConnecting = false;
+let reconnectTimeout: NodeJS.Timeout | null = null;
 let qrCodeString = '';
 let latestQrBase64 = '';
 
 export function getWhatsAppStatus() {
   return {
     isConnected,
+    isConnecting,
     qrCode: qrCodeString,
     qrBase64: latestQrBase64,
   };
@@ -20,6 +23,10 @@ export function getWhatsAppStatus() {
 
 export async function forceInitWhatsApp(): Promise<void> {
   console.log('[WhatsApp] Menghubungkan ulang / Refresh QR...');
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
   if (sock) {
     try {
       sock.end(undefined);
@@ -27,6 +34,7 @@ export async function forceInitWhatsApp(): Promise<void> {
     sock = null;
   }
   isConnected = false;
+  isConnecting = false;
   qrCodeString = '';
   latestQrBase64 = '';
 
@@ -46,6 +54,12 @@ export async function forceInitWhatsApp(): Promise<void> {
 }
 
 export async function initWhatsApp(): Promise<void> {
+  if (isConnecting) {
+    console.log('[WhatsApp] Koneksi / inisialisasi sedang berjalan... Mengabaikan panggilan ganda.');
+    return;
+  }
+  isConnecting = true;
+
   const authFolder = path.join(process.cwd(), 'auth_info');
   
   // Ensure the directory exists
@@ -84,16 +98,25 @@ export async function initWhatsApp(): Promise<void> {
 
     if (connection === 'close') {
       isConnected = false;
+      isConnecting = false;
       const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+      const errorMsg = (lastDisconnect?.error as any)?.message || '';
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
-      console.log(`[WhatsApp] Koneksi terputus. Status Code: ${statusCode}. Reconnect: ${shouldReconnect}`);
+      console.log(`[WhatsApp] Koneksi terputus. Status Code: ${statusCode}. Message: ${errorMsg}. Reconnect: ${shouldReconnect}`);
       
       if (shouldReconnect) {
-        // Delay reconnect to avoid infinite loop spam
-        setTimeout(() => {
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+        }
+        
+        // Jeda 10000ms (10 detik) jika connectionClosed atau status 428, jika tidak gunakan 8000ms
+        const delay = (statusCode === 428 || statusCode === DisconnectReason.connectionClosed) ? 10000 : 8000;
+        console.log(`[WhatsApp] Menjadwalkan koneksi ulang dalam ${delay}ms...`);
+        
+        reconnectTimeout = setTimeout(() => {
           initWhatsApp().catch((err) => console.error('[WhatsApp] Reconnect error:', err));
-        }, 5000);
+        }, delay);
       } else {
         console.log('[WhatsApp] Sesi logged out. Silakan scan ulang.');
         sock = null;
@@ -102,6 +125,11 @@ export async function initWhatsApp(): Promise<void> {
       }
     } else if (connection === 'open') {
       isConnected = true;
+      isConnecting = false;
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
       qrCodeString = '';
       latestQrBase64 = '';
       console.log('==================================================');
