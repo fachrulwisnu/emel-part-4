@@ -1100,137 +1100,36 @@ async function startServer() {
   app.post("/api/import-mbox", importMboxHandler);
   app.get("/api/import-eml-dir", importEmlDirHandler);
 
-  // CIT Proxy API Routes
-  const CIT_BASE = "https://api-activeatm.adv.my.id/api/v1";
-
+  // CIT Proxy API Routes (TEMPORARILY DISABLED)
   app.get("/api/cit/currencies", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/currencies`, {
-        headers: { 'Authorization': token ? `Bearer ${token}` : '' }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error(`[CIT Proxy Error] Endpoint: currencies`);
-      
-      if (err.response) {
-        // Server menjawab dengan status selain 2xx (seperti 404, 500)
-        console.error(`[CIT Proxy Error] Target URL: ${err.config?.url}`);
-        console.error(`[CIT Proxy Error] HTTP Status: ${err.response.status}`);
-        console.error(`[CIT Proxy Error] Response Data:`, JSON.stringify(err.response.data, null, 2));
-      } else if (err.request) {
-        // Request terkirim tapi tidak ada jawaban (Timeout/Koneksi putus)
-        console.error(`[CIT Proxy Error] No response received from server.`);
-      } else {
-        // Error pada konfigurasi request itu sendiri
-        console.error(`[CIT Proxy Error] Setup Error:`, err.message);
-      }
-      res.json({ success: false, data: [] });
-    }
+    res.json({ success: true, data: [], note: "CIT API Disabled" });
   });
 
   app.get("/api/cit/scitems", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/scitems`, {
-        headers: { 'Authorization': token ? `Bearer ${token}` : '' }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error("[CIT Proxy Error] scitems:", err.message);
-      res.json({ success: false, data: [] });
-    }
+    res.json({ success: true, data: [], note: "CIT API Disabled" });
   });
 
   app.get("/api/cit/entity-master-details", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/entity-master-details`, {
-        headers: { 'Authorization': token ? `Bearer ${token}` : '' }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error(`[CIT Proxy Error] Endpoint: entities`);
-      
-      if (err.response) {
-        // Server menjawab dengan status selain 2xx (seperti 404, 500)
-        console.error(`[CIT Proxy Error] Target URL: ${err.config?.url}`);
-        console.error(`[CIT Proxy Error] HTTP Status: ${err.response.status}`);
-        console.error(`[CIT Proxy Error] Response Data:`, JSON.stringify(err.response.data, null, 2));
-      } else if (err.request) {
-        // Request terkirim tapi tidak ada jawaban (Timeout/Koneksi putus)
-        console.error(`[CIT Proxy Error] No response received from server.`);
-      } else {
-        // Error pada konfigurasi request itu sendiri
-        console.error(`[CIT Proxy Error] Setup Error:`, err.message);
-      }
-      res.json({ success: false, data: [] });
-    }
+    res.json({ success: true, data: [], note: "CIT API Disabled" });
   });
 
   app.get("/api/cit/vault-trips", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.get(`${CIT_BASE}/vault-trips`, {
-        headers: { 'Authorization': token ? `Bearer ${token}` : '' }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error("[CIT Proxy Error] trips:", err.message);
-      // Let's provide some mock orders harian if API fails/is offline, so the UI is beautiful!
-      res.json({
-        success: true,
-        data: [
-          { id: 1, order_id: "ORD-1002", ticket_id: "TKT-0412", branch_name: "MEDAN", location: "Bank Maybank KCP Medan", status: "In Progress" },
-          { id: 2, order_id: "ORD-1003", ticket_id: "TKT-0413", branch_name: "PURWOKERTO", location: "Bank Mandiri Purwokerto", status: "Idle" },
-          { id: 3, order_id: "ORD-1004", ticket_id: "TKT-0414", branch_name: "SURABAYA", location: "BCA Surabaya", status: "Completed" }
-        ]
-      });
-    }
+    res.json({
+      success: true,
+      data: [
+        { id: 1, order_id: "ORD-1002", ticket_id: "TKT-0412", branch_name: "MEDAN", location: "Bank Maybank KCP Medan", status: "In Progress" },
+        { id: 2, order_id: "ORD-1003", ticket_id: "TKT-0413", branch_name: "PURWOKERTO", location: "Bank Mandiri Purwokerto", status: "Idle" },
+        { id: 3, order_id: "ORD-1004", ticket_id: "TKT-0414", branch_name: "SURABAYA", location: "BCA Surabaya", status: "Completed" }
+      ]
+    });
   });
 
   app.get("/api/cit/test-connection", async (req, res) => {
-    const steps: string[] = [];
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const headers = { 'Authorization': token ? `Bearer ${token}` : '' };
-
-      steps.push("1. Menguji base URL: https://api-activeatm.adv.my.id/");
-      const baseResponse = await axios.get("https://api-activeatm.adv.my.id/", { timeout: 5000 }).catch(e => {
-        // Even if it returns 404/403, as long as it responds it means the server is online
-        return { status: e.response?.status || 500, data: e.response?.data || e.message };
-      });
-      steps.push(`Base URL merespons dengan HTTP Status: ${baseResponse.status}`);
-
-      steps.push(`2. Menguji endpoint vault-trips di: ${CIT_BASE}/vault-trips`);
-      const tripsResponse = await axios.get(`${CIT_BASE}/vault-trips`, {
-        headers,
-        timeout: 5000
-      });
-      steps.push(`Endpoint vault-trips berhasil diakses! Status: ${tripsResponse.status}`);
-      
-      res.json({
-        success: true,
-        message: "Koneksi ke Active ATM API Berhasil!",
-        steps
-      });
-    } catch (err: any) {
-      let errMsg = err.message || String(err);
-      if (err.response) {
-        errMsg += ` (Status: ${err.response.status}, Data: ${JSON.stringify(err.response.data)})`;
-      }
-      steps.push(`Langkah gagal: ${errMsg}`);
-      res.json({
-        success: false,
-        message: `Koneksi Gagal: ${err.message || "Unknown error"}`,
-        steps
-      });
-    }
+    res.json({
+      success: true,
+      message: "[CIT API] Forwarding disabled temporarily, data saved to DB only",
+      steps: ["API endpoints disabled temporarily."]
+    });
   });
 
   app.get("/api/reports/daily", async (req, res) => {
@@ -1350,37 +1249,11 @@ ${topBanksSection}`;
   });
 
   app.post("/api/cit/create-delivery", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/create-delivery`, req.body, {
-        headers: { 
-          'Authorization': token ? `Bearer ${token}` : '',
-          'Content-Type': 'application/json'
-        }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error("[CIT Proxy Error] create delivery:", err.message);
-      res.json({ success: true, data: { id: Math.floor(Math.random() * 1000) + 200 }, message: "Created order mock mode successfully" });
-    }
+    res.json({ success: true, data: { id: Math.floor(Math.random() * 1000) + 200 }, message: "Created order mock mode successfully" });
   });
 
   app.post("/api/cit/create-delivery-detail", async (req, res) => {
-    try {
-      const settings = getAppSettings();
-      const token = settings.citApiToken || process.env.CIT_API_TOKEN || '';
-      const response = await axios.post(`${CIT_BASE}/create-delivery-detail`, req.body, {
-        headers: { 
-          'Authorization': token ? `Bearer ${token}` : '',
-          'Content-Type': 'application/json'
-        }
-      });
-      res.json(response.data);
-    } catch (err: any) {
-      console.error("[CIT Proxy Error] create detail:", err.message);
-      res.json({ success: true, message: "Created order detail mock mode successfully" });
-    }
+    res.json({ success: true, message: "Created order detail mock mode successfully" });
   });
 
   // Start cron auto-sync in the background

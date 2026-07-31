@@ -387,9 +387,6 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       console.log(`[Cron Sync] Successfully synced POP3 emails. Added count: ${addedCount}`);
       await client.sendCommand('QUIT');
 
-      // Trigger daily bulk summary generation for bulk-summary enabled tenants (RH/BM)
-      await performBulkSummaryForTenants();
-
       return { success: true, count: addedCount, message: `Synced ${addedCount} new emails successfully.` };
 
     } catch (syncErr: any) {
@@ -410,11 +407,24 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
   }
 }
 
-// Start cron job every 3 minutes
+// Start cron job every 1 minute for POP3 fetcher & separate daily schedule for Bulk Summary
 export function startAutoSyncCron() {
-  console.log('[Cron] Initializing auto-sync cron job (every 3 minutes: "*/3 * * * *")...');
-  cron.schedule('*/3 * * * *', async () => {
+  console.log('[Cron] Initializing auto-sync cron job (every 1 minute: "*/1 * * * *")...');
+  
+  // Trigger initial background sync 3 seconds after server start
+  setTimeout(() => {
+    performBackgroundSync().catch(err => console.error('[POP3 Cron] Initial sync error:', err));
+  }, 3000);
+
+  cron.schedule('*/1 * * * *', async () => {
     console.log('[Cron] Triggering POP3 background auto-sync...');
     await performBackgroundSync();
+  });
+
+  // Daily Bulk Summary scheduled independently at 17:00
+  console.log('[Cron] Initializing daily bulk summary schedule (everyday at 17:00)...');
+  cron.schedule('0 17 * * *', async () => {
+    console.log('[Cron] Triggering Daily Bulk Summary Execution...');
+    await performBulkSummaryForTenants();
   });
 }

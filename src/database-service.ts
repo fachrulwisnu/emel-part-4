@@ -74,13 +74,13 @@ export interface AppSettings {
 }
 
 const defaultSettings: AppSettings = {
-  pop3Host: 'mail.advantagescm.com',
-  pop3Port: 995,
-  pop3User: '',
-  pop3Pass: '',
-  citApiToken: '',
-  supabaseUrl: '',
-  supabaseKey: ''
+  pop3Host: process.env.POP3_HOST || 'mail.advantagescm.com',
+  pop3Port: Number(process.env.POP3_PORT || 995),
+  pop3User: process.env.POP3_USER || 'fachrul.wisnu@advantagescm.com',
+  pop3Pass: process.env.POP3_PASS || '',
+  citApiToken: process.env.CIT_API_TOKEN || '',
+  supabaseUrl: process.env.SUPABASE_URL || '',
+  supabaseKey: process.env.SUPABASE_KEY || ''
 };
 
 // Get settings from local app_settings.json
