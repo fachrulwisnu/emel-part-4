@@ -119,10 +119,35 @@ async function startServer() {
     }
   });
 
+  app.get("/api/config/database", async (req, res) => {
+    try {
+      const { getDatabaseConfig } = await import("./src/utils/configManager.js");
+      const config = await getDatabaseConfig();
+      res.json({ success: true, config });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.post("/api/config/database", async (req, res) => {
+    try {
+      const { saveDatabaseConfig } = await import("./src/utils/configManager.js");
+      const { active_driver, connections } = req.body;
+      if (active_driver && active_driver !== 'mongodb' && active_driver !== 'postgres') {
+        return res.status(400).json({ success: false, message: "Invalid active_driver. Must be 'mongodb' or 'postgres'." });
+      }
+      const updatedConfig = await saveDatabaseConfig({ active_driver, connections });
+      res.json({ success: true, config: updatedConfig });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
   app.get("/api/settings/db-driver", async (req, res) => {
     try {
-      const { getDbDriver } = await import("./src/config/dbSwitcher.js");
-      res.json({ success: true, dbDriver: getDbDriver() });
+      const { getDatabaseConfig } = await import("./src/utils/configManager.js");
+      const config = await getDatabaseConfig();
+      res.json({ success: true, dbDriver: config.active_driver });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -130,13 +155,13 @@ async function startServer() {
 
   app.post("/api/settings/db-driver", async (req, res) => {
     try {
-      const { switchDatabase } = await import("./src/config/dbSwitcher.js");
+      const { saveDatabaseConfig } = await import("./src/utils/configManager.js");
       const { dbDriver } = req.body;
-      if (dbDriver !== 'supabase' && dbDriver !== 'mongodb') {
-        return res.status(400).json({ success: false, message: "Invalid dbDriver value. Must be 'supabase' or 'mongodb'." });
+      if (dbDriver !== 'postgres' && dbDriver !== 'mongodb') {
+        return res.status(400).json({ success: false, message: "Invalid dbDriver value. Must be 'mongodb' or 'postgres'." });
       }
-      switchDatabase(dbDriver);
-      res.json({ success: true, dbDriver });
+      const updated = await saveDatabaseConfig({ active_driver: dbDriver });
+      res.json({ success: true, dbDriver: updated.active_driver });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -146,40 +171,68 @@ async function startServer() {
   async function pingModel(modelName: string, apiKey: string) {
     const start = Date.now();
     try {
-      const payload = {
-        model: modelName,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 5,
-        stream: false
-      };
-
-      const response = await axios.post(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        payload,
-        {
-          headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-          },
-          timeout: 10000 // 10 second timeout for health check
+      if (modelName.startsWith("Custom AI")) {
+        const response = await axios.get(
+          "https://aim.adv.my.id/v1/models",
+          {
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Accept": "application/json"
+            },
+            timeout: 8000
+          }
+        );
+        const latency = Date.now() - start;
+        if (response.status === 200) {
+          return {
+            model: modelName,
+            status: "Active" as const,
+            latency: `${latency}ms`
+          };
+        } else {
+          return {
+            model: modelName,
+            status: "Error" as const,
+            message: `HTTP Status ${response.status}`,
+            latency: `${latency}ms`
+          };
         }
-      );
-
-      const latency = Date.now() - start;
-      if (response.status === 200) {
-        return {
-          model: modelName,
-          status: "Active" as const,
-          latency: `${latency}ms`
-        };
       } else {
-        return {
+        const payload = {
           model: modelName,
-          status: "Error" as const,
-          message: `HTTP Status ${response.status}`,
-          latency: `${latency}ms`
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 5,
+          stream: false
         };
+
+        const response = await axios.post(
+          "https://integrate.api.nvidia.com/v1/chat/completions",
+          payload,
+          {
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Accept": "application/json",
+              "Content-Type": "application/json"
+            },
+            timeout: 10000 // 10 second timeout for health check
+          }
+        );
+
+        const latency = Date.now() - start;
+        if (response.status === 200) {
+          return {
+            model: modelName,
+            status: "Active" as const,
+            latency: `${latency}ms`
+          };
+        } else {
+          return {
+            model: modelName,
+            status: "Error" as const,
+            message: `HTTP Status ${response.status}`,
+            latency: `${latency}ms`
+          };
+        }
       }
     } catch (err: any) {
       const latency = Date.now() - start;
@@ -206,6 +259,8 @@ async function startServer() {
   app.get("/api/settings/ai-health", async (req, res) => {
     try {
       const results = await Promise.all([
+        pingModel("Custom AI - Core", "sk-WYKkPR_QQ6LTbnGWyIxPZA"),
+        pingModel("Custom AI - Vision", "sk-WYKkPR_QQ6LTbnGWyIxPZA"),
         pingModel(
           "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
           "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"
@@ -234,22 +289,38 @@ async function startServer() {
     try {
       const modelsToPing = [
         {
+          name: "Custom AI - Core",
+          type: "custom",
+          url: "https://aim.adv.my.id/v1/models",
+          key: "sk-WYKkPR_QQ6LTbnGWyIxPZA"
+        },
+        {
+          name: "Custom AI - Vision",
+          type: "custom",
+          url: "https://aim.adv.my.id/v1/models",
+          key: "sk-WYKkPR_QQ6LTbnGWyIxPZA"
+        },
+        {
           name: "Nemotron-3-Nano-Omni-30B",
+          type: "nvidia",
           id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
           key: "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"
         },
         {
           name: "Nemotron-3-Super-120B",
+          type: "nvidia",
           id: "nvidia/nemotron-3-super-120b-a12b",
           key: "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"
         },
         {
           name: "Qwen3-Next-80B",
+          type: "nvidia",
           id: "qwen/qwen3-next-80b-a3b-instruct",
           key: "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"
         },
         {
           name: "StepFun-AI-Step-3.7-Flash",
+          type: "nvidia",
           id: "stepfun-ai/step-3.7-flash",
           key: "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"
         }
@@ -259,37 +330,60 @@ async function startServer() {
         modelsToPing.map(async (m) => {
           const start = Date.now();
           try {
-            const payload = {
-              model: m.id,
-              messages: [{"role": "user", "content": "ping"}],
-              max_tokens: 5,
-              stream: false
-            };
-            const headers = {
-              "Authorization": `Bearer ${m.key}`,
-              "Accept": "application/json",
-              "Content-Type": "application/json"
-            };
-            const response = await axios.post(
-              "https://integrate.api.nvidia.com/v1/chat/completions",
-              payload,
-              { headers, timeout: 8000 }
-            );
-            const latency = Date.now() - start;
-            return {
-              name: m.name,
-              status: response.status === 200 ? "Online" as const : "Offline" as const,
-              statusCode: response.status,
-              latency: `${latency}ms`
-            };
+            if (m.type === "custom") {
+              const response = await axios.get(m.url, {
+                headers: {
+                  "Authorization": `Bearer ${m.key}`,
+                  "Accept": "application/json"
+                },
+                timeout: 8000
+              });
+              const latency = Date.now() - start;
+              return {
+                name: m.name,
+                status: response.status === 200 ? ("Online" as const) : ("Offline" as const),
+                statusCode: response.status,
+                latency: `${latency}ms`
+              };
+            } else {
+              const payload = {
+                model: m.id,
+                messages: [{"role": "user", "content": "ping"}],
+                max_tokens: 5,
+                stream: false
+              };
+              const headers = {
+                "Authorization": `Bearer ${m.key}`,
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+              };
+              const response = await axios.post(
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+                payload,
+                { headers, timeout: 8000 }
+              );
+              const latency = Date.now() - start;
+              return {
+                name: m.name,
+                status: response.status === 200 ? ("Online" as const) : ("Offline" as const),
+                statusCode: response.status,
+                latency: `${latency}ms`
+              };
+            }
           } catch (err: any) {
             const latency = Date.now() - start;
+            let errorMsg = err.message || String(err);
+            if (err.response) {
+              const errData = err.response.data;
+              const errStr = typeof errData === 'object' ? JSON.stringify(errData) : String(errData);
+              errorMsg = `HTTP ${err.response.status}: ${errStr}`;
+            }
             return {
               name: m.name,
               status: "Offline" as const,
               statusCode: err.response?.status || 500,
               latency: `${latency}ms`,
-              error: err.message || String(err)
+              error: errorMsg
             };
           }
         })

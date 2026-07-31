@@ -7,6 +7,185 @@ import sharp from 'sharp';
 import { getAiCompletion } from './aiService';
 
 /**
+ * 1. SETUP OPENAI CLIENT (PRIMARY AI)
+ */
+export const customAi = new OpenAI({
+  apiKey: 'sk-WYKkPR_QQ6LTbnGWyIxPZA',
+  baseURL: 'https://aim.adv.my.id/v1'
+});
+
+export interface EmailPayload {
+  message_id?: string;
+  uid?: string | number;
+  subject?: string;
+  sender?: string;
+  date?: string;
+  body_text?: string;
+  body?: string;
+  attachments?: any[];
+}
+
+/**
+ * Helper to check if an attachment is an image or media/document format suitable for Vision model
+ */
+function isMediaAttachment(att: any): boolean {
+  if (!att) return false;
+  const filename = att.filename || att.name || '';
+  const mimeType = att.mimeType || att.type || '';
+  const ext = path.extname(filename).toLowerCase();
+
+  const mediaExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.pdf', '.tiff'];
+  if (mediaExtensions.includes(ext)) return true;
+  if (mimeType.startsWith('image/') || mimeType.includes('pdf')) return true;
+
+  return false;
+}
+
+/**
+ * Analyzes email content using Custom AI (Primary: Core or Vision) with NVIDIA AI Rotator Fallback
+ */
+export async function analyzeEmailContent(emailPayload: EmailPayload): Promise<any> {
+  const identifier = emailPayload.uid || emailPayload.message_id || emailPayload.subject || 'unknown';
+
+  let attachments = emailPayload.attachments || [];
+  if (typeof attachments === 'string') {
+    try {
+      attachments = JSON.parse(attachments);
+    } catch {
+      attachments = [];
+    }
+  }
+
+  // 2. ROUTING MODEL UTAMA (Core vs Vision)
+  const hasMediaAttachment = Array.isArray(attachments) && attachments.some(isMediaAttachment);
+  const targetModel = hasMediaAttachment ? "Vision" : "Core";
+
+  const systemPrompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email dan lampirannya ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
+
+JSON Schema yang HARUS dikembalikan:
+{
+  "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
+  "currency": "IDR",
+  "total_amount": null,
+  "denomination_suggestion": null,
+  "suggested_bank": "BCA",
+  "suggested_folder_parent": "Operation",
+  "suggested_folder_child": "General",
+  "extracted_notes": "Instruksi khusus atau catatan operasional dari email/lampiran",
+  "suggested_tag": "Informasi",
+  "urgency_level": "Routine",
+  "action_required": false,
+  "is_cit_order": false,
+  "cit_type": "None",
+  "folder": "Operation",
+  "sub_folder": "General",
+  "tags": ["Informasi"],
+  "summary_email": "Ringkasan email",
+  "summary_attachments": []
+}`;
+
+  const textBody = emailPayload.body_text || emailPayload.body || '';
+  const textPrompt = `Detail Email:
+Subject: ${emailPayload.subject || '(No Subject)'}
+From: ${emailPayload.sender || 'Unknown Sender'}
+Date: ${emailPayload.date || ''}
+Body Text:
+${textBody || '(No Body Content)'}`;
+
+  // 3. PAYLOAD FORMATTING UTAMA
+  let userMessagesContent: any = textPrompt;
+
+  if (targetModel === "Vision" && Array.isArray(attachments)) {
+    const contentArray: any[] = [
+      { type: "text", text: textPrompt }
+    ];
+
+    for (const att of attachments) {
+      if (!isMediaAttachment(att)) continue;
+
+      let base64Data: string | null = null;
+      let mimeType = att.mimeType || att.type || 'image/jpeg';
+      const filename = att.filename || att.name || 'attachment';
+      const ext = path.extname(filename).toLowerCase();
+
+      if (ext === '.png') mimeType = 'image/png';
+      else if (ext === '.webp') mimeType = 'image/webp';
+      else if (ext === '.gif') mimeType = 'image/gif';
+      else if (ext === '.pdf') mimeType = 'application/pdf';
+      else if (['.jpg', '.jpeg'].includes(ext)) mimeType = 'image/jpeg';
+
+      if (att.fileData) {
+        base64Data = att.fileData.replace(/^data:[^;]+;base64,/, '');
+      } else if (att.filePath && fs.existsSync(att.filePath)) {
+        try {
+          const buf = fs.readFileSync(att.filePath);
+          base64Data = buf.toString('base64');
+        } catch (e) {
+          console.warn(`[AI Primary] Could not read file at ${att.filePath}:`, e);
+        }
+      }
+
+      if (base64Data) {
+        contentArray.push({
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${base64Data}`
+          }
+        });
+      }
+    }
+
+    if (contentArray.length > 1) {
+      userMessagesContent = contentArray;
+    }
+  }
+
+  // 4. MEKANISME ROTATOR & FALLBACK (NVIDIA SECONDARY)
+  try {
+    console.log(`[AI Primary] Analyzing UID/Message "${identifier}" using Primary Custom AI model: ${targetModel}`);
+    const completion = await customAi.chat.completions.create({
+      model: targetModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessagesContent }
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3
+    });
+
+    const responseContent = completion.choices[0]?.message?.content || "";
+    const parsedData = parseCleanJson(responseContent);
+
+    if (parsedData && typeof parsedData === 'object' && Object.keys(parsedData).length > 0) {
+      console.log(`[AI Primary] Successfully analyzed UID/Message "${identifier}" with Custom AI (${targetModel})`);
+      return parsedData;
+    }
+  } catch (primaryError: any) {
+    // Catch primary error quietly without crashing
+    console.warn(`[AI Rotator] Custom AI (Core/Vision) failed. Falling back to NVIDIA AI...`, primaryError?.message || String(primaryError));
+  }
+
+  // Secondary Fallback: NVIDIA AI Rotator
+  try {
+    console.log(`[AI Rotator] Executing NVIDIA AI Secondary Fallback for UID/Message: ${identifier}...`);
+    const nvidiaPrompt = `${systemPrompt}\n\n${textPrompt}\n\nKembalikan HANYA JSON murni yang valid sesuai schema di atas.`;
+    const nvidiaResponseText = await getAiCompletion(nvidiaPrompt);
+    const parsedNvidia = parseCleanJson(nvidiaResponseText);
+
+    if (parsedNvidia && typeof parsedNvidia === 'object' && Object.keys(parsedNvidia).length > 0) {
+      console.log(`[AI Rotator] Successfully analyzed UID/Message "${identifier}" with NVIDIA AI Rotator fallback`);
+      return parsedNvidia;
+    }
+  } catch (secondaryError: any) {
+    console.error(`[AI Rotator] Secondary NVIDIA AI also failed for UID/Message ${identifier}:`, secondaryError?.message || String(secondaryError));
+  }
+
+  // 5. FINAL ERROR HANDLING
+  console.error(`All AI endpoints failed, skipping analysis for UID ${identifier}...`);
+  return null;
+}
+
+/**
  * AI Processing Service
  * Provides configuration, helper utilities, and intelligence logic for email and attachment processing
  * with batching, throttling, exponential backoff, and ephemeral attachment extraction.
@@ -569,22 +748,28 @@ export async function generateSummaryAndTagging(email: {
   body_text: string;
   sender: string;
   date: string;
+  attachments?: any[];
 }): Promise<any> {
+  const primaryResult = await analyzeEmailContent(email);
+  if (primaryResult) {
+    return primaryResult;
+  }
+
   const prompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
 
 JSON schema yang harus dikembalikan:
 {
   "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
-  "currency": "IDR" or "USD",
-  "total_amount": number or null,
-  "denomination_suggestion": number or null,
-  "suggested_bank": "BCA" or "MANDIRI" or "BRI" or "BNI" or "Lainnya" or "",
-  "suggested_folder_parent": "Bank Mandiri" or "Bank Maybank" or "Operation" or "Uncategorized",
-  "suggested_folder_child": "Collection" or "ATM" or "CIT" or "General" or "Uncategorized",
+  "currency": "IDR",
+  "total_amount": null,
+  "denomination_suggestion": null,
+  "suggested_bank": "BCA",
+  "suggested_folder_parent": "Operation",
+  "suggested_folder_child": "General",
   "extracted_notes": "Instruksi khusus atau catatan operasional",
-  "suggested_tag": "CIT" or "ATM" or "Lainnya",
-  "urgency_level": "High" or "Medium" or "Routine",
-  "action_required": true or false
+  "suggested_tag": "Informasi",
+  "urgency_level": "Routine",
+  "action_required": false
 }
 
 Detail Email:
@@ -595,8 +780,13 @@ Body Text:
 ${email.body_text || '(No Body Content)'}
 `;
 
-  const responseText = await getAiCompletion(prompt);
-  return parseCleanJson(responseText);
+  try {
+    const responseText = await getAiCompletion(prompt);
+    return parseCleanJson(responseText);
+  } catch (err) {
+    console.warn('[generateSummaryAndTagging] Fallback AI failed:', err);
+    return null;
+  }
 }
 
 /**

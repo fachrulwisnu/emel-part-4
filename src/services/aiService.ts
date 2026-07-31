@@ -1,7 +1,9 @@
 import OpenAI from 'openai';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import { executeWithBackoff } from './aiProcessingService';
+import { executeWithBackoff, customAi, analyzeEmailContent } from './aiProcessingService';
+
+export { customAi, analyzeEmailContent };
 
 // Load environment variables
 dotenv.config();

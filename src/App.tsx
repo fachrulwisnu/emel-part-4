@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { 
   Mail, 
   Folder, 
@@ -24,6 +23,7 @@ import {
   ArrowRight,
   Database,
   Plus,
+  Save,
   Server,
   Link,
   Activity,
@@ -48,22 +48,8 @@ import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 import { AiHealthIndicators } from './components/AiHealthIndicators';
 
-// Shared Supabase Client singleton in App.tsx
-let sharedSupabaseInstance: any = null;
-let lastUsedUrl = '';
-let lastUsedKey = '';
-
-function getClientSupabase(url: string, key: string) {
-  if (!url || !key) return null;
-  if (!sharedSupabaseInstance || lastUsedUrl !== url || lastUsedKey !== key) {
-    // COMMENTED OUT as per high-priority global disable instructions:
-    // sharedSupabaseInstance = createClient(url, key);
-    console.log('[Supabase Client] Inisialisasi Supabase diblokir secara global di frontend.');
-    lastUsedUrl = url;
-    lastUsedKey = key;
-  }
-  return sharedSupabaseInstance;
-}
+// Database Driver Type
+type DbDriver = 'mongodb' | 'postgres';
 
 interface Email {
   id?: number;
@@ -118,8 +104,8 @@ interface AppSettings {
   pop3User: string;
   pop3Pass: string;
   citApiToken: string;
-  supabaseUrl: string;
-  supabaseKey: string;
+  supabaseUrl?: string;
+  supabaseKey?: string;
 }
 
 const stringToColor = (str: string) => {
@@ -158,31 +144,67 @@ export default function App() {
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Database Switcher state
-  const [dbDriver, setDbDriver] = useState<'supabase' | 'mongodb'>('supabase');
-  const [isUpdatingDbDriver, setIsUpdatingDbDriver] = useState(false);
+  const [dbDriver, setDbDriver] = useState<DbDriver>('mongodb');
+  const [dbConfig, setDbConfig] = useState<{
+    active_driver: DbDriver;
+    connections: {
+      mongodb: string;
+      postgres: string;
+    };
+  }>({
+    active_driver: 'mongodb',
+    connections: {
+      mongodb: '',
+      postgres: ''
+    }
+  });
+  const [isSavingDbConfig, setIsSavingDbConfig] = useState(false);
+  const [showDbUri, setShowDbUri] = useState(false);
 
-  const handleToggleDbDriver = async () => {
-    const targetDriver = dbDriver === 'supabase' ? 'mongodb' : 'supabase';
-    setIsUpdatingDbDriver(true);
+  const loadDatabaseConfig = async () => {
     try {
-      const res = await fetch('/api/settings/db-driver', {
+      const res = await fetch('/api/config/database');
+      const data = await res.json();
+      if (data.success && data.config) {
+        setDbConfig(data.config);
+        setDbDriver(data.config.active_driver);
+      }
+    } catch (err) {
+      console.error('Failed to load database config:', err);
+    }
+  };
+
+  const handleSaveDbConfig = async () => {
+    setIsSavingDbConfig(true);
+    try {
+      const activeDriver = dbConfig.active_driver;
+      // Send payload updating connection string for active driver
+      const payload = {
+        active_driver: activeDriver,
+        connections: activeDriver === 'mongodb'
+          ? { mongodb: dbConfig.connections.mongodb }
+          : { postgres: dbConfig.connections.postgres }
+      };
+
+      const res = await fetch('/api/config/database', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ dbDriver: targetDriver }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
-      if (data.success && data.dbDriver) {
-        setDbDriver(data.dbDriver);
-        addToast('Database Diubah', `Database yang aktif sekarang: ${data.dbDriver === 'mongodb' ? 'MongoDB' : 'Supabase (PostgreSQL)'}`);
+      if (data.success && data.config) {
+        setDbConfig(data.config);
+        setDbDriver(data.config.active_driver);
+        addToast('Konfigurasi Disimpan', `Database aktif diset ke ${data.config.active_driver.toUpperCase()} dan disimpan ke file config/database-config.json.`);
+        await loadEmails();
+        await loadCustomFilters();
       } else {
-        addToast('Gagal Mengubah Database', data.message || 'Terjadi kesalahan saat memproses.');
+        addToast('Gagal Menyimpan', data.message || 'Gagal menyimpan konfigurasi.');
       }
     } catch (err: any) {
-      addToast('Gagal Mengubah Database', err.message || String(err));
+      addToast('Error', err.message);
     } finally {
-      setIsUpdatingDbDriver(false);
+      setIsSavingDbConfig(false);
     }
   };
 
@@ -566,58 +588,7 @@ export default function App() {
   };
 
   // Fetch Emails
-  const loadEmails = async (providedSettings?: AppSettings) => {
-    const activeSettings = providedSettings || appSettings;
-    const url = activeSettings.supabaseUrl;
-    const key = activeSettings.supabaseKey;
-
-    if (dbDriver !== 'mongodb' && url && key) {
-      try {
-        const supabase = getClientSupabase(url, key);
-        const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
-        if (!error && data) {
-          const mapped: Email[] = data.map((email: any) => {
-            let fromName = '';
-            let fromAddress = email.sender || '';
-            if (email.sender && email.sender.includes('<')) {
-              const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
-              if (match) {
-                fromName = match[1].trim();
-                fromAddress = match[2].trim();
-              }
-            }
-            return {
-              ...email,
-              fromName: fromName || fromAddress,
-              fromAddress: fromAddress,
-              tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
-            };
-          });
-
-          setTickets(mapped);
-
-          // Retain selection if valid, otherwise select the first email
-          if (mapped.length > 0) {
-            setSelectedEmail(prev => {
-              if (prev) {
-                const current = mapped.find(e => e.message_id === prev.message_id);
-                if (current) return current;
-              }
-              return mapped[0];
-            });
-          } else {
-            setSelectedEmail(null);
-          }
-          await loadFolders();
-          return;
-        } else if (error) {
-          console.warn('Direct Supabase fetch failed, falling back to local API', error);
-        }
-      } catch (err) {
-        console.error('Direct Supabase fetch exception:', err);
-      }
-    }
-
+  const loadEmails = async () => {
     try {
       const res = await fetch('/api/emails');
       const data = await res.json();
@@ -686,28 +657,7 @@ export default function App() {
   };
 
   // Load custom filters
-  const loadCustomFilters = async (providedSettings?: AppSettings) => {
-    const activeSettings = providedSettings || appSettings;
-    const url = activeSettings.supabaseUrl;
-    const key = activeSettings.supabaseKey;
-
-    if (dbDriver !== 'mongodb' && url && key) {
-      try {
-        const supabase = getClientSupabase(url, key);
-        const { data, error } = await supabase.from('custom_filters').select('*');
-        if (!error && data) {
-          setCustomFilters(data);
-          setFilterRules(data);
-          setConfiguredRules(data);
-          return;
-        } else if (error) {
-          console.warn('Direct Supabase custom_filters fetch failed, falling back to local API', error);
-        }
-      } catch (err) {
-        console.error('Direct Supabase custom_filters fetch exception:', err);
-      }
-    }
-
+  const loadCustomFilters = async () => {
     try {
       const res = await fetch('/api/custom-filters');
       const data = await res.json();
@@ -721,35 +671,9 @@ export default function App() {
     }
   };
 
-  // Explicitly requested loadFilterRules helper to fetch filter rules in ASC order from Supabase
-  const loadFilterRules = async (providedSettings?: AppSettings) => {
+  // Helper to fetch filter rules
+  const loadFilterRules = async () => {
     setIsLoadingRules(true);
-    const activeSettings = providedSettings || appSettings;
-    const url = activeSettings.supabaseUrl;
-    const key = activeSettings.supabaseKey;
-
-    if (dbDriver !== 'mongodb' && url && key) {
-      try {
-        const supabase = getClientSupabase(url, key);
-        const { data, error } = await supabase
-          .from('custom_filters')
-          .select('*')
-          .order('created_at', { ascending: true });
-        
-        if (!error && data) {
-          setFilterRules(data);
-          setCustomFilters(data);
-          setConfiguredRules(data);
-          setIsLoadingRules(false);
-          return;
-        } else if (error) {
-          console.warn('Direct Supabase custom_filters fetch failed for filterRules, falling back to local API', error);
-        }
-      } catch (err) {
-        console.error('Direct Supabase custom_filters fetch for filterRules exception:', err);
-      }
-    }
-
     try {
       const res = await fetch('/api/custom-filters');
       const data = await res.json();
@@ -759,7 +683,7 @@ export default function App() {
         setConfiguredRules(data.filters);
       }
     } catch (err) {
-      console.error('Failed to load filters:', err);
+      console.error('Failed to load filter rules:', err);
     } finally {
       setIsLoadingRules(false);
     }
@@ -771,49 +695,6 @@ export default function App() {
     const fetchConfiguredRules = async () => {
       setIsLoadingRules(true);
       try {
-        const settingsRes = await fetch('/api/settings');
-        const settingsData = await settingsRes.json();
-        let url = '';
-        let key = '';
-        if (settingsData.success && settingsData.settings) {
-          url = settingsData.settings.supabaseUrl;
-          key = settingsData.settings.supabaseKey;
-        }
-
-        // Fetch active DB driver first to check if Supabase is bypassed
-        let activeDriver: 'supabase' | 'mongodb' = 'supabase';
-        try {
-          const drvRes = await fetch('/api/settings/db-driver');
-          const drvData = await drvRes.json();
-          if (drvData.success && drvData.dbDriver) {
-            setDbDriver(drvData.dbDriver);
-            activeDriver = drvData.dbDriver;
-          }
-        } catch (err) {}
-
-        if (activeDriver !== 'mongodb' && url && key) {
-          const supabase = getClientSupabase(url, key);
-          const { data, error } = await supabase
-            .from('custom_filters')
-            .select('*')
-            .order('id', { ascending: true });
-          
-          if (!error && data) {
-            setConfiguredRules(data);
-            setFilterRules(data);
-            setCustomFilters(data);
-            setIsLoadingRules(false);
-            return;
-          } else if (error) {
-            console.warn('Direct Supabase fetch for configuredRules failed, falling back:', error);
-          }
-        }
-      } catch (err) {
-        console.error('Exception in direct Supabase fetch for configuredRules:', err);
-      }
-
-      // Fallback local API
-      try {
         const res = await fetch('/api/custom-filters');
         const data = await res.json();
         if (data.success && data.filters) {
@@ -822,7 +703,7 @@ export default function App() {
           setCustomFilters(data.filters);
         }
       } catch (err) {
-        console.error('Local API fetch for configuredRules failed:', err);
+        console.error('Fetch for configuredRules failed:', err);
       } finally {
         setIsLoadingRules(false);
       }
@@ -831,74 +712,21 @@ export default function App() {
     fetchConfiguredRules();
   }, []);
 
-  // Initial Fetch & State Update from Supabase on Mount
+  // Initial Fetch & State Update on Mount
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
         const settingsRes = await fetch('/api/settings');
         const settingsData = await settingsRes.json();
-        let finalUrl = '';
-        let finalKey = '';
-        let finalSettings = null;
-        
         if (settingsData.success && settingsData.settings) {
           setAppSettings(settingsData.settings);
-          finalUrl = settingsData.settings.supabaseUrl;
-          finalKey = settingsData.settings.supabaseKey;
-          finalSettings = settingsData.settings;
         }
-
-        // Fetch active DB driver first to check if Supabase is bypassed
-        let activeDriver: 'supabase' | 'mongodb' = 'supabase';
-        try {
-          const drvRes = await fetch('/api/settings/db-driver');
-          const drvData = await drvRes.json();
-          if (drvData.success && drvData.dbDriver) {
-            setDbDriver(drvData.dbDriver);
-            activeDriver = drvData.dbDriver;
-          }
-        } catch (err) {}
-
-        if (activeDriver !== 'mongodb' && finalUrl && finalKey) {
-          // Mount initial fetch to Supabase
-          const supabase = getClientSupabase(finalUrl, finalKey);
-          const { data, error } = await supabase.from('emails').select('*').order('date', { ascending: false });
-          if (!error && data) {
-            const mapped: Email[] = data.map((email: any) => {
-              let fromName = '';
-              let fromAddress = email.sender || '';
-              if (email.sender && email.sender.includes('<')) {
-                const match = email.sender.match(/^(.*?)\s*<(.*?)>/);
-                if (match) {
-                  fromName = match[1].trim();
-                  fromAddress = match[2].trim();
-                }
-              }
-              return {
-                ...email,
-                fromName: fromName || fromAddress,
-                fromAddress: fromAddress,
-                tags: typeof email.tags === 'string' ? JSON.parse(email.tags || '[]') : (email.tags || [])
-              };
-            });
-            setTickets(mapped);
-            if (mapped.length > 0) {
-              setSelectedEmail(mapped[0]);
-            }
-            await loadFolders();
-          } else {
-            console.error('Supabase initial fetch error, using local fallback:', error);
-            await loadEmails(settingsData.settings);
-          }
-        } else {
-          await loadEmails(settingsData.settings);
-        }
-        await loadFilterRules(finalSettings || undefined);
       } catch (err) {
-        console.error('Error in initial mount fetch:', err);
-        await loadEmails();
-        await loadFilterRules();
+        console.error('Error in initial mount settings fetch:', err);
       }
+
+      await loadDatabaseConfig();
+      await loadEmails();
       await loadFilterRules();
     };
 
@@ -1105,7 +933,7 @@ export default function App() {
       fetchPendingQueue();
     }, isQueueModalOpen ? 4000 : 12000);
     return () => clearInterval(interval);
-  }, [appSettings.supabaseUrl, appSettings.supabaseKey, isQueueModalOpen]);
+  }, [isQueueModalOpen]);
 
   // Manual Trigger Sync
   const handleManualSync = async () => {
@@ -1156,106 +984,19 @@ export default function App() {
 
   // Apply retroactive filter to existing 'Lainnya' emails
   const applyFilterToExistingEmails = async (newFilter: CustomFilter) => {
-    const url = appSettings.supabaseUrl;
-    const key = appSettings.supabaseKey;
-
-    if (dbDriver === 'mongodb') {
-      // Direct local API update for MongoDB active database
-      try {
-        await fetch('/api/retroactive-filter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filter: newFilter })
-        });
-        addToast('Retroactive Filter Applied', 'Successfully processed retroactive filters via active MongoDB database.');
-      } catch (localErr) {
-        console.error('Failed to sync retroactive updates:', localErr);
-      }
-      return;
-    }
-
-    if (!url || !key) {
-      console.warn('Supabase not fully configured. Skipping retroactive filter execution.');
-      return;
-    }
-
     try {
-      const supabase = getClientSupabase(url, key);
-      // 1. Fetch emails with folder_parent = 'Lainnya'
-      const { data, error } = await supabase
-        .from('emails')
-        .select('*')
-        .eq('folder_parent', 'Lainnya');
-
-      if (error) {
-        console.error('Failed to fetch retroactive emails from Supabase:', error);
-        return;
+      const res = await fetch('/api/retroactive-filter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: newFilter })
+      });
+      const data = await res.json();
+      if (data.success) {
+        addToast('Retroactive Filter Applied', 'Successfully processed retroactive filters on active database.');
+        await loadEmails();
       }
-
-      if (!data || data.length === 0) {
-        console.log('No existing emails in "Lainnya" folder for retroactive filtering.');
-        return;
-      }
-
-      // 2. Filter matching ones
-      const matchedIds = data.filter((email: any) => {
-        let isMatch = true;
-        const senderLower = (email.sender || '').toLowerCase();
-        const subjectLower = (email.subject || '').toLowerCase();
-        const bodyLower = (email.body_text || '').toLowerCase();
-
-        if (!newFilter.match_from && !newFilter.match_subject && !newFilter.match_body) {
-          return false;
-        }
-
-        if (newFilter.match_from && !senderLower.includes(newFilter.match_from.toLowerCase())) {
-          isMatch = false;
-        }
-        if (newFilter.match_subject && !subjectLower.includes(newFilter.match_subject.toLowerCase())) {
-          isMatch = false;
-        }
-        if (newFilter.match_body && !bodyLower.includes(newFilter.match_body.toLowerCase())) {
-          isMatch = false;
-        }
-
-        return isMatch;
-      }).map((email: any) => email.message_id);
-
-      // 3. Update Supabase
-      if (matchedIds.length > 0) {
-        const { error: updateErr } = await supabase
-          .from('emails')
-          .update({
-            folder_parent: newFilter.action_parent,
-            folder_child: newFilter.action_child
-          })
-          .in('message_id', matchedIds);
-
-        if (updateErr) {
-          console.error('Failed to perform retroactive bulk update in Supabase:', updateErr);
-          addToast('Retroactive Sync Error', 'Failed to update matched tickets in Supabase.');
-        } else {
-          addToast('Retroactive Filter Applied', `Successfully re-classified ${matchedIds.length} ticket(s) to "${newFilter.action_parent} > ${newFilter.action_child}".`);
-        }
-      } else {
-        console.log('No matches found for retroactive filtering.');
-      }
-
-      // Also call local endpoint to sync SQLite
-      try {
-        await fetch('/api/retroactive-filter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filter: newFilter })
-        });
-      } catch (localErr) {
-        console.error('Failed to sync retroactive updates to SQLite:', localErr);
-      }
-
-      // 4. Refresh state list email in Inbox
-      await loadEmails();
-    } catch (err) {
-      console.error('Error during retroactive filtering:', err);
+    } catch (localErr) {
+      console.error('Failed to sync retroactive updates:', localErr);
     }
   };
 
@@ -1265,46 +1006,6 @@ export default function App() {
     if (!filterForm.name.trim() || !filterForm.action_parent.trim() || !filterForm.action_child.trim()) {
       setFilterMsg('Name, Action Folder Parent, and Action Folder Child are required.');
       return;
-    }
-
-    const url = appSettings.supabaseUrl;
-    const key = appSettings.supabaseKey;
-    let savedToSupabase = false;
-    let newFilterObj: any = null;
-
-    if (dbDriver !== 'mongodb' && url && key) {
-      try {
-        const supabase = getClientSupabase(url, key);
-        const payload: any = {
-          name: filterForm.name.trim(),
-          match_from: filterForm.match_from?.trim() || null,
-          match_subject: filterForm.match_subject?.trim() || null,
-          match_body: filterForm.match_body?.trim() || null,
-          action_parent: filterForm.action_parent.trim(),
-          action_child: filterForm.action_child.trim(),
-          trigger_api: filterForm.trigger_api
-        };
-        if (editingFilterId !== null) {
-          payload.id = editingFilterId;
-        }
-
-        const { data, error } = editingFilterId !== null
-          ? await supabase.from('custom_filters').upsert([payload]).select()
-          : await supabase.from('custom_filters').insert([payload]).select();
-
-        if (!error && data && data[0]) {
-          newFilterObj = data[0];
-          savedToSupabase = true;
-        } else if (error) {
-          console.error('[Supabase Save Filter Error]:', error);
-          setFilterMsg('Supabase Save Error: ' + error.message);
-          return;
-        }
-      } catch (err: any) {
-        console.error('[Supabase Save Filter Exception]:', err);
-        setFilterMsg('Supabase Exception: ' + err.message);
-        return;
-      }
     }
 
     try {
@@ -1344,81 +1045,19 @@ export default function App() {
         setEditingFilterId(null);
 
         addToast(prevEditingId !== null ? 'Rule Updated' : 'Rule Saved', prevEditingId !== null ? 'Dynamic workflow tag filter updated.' : 'Dynamic workflow tag filter registered.');
-        
-        if (savedToSupabase && newFilterObj) {
-          if (prevEditingId !== null) {
-            setFilterRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
-            setCustomFilters(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
-            setConfiguredRules(prev => prev.map(f => f.id === prevEditingId ? newFilterObj : f));
-          } else {
-            setFilterRules(prev => [...prev, newFilterObj]);
-            setCustomFilters(prev => [...prev, newFilterObj]);
-            setConfiguredRules(prev => [...prev, newFilterObj]);
-          }
-        } else {
-          await loadFilterRules();
-        }
-
-        // Apply retroactive filter!
+        await loadFilterRules();
         await applyFilterToExistingEmails(filterToApply);
-        
       } else {
-        if (!savedToSupabase) {
-          setFilterMsg('Failed to save: ' + data.message);
-        } else {
-          setFilterMsg('Filter rule saved to Supabase!');
-          setFilterForm({
-            name: '',
-            match_from: '',
-            match_subject: '',
-            match_body: '',
-            action_parent: '',
-            action_child: '',
-            trigger_api: false
-          });
-          setEditingFilterId(null);
-          await loadFilterRules();
-          await loadEmails();
-        }
+        setFilterMsg('Failed to save: ' + data.message);
       }
     } catch (err: any) {
-      if (!savedToSupabase) {
-        setFilterMsg('Error: ' + err.message);
-      } else {
-        setFilterMsg('Saved to Supabase. Local sync error: ' + err.message);
-      }
+      setFilterMsg('Error: ' + err.message);
     }
   };
 
   // Delete Filter Rule
   const handleDeleteFilter = async (id: number) => {
     if (!confirm('Are you sure you want to delete this custom routing filter?')) return;
-    
-    const url = appSettings.supabaseUrl;
-    const key = appSettings.supabaseKey;
-    let deletedFromSupabase = false;
-
-    if (dbDriver !== 'mongodb' && url && key) {
-      try {
-        const supabase = getClientSupabase(url, key);
-        const { error } = await supabase.from('custom_filters').delete().eq('id', id);
-        if (!error) {
-          deletedFromSupabase = true;
-          setFilterRules(prev => prev.filter(f => f.id !== id));
-          setCustomFilters(prev => prev.filter(f => f.id !== id));
-          setConfiguredRules(prev => prev.filter(f => f.id !== id));
-        } else {
-          console.error('[Supabase Delete Filter Error]:', error);
-          addToast('Delete Error', 'Failed to delete from Supabase: ' + error.message);
-          return;
-        }
-      } catch (err: any) {
-        console.error('[Supabase Delete Filter Exception]:', err);
-        addToast('Delete Error', 'Supabase exception: ' + err.message);
-        return;
-      }
-    }
-
     try {
       const res = await fetch('/api/custom-filters', {
         method: 'POST',
@@ -1428,21 +1067,15 @@ export default function App() {
       const data = await res.json();
       if (data.success) {
         addToast('Rule Deleted', 'Dynamic filter removed.');
-        if (!deletedFromSupabase) {
-          setFilterRules(prev => prev.filter(f => f.id !== id));
-          setCustomFilters(prev => prev.filter(f => f.id !== id));
-          setConfiguredRules(prev => prev.filter(f => f.id !== id));
-        }
+        setFilterRules(prev => prev.filter(f => f.id !== id));
+        setCustomFilters(prev => prev.filter(f => f.id !== id));
+        setConfiguredRules(prev => prev.filter(f => f.id !== id));
       } else {
-        if (!deletedFromSupabase) {
-          addToast('Delete Alert', 'Failed to delete locally: ' + data.message);
-        }
+        addToast('Delete Alert', 'Failed to delete filter: ' + data.message);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to delete rule:', err);
-      if (!deletedFromSupabase) {
-        addToast('Delete Error', 'Network error deleting rule.');
-      }
+      addToast('Delete Error', 'Network error deleting rule: ' + err.message);
     }
   };
 
@@ -1602,9 +1235,9 @@ export default function App() {
               {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
               {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
             </h1>
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-600 rounded-full font-mono font-medium flex items-center gap-1.5 border border-slate-200">
-              <span className={`h-2 w-2 rounded-full ${appSettings.supabaseUrl ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
-              {appSettings.supabaseUrl ? 'Supabase Active' : 'SQLite Standalone'}
+            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200">
+              <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
+              {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
             </span>
             <AiHealthIndicators />
           </div>
@@ -2715,206 +2348,249 @@ export default function App() {
                   </form>
                 )}
 
-                {/* TAB 3: POP3 SECURE MAIL CONFIG & SUPABASE CREDS */}
+                {/* TAB 3: POP3 SECURE MAIL CONFIG & DATABASE CONFIG */}
                 {settingsTab === 'mail' && (
-                  <form onSubmit={handleSaveSettings} className="space-y-6">
-                    {/* Database Switcher Block */}
-                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-5" id="db_switcher_card">
+                  <div className="space-y-6">
+                    {/* Database Switcher & Connection Block */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4" id="db_switcher_card">
                       <div className="flex items-start justify-between">
                         <div className="space-y-1">
                           <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                             <Database className="h-4 w-4 text-blue-600" />
-                            Hybrid Database Switcher
+                            Dynamic Database Switcher & Configuration
                           </h3>
                           <p className="text-[11px] text-slate-500 leading-relaxed">
-                            Beralih secara real-time antara <strong>Supabase (PostgreSQL)</strong> dan <strong>MongoDB Atlas</strong> sebagai database remote aktif untuk sinkronisasi, analisis, dan integrasi WhatsApp.
+                            Pilih database aktif (MongoDB / PostgreSQL) dan kelola Connection String (URI) secara terpusat. Konfigurasi disimpan secara persisten di file <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded text-[10px]">config/database-config.json</code>.
                           </p>
                         </div>
-                        <div className="flex items-center space-x-2">
-                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
-                            Database Aktif: {dbDriver === 'mongodb' ? 'MongoDB' : 'Supabase'}
-                          </span>
-                        </div>
+                        <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${dbConfig.active_driver === 'mongodb' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+                          Active: {dbConfig.active_driver.toUpperCase()}
+                        </span>
                       </div>
 
-                      <div className="mt-4 flex items-center justify-between bg-white border border-slate-100 rounded-xl p-3">
-                        <div className="flex items-center space-x-3">
-                          <div className={`p-2 rounded-lg ${dbDriver === 'mongodb' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
-                            <Server className="h-5 w-5" />
-                          </div>
+                      {/* Driver Selection Radio Options */}
+                      <div className="grid grid-cols-2 gap-3 text-xs pt-1">
+                        <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
+                          dbConfig.active_driver === 'mongodb' 
+                            ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' 
+                            : 'border-slate-200 bg-slate-50 hover:bg-white'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="active_driver"
+                            value="mongodb"
+                            checked={dbConfig.active_driver === 'mongodb'}
+                            onChange={() => setDbConfig({ ...dbConfig, active_driver: 'mongodb' })}
+                            className="text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                          />
                           <div>
-                            <p className="text-xs font-bold text-slate-700">
-                              {dbDriver === 'mongodb' ? 'Koneksi Selesai: MongoDB Atlas Cluster' : 'Koneksi Selesai: Supabase PostgreSQL Server'}
-                            </p>
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              {dbDriver === 'mongodb' ? 'Menggunakan koleksi native wa_sessions, emails, dan email_analysis.' : 'Menggunakan table relasional wa_sessions, emails, dan custom_filters.'}
-                            </p>
+                            <span className="font-bold text-slate-800 block">MongoDB Atlas</span>
+                            <span className="text-[10px] text-slate-500">NoSQL Document Store (koleksi: emails, custom_filters, email_analysis, wa_sessions)</span>
                           </div>
-                        </div>
+                        </label>
 
-                        {/* Switch Toggle */}
+                        <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
+                          dbConfig.active_driver === 'postgres' 
+                            ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500' 
+                            : 'border-slate-200 bg-slate-50 hover:bg-white'
+                        }`}>
+                          <input
+                            type="radio"
+                            name="active_driver"
+                            value="postgres"
+                            checked={dbConfig.active_driver === 'postgres'}
+                            onChange={() => setDbConfig({ ...dbConfig, active_driver: 'postgres' })}
+                            className="text-blue-600 focus:ring-blue-500 h-4 w-4"
+                          />
+                          <div>
+                            <span className="font-bold text-slate-800 block">PostgreSQL</span>
+                            <span className="text-[10px] text-slate-500">Relational SQL Database (tabel: emails, custom_filters, email_analysis, wa_sessions)</span>
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Connection URI Forms - Conditional Rendering based on active_driver */}
+                      <div className="space-y-3 pt-2">
+                        {dbConfig.active_driver === 'mongodb' ? (
+                          <div>
+                            <label className="block text-slate-600 font-bold text-xs mb-1">
+                              MongoDB Connection String (URI)
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showDbUri ? 'text' : 'password'}
+                                value={dbConfig.connections.mongodb}
+                                onChange={(e) => setDbConfig({
+                                  ...dbConfig,
+                                  connections: { ...dbConfig.connections, mongodb: e.target.value }
+                                })}
+                                placeholder="mongodb://user:password@host:port/emails"
+                                className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowDbUri(!showDbUri)}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
+                              >
+                                {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block text-slate-600 font-bold text-xs mb-1">
+                              PostgreSQL Connection String (URI)
+                            </label>
+                            <div className="relative">
+                              <input
+                                type={showDbUri ? 'text' : 'password'}
+                                value={dbConfig.connections.postgres}
+                                onChange={(e) => setDbConfig({
+                                  ...dbConfig,
+                                  connections: { ...dbConfig.connections, postgres: e.target.value }
+                                })}
+                                placeholder="postgresql://user:password@localhost:5432/emails_db"
+                                className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowDbUri(!showDbUri)}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
+                              >
+                                {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Save Button */}
+                      <div className="flex justify-end pt-2">
                         <button
                           type="button"
-                          onClick={handleToggleDbDriver}
-                          disabled={isUpdatingDbDriver}
-                          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                            dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-slate-300'
-                          } ${isUpdatingDbDriver ? 'opacity-50 cursor-not-allowed' : ''}`}
-                          id="toggle_db_switch"
+                          onClick={() => handleSaveDbConfig()}
+                          disabled={isSavingDbConfig}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-colors text-xs flex items-center gap-2"
                         >
-                          <span className="sr-only">Toggle Database</span>
-                          <span
-                            aria-hidden="true"
-                            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                              dbDriver === 'mongodb' ? 'translate-x-5' : 'translate-x-0'
-                            }`}
-                          />
+                          <Save className="h-4 w-4" />
+                          {isSavingDbConfig ? 'Saving Configuration...' : 'Save Database Configuration'}
                         </button>
                       </div>
                     </div>
 
-                    <div>
-                      <h2 className="text-sm font-bold text-slate-800">Mail Connection & Supabase Client Config</h2>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Input POP3 credentials securely. The background cron auto-fetch routine runs every 3 minutes using these specifications.
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 text-xs">
+                    {/* POP3 Mail Configuration */}
+                    <form onSubmit={handleSaveSettings} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
                       <div>
-                        <label className="block text-slate-500 font-bold mb-1">POP3 Hostname</label>
-                        <input
-                          type="text"
-                          value={appSettings.pop3Host}
-                          onChange={(e) => setAppSettings({ ...appSettings, pop3Host: e.target.value })}
-                          placeholder="mail.advantagescm.com"
-                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
-                        />
+                        <h2 className="text-sm font-bold text-slate-800">Mail Connection (POP3) Config</h2>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Input POP3 credentials securely. The background cron auto-fetch routine runs periodically using these specifications.
+                        </p>
                       </div>
 
-                      <div>
-                        <label className="block text-slate-500 font-bold mb-1">POP3 TLS Port</label>
-                        <input
-                          type="number"
-                          value={appSettings.pop3Port}
-                          onChange={(e) => setAppSettings({ ...appSettings, pop3Port: parseInt(e.target.value, 10) || 995 })}
-                          placeholder="995"
-                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 text-xs">
-                      <div>
-                        <label className="block text-slate-500 font-bold mb-1">POP3 Username / Email</label>
-                        <input
-                          type="text"
-                          value={appSettings.pop3User}
-                          onChange={(e) => setAppSettings({ ...appSettings, pop3User: e.target.value })}
-                          placeholder="fachrul.wisnu@advantagescm.com"
-                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-slate-500 font-bold mb-1">POP3 Password</label>
-                        <div className="relative">
+                      <div className="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">POP3 Hostname</label>
                           <input
-                            type={showPassword ? 'text' : 'password'}
-                            value={appSettings.pop3Pass}
-                            onChange={(e) => setAppSettings({ ...appSettings, pop3Pass: e.target.value })}
-                            placeholder="POP3 Account Password"
-                            className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                            type="text"
+                            value={appSettings.pop3Host}
+                            onChange={(e) => setAppSettings({ ...appSettings, pop3Host: e.target.value })}
+                            placeholder="mail.advantagescm.com"
+                            className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
                           />
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword(!showPassword)}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                          >
-                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">POP3 TLS Port</label>
+                          <input
+                            type="number"
+                            value={appSettings.pop3Port}
+                            onChange={(e) => setAppSettings({ ...appSettings, pop3Port: parseInt(e.target.value, 10) || 995 })}
+                            placeholder="995"
+                            className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                          />
                         </div>
                       </div>
-                    </div>
 
-                    {/* POP3 Diagnostic Button */}
-                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs flex items-center justify-between select-none">
-                      <div>
-                        <p className="font-bold text-slate-700">POP3 Server Connection Diagnostic</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5">Attempt to connect and authorize with POP3 server immediately.</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleTestConnection}
-                        disabled={isTestingConn}
-                        className="px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-xs"
-                      >
-                        {isTestingConn ? 'Testing...' : 'Test Mail Server'}
-                      </button>
-                    </div>
+                      <div className="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">POP3 Username / Email</label>
+                          <input
+                            type="text"
+                            value={appSettings.pop3User}
+                            onChange={(e) => setAppSettings({ ...appSettings, pop3User: e.target.value })}
+                            placeholder="fachrul.wisnu@advantagescm.com"
+                            className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                          />
+                        </div>
 
-                    {testResult && (
-                      <div className={`p-3.5 rounded-xl text-xs border ${
-                        testResult.success 
-                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-                          : 'bg-rose-50 text-rose-800 border-rose-200'
-                      }`}>
-                        <div className="flex items-start space-x-2">
-                          {testResult.success ? <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />}
-                          <div>
-                            <p className="font-bold leading-none">{testResult.success ? "POP3 Connection Succeeded" : "POP3 Connection Failed"}</p>
-                            <p className="opacity-90 leading-normal mt-1 text-[11px]">{testResult.message}</p>
+                        <div>
+                          <label className="block text-slate-500 font-bold mb-1">POP3 Password</label>
+                          <div className="relative">
+                            <input
+                              type={showPassword ? 'text' : 'password'}
+                              value={appSettings.pop3Pass}
+                              onChange={(e) => setAppSettings({ ...appSettings, pop3Pass: e.target.value })}
+                              placeholder="POP3 Account Password"
+                              className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPassword(!showPassword)}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                            >
+                              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                            </button>
                           </div>
                         </div>
                       </div>
-                    )}
 
-                    <div className="border-t border-slate-200/50 pt-5 mt-4">
-                      <p className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                        <Database className="h-4 w-4 text-slate-400" />
-                        Optional Supabase PostgreSQL Credentials
-                      </p>
-                      <p className="text-[10px] text-slate-400 mb-4 leading-normal">
-                        Provide a Supabase REST endpoint URL and API key to replicate cached database actions. If left blank, the system automatically runs fully standalone on local SQLite database store.
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4 text-xs">
-                      <div>
-                        <label className="block text-slate-500 font-bold mb-1">Supabase API Endpoint (URL)</label>
-                        <input
-                          type="text"
-                          value={appSettings.supabaseUrl}
-                          onChange={(e) => setAppSettings({ ...appSettings, supabaseUrl: e.target.value })}
-                          placeholder="https://xxxx.supabase.co"
-                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
-                        />
+                      {/* POP3 Diagnostic Button */}
+                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs flex items-center justify-between select-none">
+                        <div>
+                          <p className="font-bold text-slate-700">POP3 Server Connection Diagnostic</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">Attempt to connect and authorize with POP3 server immediately.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleTestConnection}
+                          disabled={isTestingConn}
+                          className="px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-xs"
+                        >
+                          {isTestingConn ? 'Testing...' : 'Test Mail Server'}
+                        </button>
                       </div>
 
-                      <div>
-                        <label className="block text-slate-500 font-bold mb-1">Supabase Anon Key / Service Role Key</label>
-                        <input
-                          type="password"
-                          value={appSettings.supabaseKey}
-                          onChange={(e) => setAppSettings({ ...appSettings, supabaseKey: e.target.value })}
-                          placeholder="eyJhbGciOi..."
-                          className="w-full px-3 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-[11px]"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
-                      <button
-                        type="submit"
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
-                      >
-                        Save Configuration
-                      </button>
-                      {saveStatus && (
-                        <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                      {testResult && (
+                        <div className={`p-3.5 rounded-xl text-xs border ${
+                          testResult.success 
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                            : 'bg-rose-50 text-rose-800 border-rose-200'
+                        }`}>
+                          <div className="flex items-start space-x-2">
+                            {testResult.success ? <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" /> : <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />}
+                            <div>
+                              <p className="font-bold leading-none">{testResult.success ? "POP3 Connection Succeeded" : "POP3 Connection Failed"}</p>
+                              <p className="opacity-90 leading-normal mt-1 text-[11px]">{testResult.message}</p>
+                            </div>
+                          </div>
+                        </div>
                       )}
-                    </div>
-                  </form>
+
+                      <div className="flex items-center justify-between pt-4 border-t border-slate-100">
+                        <button
+                          type="submit"
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-lg cursor-pointer text-xs"
+                        >
+                          Save POP3 Settings
+                        </button>
+                        {saveStatus && (
+                          <span className="text-slate-600 italic font-semibold">{saveStatus}</span>
+                        )}
+                      </div>
+                    </form>
+                  </div>
                 )}
 
                 {/* TAB 4: HISTORICAL DATA BACKFILL */}
@@ -3108,8 +2784,10 @@ export default function App() {
                                       <span className="font-mono font-bold text-slate-700">{item.model}</span>
                                     </td>
                                     <td className="p-3 text-slate-500 font-medium">
-                                      {item.model === 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning' && 'Primary Vision & Image OCR Rotator'}
-                                      {item.model === 'nvidia/nemotron-3-super-120b-a12b' && 'Primary Document & Core Reasoning Engine'}
+                                      {item.model === 'Custom AI - Core' && 'Primary Core Text Engine'}
+                                      {item.model === 'Custom AI - Vision' && 'Primary Multimodal & Image OCR Engine'}
+                                      {item.model === 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning' && 'Secondary Rotator Vision Engine'}
+                                      {item.model === 'nvidia/nemotron-3-super-120b-a12b' && 'Secondary Rotator Core Engine'}
                                       {item.model === 'qwen/qwen3-next-80b-a3b-instruct' && 'Cascade Fallback Tier 1'}
                                       {item.model === 'stepfun-ai/step-3.7-flash' && 'Cascade Fallback Tier 2'}
                                     </td>

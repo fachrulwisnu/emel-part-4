@@ -109,15 +109,15 @@ export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
 let supabaseInstance: SupabaseClient | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
-  // If active driver is mongodb or DB_DRIVER is unset/mongodb, we must completely ignore/not call Supabase.
+  // If active driver is mongodb, we must completely ignore/not call Supabase.
   const activeDriver = getDbDriver();
-  if (activeDriver === 'mongodb' || !process.env.DB_DRIVER || process.env.DB_DRIVER === 'mongodb') {
+  if (activeDriver === 'mongodb') {
     return null;
   }
 
   const settings = getAppSettings();
-  const url = process.env.SUPABASE_URL || settings.supabaseUrl;
-  const key = process.env.SUPABASE_KEY || settings.supabaseKey;
+  const url = settings.supabaseUrl;
+  const key = settings.supabaseKey;
 
   if (url && key) {
     if (!supabaseInstance) {
