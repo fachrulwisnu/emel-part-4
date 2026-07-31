@@ -59,7 +59,8 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     try {
       const res = await fetch('/api/daily-summaries/trigger', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: currentTenantId })
       });
       const data = await res.json();
       if (data.success) {

@@ -484,8 +484,9 @@ async function startServer() {
   app.post("/api/daily-summaries/trigger", async (req, res) => {
     try {
       const { performBulkSummaryForTenants } = await import("./src/cron");
-      await performBulkSummaryForTenants();
-      res.json({ success: true, message: "Bulk summaries generated successfully for all enabled divisions." });
+      const tenantId = req.body?.tenant_id ? Number(req.body.tenant_id) : undefined;
+      await performBulkSummaryForTenants(tenantId);
+      res.json({ success: true, message: tenantId ? `Bulk summary generated for Tenant ID ${tenantId}.` : "Bulk summaries generated successfully for all enabled divisions." });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }

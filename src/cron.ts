@@ -26,16 +26,21 @@ let isSyncing = false;
 /**
  * Executes Bulk Summary for Tenants with feature_bulk_summary enabled (e.g., RH, BM)
  */
-export async function performBulkSummaryForTenants(): Promise<void> {
+export async function performBulkSummaryForTenants(targetTenantId?: number): Promise<void> {
   try {
     const tenants = await dbGetTenants();
-    const bulkTenants = tenants.filter(t => t.feature_bulk_summary);
+    const bulkTenants = tenants.filter(t => {
+      if (targetTenantId) {
+        return t.id === targetTenantId;
+      }
+      return t.feature_bulk_summary;
+    });
 
     if (bulkTenants.length === 0) {
       return;
     }
 
-    console.log(`[Bulk Summary Cron] Processing daily bulk summary for ${bulkTenants.length} tenants...`);
+    console.log(`[Bulk Summary Cron] Processing daily bulk summary for ${bulkTenants.length} tenants (Target ID: ${targetTenantId || 'ALL'})...`);
 
     for (const tenant of bulkTenants) {
       const emails = await dbGetAllEmails(tenant.id);

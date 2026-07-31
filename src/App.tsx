@@ -48,10 +48,10 @@ import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 import { AiHealthIndicators } from './components/AiHealthIndicators';
 import { LoginModal } from './components/LoginModal';
-import { SuperAdminDashboard } from './components/SuperAdminDashboard';
+import { SuperAdminDashboard, SuperAdminAnalyticsView, SuperAdminTenantsView } from './components/SuperAdminDashboard';
 import { BulkSummaryView } from './components/BulkSummaryView';
 import { TenantIntegrationSettings } from './components/TenantIntegrationSettings';
-import { Shield, Building2, Layers, LogOut, Key } from 'lucide-react';
+import { Shield, Building2, Layers, LogOut, Key, BarChart3 } from 'lucide-react';
 
 interface UserSession {
   id: number;
@@ -162,7 +162,7 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence' | 'superadmin' | 'bulk-summary' | 'tenant-settings'>('inbox');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence' | 'superadmin' | 'superadmin-analytics' | 'superadmin-tenants' | 'bulk-summary' | 'tenant-settings'>('inbox');
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
@@ -1192,55 +1192,80 @@ export default function App() {
             </span>
           </button>
 
-          {/* Email Intelligence button */}
-          <button 
-            onClick={() => setCurrentMenu('intelligence')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'intelligence' 
-                ? 'bg-slate-800 text-blue-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Email Intelligence"
-          >
-            <Sparkles className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Email Intelligence
-            </span>
-          </button>
+          {/* Email Intelligence button - Visible to all or Super Admin */}
+          {currentUser?.role === 'SUPER_ADMIN' && (
+            <button 
+              onClick={() => setCurrentMenu('intelligence')}
+              className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+                currentMenu === 'intelligence' 
+                  ? 'bg-slate-800 text-blue-400 font-bold' 
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+              }`}
+              title="Email Intelligence"
+            >
+              <Sparkles className="h-5.5 w-5.5" />
+              <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+                Email Intelligence
+              </span>
+            </button>
+          )}
 
           {/* CIT Dispatch Dashboard button */}
-          <button 
-            onClick={() => setCurrentMenu('cit-dashboard')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'cit-dashboard' 
-                ? 'bg-slate-800 text-blue-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="CIT Dashboard"
-          >
-            <Coins className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              CIT Dispatch Control
-            </span>
-          </button>
+          {currentUser?.role === 'SUPER_ADMIN' && (
+            <button 
+              onClick={() => setCurrentMenu('cit-dashboard')}
+              className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+                currentMenu === 'cit-dashboard' 
+                  ? 'bg-slate-800 text-blue-400 font-bold' 
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+              }`}
+              title="CIT Dashboard"
+            >
+              <Coins className="h-5.5 w-5.5" />
+              <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+                CIT Dispatch Control
+              </span>
+            </button>
+          )}
 
-          {/* Super Admin Dashboard button */}
-          <button 
-            onClick={() => setCurrentMenu('superadmin')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'superadmin' 
-                ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Super Admin Dashboard"
-          >
-            <Shield className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Super Admin SaaS Dashboard
-            </span>
-          </button>
+          {/* SUPER ADMIN ONLY MENUS */}
+          {currentUser?.role === 'SUPER_ADMIN' && (
+            <>
+              {/* Super Admin Menu 1: Dashboard Analytics */}
+              <button 
+                onClick={() => setCurrentMenu('superadmin-analytics')}
+                className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+                  currentMenu === 'superadmin-analytics' || currentMenu === 'superadmin'
+                    ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                }`}
+                title="Dashboard Analytics"
+              >
+                <BarChart3 className="h-5.5 w-5.5" />
+                <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+                  Dashboard Analytics
+                </span>
+              </button>
 
-          {/* Daily Bulk Summary button */}
+              {/* Super Admin Menu 2: Tenant Management */}
+              <button 
+                onClick={() => setCurrentMenu('superadmin-tenants')}
+                className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+                  currentMenu === 'superadmin-tenants'
+                    ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                }`}
+                title="Tenant Management"
+              >
+                <Building2 className="h-5.5 w-5.5" />
+                <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+                  Tenant & User Management
+                </span>
+              </button>
+            </>
+          )}
+
+          {/* Daily Bulk Summary button - Available to TENANT_ADMIN & SUPER_ADMIN */}
           <button 
             onClick={() => setCurrentMenu('bulk-summary')}
             className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
@@ -1248,11 +1273,11 @@ export default function App() {
                 ? 'bg-slate-800 text-indigo-400 font-bold' 
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
             }`}
-            title="Daily Bulk Summaries"
+            title="My Daily Summaries"
           >
             <Layers className="h-5.5 w-5.5" />
             <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Daily Bulk Summaries (RH/BM)
+              My Daily Summaries
             </span>
           </button>
 
@@ -1264,15 +1289,15 @@ export default function App() {
                 ? 'bg-slate-800 text-emerald-400 font-bold' 
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
             }`}
-            title="Tenant Mail & WA Setup"
+            title="Mail & WA Setup"
           >
             <Server className="h-5.5 w-5.5" />
             <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Tenant Mail & WA Setup
+              Mail & WA Setup
             </span>
           </button>
 
-          {/* Settings Nav button */}
+          {/* Dynamic Filters / Settings Nav button */}
           <button 
             onClick={() => setCurrentMenu('settings')}
             className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
@@ -1280,11 +1305,11 @@ export default function App() {
                 ? 'bg-slate-800 text-blue-400 font-bold' 
                 : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
             }`}
-            title="Settings"
+            title="Dynamic Filters"
           >
             <Settings className="h-5.5 w-5.5" />
             <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Workflow Settings
+              Dynamic Filters
             </span>
           </button>
         </div>
@@ -2455,134 +2480,136 @@ export default function App() {
                 {/* TAB 3: POP3 SECURE MAIL CONFIG & DATABASE CONFIG */}
                 {settingsTab === 'mail' && (
                   <div className="space-y-6">
-                    {/* Database Switcher & Connection Block */}
-                    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4" id="db_switcher_card">
-                      <div className="flex items-start justify-between">
-                        <div className="space-y-1">
-                          <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                            <Database className="h-4 w-4 text-blue-600" />
-                            Dynamic Database Switcher & Configuration
-                          </h3>
-                          <p className="text-[11px] text-slate-500 leading-relaxed">
-                            Pilih database aktif (MongoDB / PostgreSQL) dan kelola Connection String (URI) secara terpusat. Konfigurasi disimpan secara persisten di file <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded text-[10px]">config/database-config.json</code>.
-                          </p>
+                    {/* Database Switcher & Connection Block - ONLY VISIBLE TO SUPER_ADMIN */}
+                    {currentUser?.role === 'SUPER_ADMIN' && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4" id="db_switcher_card">
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-1">
+                            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                              <Database className="h-4 w-4 text-blue-600" />
+                              Dynamic Database Switcher & Configuration
+                            </h3>
+                            <p className="text-[11px] text-slate-500 leading-relaxed">
+                              Pilih database aktif (MongoDB / PostgreSQL) dan kelola Connection String (URI) secara terpusat. Konfigurasi disimpan secara persisten di file <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded text-[10px]">config/database-config.json</code>.
+                            </p>
+                          </div>
+                          <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${dbConfig.active_driver === 'mongodb' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+                            Active: {dbConfig.active_driver.toUpperCase()}
+                          </span>
                         </div>
-                        <span className={`text-[11px] font-bold px-2.5 py-1 rounded-full ${dbConfig.active_driver === 'mongodb' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
-                          Active: {dbConfig.active_driver.toUpperCase()}
-                        </span>
-                      </div>
 
-                      {/* Driver Selection Radio Options */}
-                      <div className="grid grid-cols-2 gap-3 text-xs pt-1">
-                        <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
-                          dbConfig.active_driver === 'mongodb' 
-                            ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' 
-                            : 'border-slate-200 bg-slate-50 hover:bg-white'
-                        }`}>
-                          <input
-                            type="radio"
-                            name="active_driver"
-                            value="mongodb"
-                            checked={dbConfig.active_driver === 'mongodb'}
-                            onChange={() => setDbConfig({ ...dbConfig, active_driver: 'mongodb' })}
-                            className="text-emerald-600 focus:ring-emerald-500 h-4 w-4"
-                          />
-                          <div>
-                            <span className="font-bold text-slate-800 block">MongoDB Atlas</span>
-                            <span className="text-[10px] text-slate-500">NoSQL Document Store (koleksi: emails, custom_filters, email_analysis, wa_sessions)</span>
-                          </div>
-                        </label>
-
-                        <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
-                          dbConfig.active_driver === 'postgres' 
-                            ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500' 
-                            : 'border-slate-200 bg-slate-50 hover:bg-white'
-                        }`}>
-                          <input
-                            type="radio"
-                            name="active_driver"
-                            value="postgres"
-                            checked={dbConfig.active_driver === 'postgres'}
-                            onChange={() => setDbConfig({ ...dbConfig, active_driver: 'postgres' })}
-                            className="text-blue-600 focus:ring-blue-500 h-4 w-4"
-                          />
-                          <div>
-                            <span className="font-bold text-slate-800 block">PostgreSQL</span>
-                            <span className="text-[10px] text-slate-500">Relational SQL Database (tabel: emails, custom_filters, email_analysis, wa_sessions)</span>
-                          </div>
-                        </label>
-                      </div>
-
-                      {/* Connection URI Forms - Conditional Rendering based on active_driver */}
-                      <div className="space-y-3 pt-2">
-                        {dbConfig.active_driver === 'mongodb' ? (
-                          <div>
-                            <label className="block text-slate-600 font-bold text-xs mb-1">
-                              MongoDB Connection String (URI)
-                            </label>
-                            <div className="relative">
-                              <input
-                                type={showDbUri ? 'text' : 'password'}
-                                value={dbConfig.connections.mongodb}
-                                onChange={(e) => setDbConfig({
-                                  ...dbConfig,
-                                  connections: { ...dbConfig.connections, mongodb: e.target.value }
-                                })}
-                                placeholder="mongodb://user:password@host:port/emails"
-                                className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setShowDbUri(!showDbUri)}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                                title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
-                              >
-                                {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                              </button>
+                        {/* Driver Selection Radio Options */}
+                        <div className="grid grid-cols-2 gap-3 text-xs pt-1">
+                          <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
+                            dbConfig.active_driver === 'mongodb' 
+                              ? 'border-emerald-500 bg-emerald-50/50 ring-1 ring-emerald-500' 
+                              : 'border-slate-200 bg-slate-50 hover:bg-white'
+                          }`}>
+                            <input
+                              type="radio"
+                              name="active_driver"
+                              value="mongodb"
+                              checked={dbConfig.active_driver === 'mongodb'}
+                              onChange={() => setDbConfig({ ...dbConfig, active_driver: 'mongodb' })}
+                              className="text-emerald-600 focus:ring-emerald-500 h-4 w-4"
+                            />
+                            <div>
+                              <span className="font-bold text-slate-800 block">MongoDB Atlas</span>
+                              <span className="text-[10px] text-slate-500">NoSQL Document Store (koleksi: emails, custom_filters, email_analysis, wa_sessions)</span>
                             </div>
-                          </div>
-                        ) : (
-                          <div>
-                            <label className="block text-slate-600 font-bold text-xs mb-1">
-                              PostgreSQL Connection String (URI)
-                            </label>
-                            <div className="relative">
-                              <input
-                                type={showDbUri ? 'text' : 'password'}
-                                value={dbConfig.connections.postgres}
-                                onChange={(e) => setDbConfig({
-                                  ...dbConfig,
-                                  connections: { ...dbConfig.connections, postgres: e.target.value }
-                                })}
-                                placeholder="postgresql://user:password@localhost:5432/emails_db"
-                                className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setShowDbUri(!showDbUri)}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                                title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
-                              >
-                                {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                          </label>
 
-                      {/* Save Button */}
-                      <div className="flex justify-end pt-2">
-                        <button
-                          type="button"
-                          onClick={() => handleSaveDbConfig()}
-                          disabled={isSavingDbConfig}
-                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-colors text-xs flex items-center gap-2"
-                        >
-                          <Save className="h-4 w-4" />
-                          {isSavingDbConfig ? 'Saving Configuration...' : 'Save Database Configuration'}
-                        </button>
+                          <label className={`flex items-center space-x-3 p-3.5 border rounded-xl cursor-pointer transition-all ${
+                            dbConfig.active_driver === 'postgres' 
+                              ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500' 
+                              : 'border-slate-200 bg-slate-50 hover:bg-white'
+                          }`}>
+                            <input
+                              type="radio"
+                              name="active_driver"
+                              value="postgres"
+                              checked={dbConfig.active_driver === 'postgres'}
+                              onChange={() => setDbConfig({ ...dbConfig, active_driver: 'postgres' })}
+                              className="text-blue-600 focus:ring-blue-500 h-4 w-4"
+                            />
+                            <div>
+                              <span className="font-bold text-slate-800 block">PostgreSQL</span>
+                              <span className="text-[10px] text-slate-500">Relational SQL Database (tabel: emails, custom_filters, email_analysis, wa_sessions)</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        {/* Connection URI Forms - Conditional Rendering based on active_driver */}
+                        <div className="space-y-3 pt-2">
+                          {dbConfig.active_driver === 'mongodb' ? (
+                            <div>
+                              <label className="block text-slate-600 font-bold text-xs mb-1">
+                                MongoDB Connection String (URI)
+                              </label>
+                              <div className="relative">
+                                <input
+                                  type={showDbUri ? 'text' : 'password'}
+                                  value={dbConfig.connections.mongodb}
+                                  onChange={(e) => setDbConfig({
+                                    ...dbConfig,
+                                    connections: { ...dbConfig.connections, mongodb: e.target.value }
+                                  })}
+                                  placeholder="mongodb://user:password@host:port/emails"
+                                  className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDbUri(!showDbUri)}
+                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                  title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
+                                >
+                                  {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <label className="block text-slate-600 font-bold text-xs mb-1">
+                                PostgreSQL Connection String (URI)
+                              </label>
+                              <div className="relative">
+                                <input
+                                  type={showDbUri ? 'text' : 'password'}
+                                  value={dbConfig.connections.postgres}
+                                  onChange={(e) => setDbConfig({
+                                    ...dbConfig,
+                                    connections: { ...dbConfig.connections, postgres: e.target.value }
+                                  })}
+                                  placeholder="postgresql://user:password@localhost:5432/emails_db"
+                                  className="w-full pl-3 pr-10 py-2 bg-slate-50 focus:bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-mono text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDbUri(!showDbUri)}
+                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                                  title={showDbUri ? "Sembunyikan URI" : "Tampilkan URI"}
+                                >
+                                  {showDbUri ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Save Button */}
+                        <div className="flex justify-end pt-2">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveDbConfig()}
+                            disabled={isSavingDbConfig}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-lg cursor-pointer transition-colors text-xs flex items-center gap-2"
+                          >
+                            <Save className="h-4 w-4" />
+                            {isSavingDbConfig ? 'Saving Configuration...' : 'Save Database Configuration'}
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* POP3 Mail Configuration */}
                     <form onSubmit={handleSaveSettings} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
@@ -3196,11 +3223,58 @@ export default function App() {
           <EmailIntelligenceSection onAddToast={addToast} />
         )}
 
-        {/* SUPER ADMIN SAAS DASHBOARD SECTION */}
-        {currentMenu === 'superadmin' && (
-          <div className="flex-1 overflow-y-auto">
-            <SuperAdminDashboard />
-          </div>
+        {/* SUPER ADMIN DASHBOARD ANALYTICS SECTION */}
+        {(currentMenu === 'superadmin-analytics' || currentMenu === 'superadmin') && (
+          currentUser?.role === 'SUPER_ADMIN' ? (
+            <div className="flex-1 overflow-y-auto">
+              <SuperAdminAnalyticsView />
+            </div>
+          ) : (
+            <div className="flex-1 p-8 flex items-center justify-center bg-slate-50">
+              <div className="max-w-md bg-white border border-rose-200 rounded-2xl p-6 shadow-sm text-center space-y-3">
+                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center mx-auto">
+                  <ShieldCheck className="w-6 h-6" />
+                </div>
+                <h2 className="text-base font-bold text-slate-800">Akses Ditolak (RBAC Restriction)</h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Halaman Dashboard Analytics Super Admin hanya dapat diakses oleh akun dengan role <strong>SUPER_ADMIN</strong>.
+                </p>
+                <button
+                  onClick={() => setCurrentMenu('inbox')}
+                  className="px-4 py-2 bg-slate-900 text-white font-bold rounded-xl text-xs hover:bg-slate-800 transition-colors"
+                >
+                  Kembali ke Inbox
+                </button>
+              </div>
+            </div>
+          )
+        )}
+
+        {/* SUPER ADMIN TENANT MANAGEMENT SECTION */}
+        {currentMenu === 'superadmin-tenants' && (
+          currentUser?.role === 'SUPER_ADMIN' ? (
+            <div className="flex-1 overflow-y-auto">
+              <SuperAdminTenantsView />
+            </div>
+          ) : (
+            <div className="flex-1 p-8 flex items-center justify-center bg-slate-50">
+              <div className="max-w-md bg-white border border-rose-200 rounded-2xl p-6 shadow-sm text-center space-y-3">
+                <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center mx-auto">
+                  <ShieldCheck className="w-6 h-6" />
+                </div>
+                <h2 className="text-base font-bold text-slate-800">Akses Ditolak (RBAC Restriction)</h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Halaman Manajemen Tenant hanya dapat diakses oleh akun dengan role <strong>SUPER_ADMIN</strong>.
+                </p>
+                <button
+                  onClick={() => setCurrentMenu('inbox')}
+                  className="px-4 py-2 bg-slate-900 text-white font-bold rounded-xl text-xs hover:bg-slate-800 transition-colors"
+                >
+                  Kembali ke Inbox
+                </button>
+              </div>
+            </div>
+          )
         )}
 
         {/* DAILY BULK SUMMARY SECTION */}
