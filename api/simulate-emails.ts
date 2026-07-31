@@ -1,5 +1,6 @@
 import { getAutoTags } from '../src/tags';
-import { syncAndAnalyzeEmail } from '../src/database-service';
+import { dbUpsertEmail } from '../src/database-service';
+import { emailQueue } from '../src/config/queue';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -67,9 +68,9 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Save to Database
+    // Save to Database and Queue to Redis
     for (const email of fetchedEmails) {
-      await syncAndAnalyzeEmail({
+      await dbUpsertEmail({
         message_id: email.uid,
         subject: email.subject,
         sender: email.fromName ? `${email.fromName} <${email.fromAddress}>` : email.fromAddress,
@@ -78,8 +79,16 @@ export default async function handler(req: any, res: any) {
         body_text: email.body,
         html_body: email.bodyHtml,
         tags: email.tags,
-        is_read: false
+        is_read: false,
+        ai_status: 'PENDING'
       });
+
+      try {
+        await emailQueue.add('process-email', { email_id: email.uid, tenant_id: 1 });
+        console.log(`[Queue: Added] Email ID ${email.uid} masuk antrean. (Menunggu AI)`);
+      } catch (qErr: any) {
+        console.error(`[Queue Error] Failed to enqueue Email ID ${email.uid}:`, qErr.message || qErr);
+      }
     }
 
     return res.status(200).json({

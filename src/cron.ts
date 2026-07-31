@@ -7,12 +7,12 @@ import {
   dbUpsertEmail, 
   dbGetCustomFilters,
   Email,
-  syncAndAnalyzeEmail,
   dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, Tenant } from './services/dbManager';
 import { generateBulkSummary } from './services/aiProcessingService';
+import { emailQueue } from './config/queue';
 
 // Import broadcastEvent dynamically from server to prevent circular dependencies
 let broadcastEventFn: ((event: string, data: any) => void) | null = null;
@@ -322,9 +322,21 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                 };
 
                 if (tenant.feature_individual_parsing) {
-                  // COS Division: Individual parsing with AI
-                  console.log(`[Multi-Tenant Cron] Processing individual AI parsing for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);
-                  await syncAndAnalyzeEmail(tenantEmail);
+                  // COS Division: Save raw email with ai_status PENDING, push to Redis Queue
+                  await dbSaveEmail(item.uid, {
+                    ...tenantEmail,
+                    ai_status: 'PENDING'
+                  });
+
+                  try {
+                    await emailQueue.add('process-email', {
+                      email_id: item.uid,
+                      tenant_id: tenant.id
+                    });
+                    console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean. (Menunggu AI)`);
+                  } catch (queueErr: any) {
+                    console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
+                  }
                 } else if (tenant.feature_bulk_summary) {
                   // RH/BM Division: Skip individual parsing, queue for Bulk Summary
                   console.log(`[Multi-Tenant Cron] Storing raw email for Bulk Summary for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);

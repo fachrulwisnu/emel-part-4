@@ -33,6 +33,7 @@ import {
   startAutoSyncCron, 
   registerBroadcaster 
 } from "./src/cron";
+import "./src/workers/aiWorker";
 import testConnectionHandler from "./api/test-connection";
 import simulateEmailsHandler from "./api/simulate-emails";
 import syncThunderbirdHandler from "./api/sync-thunderbird";
