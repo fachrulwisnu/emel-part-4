@@ -47,6 +47,19 @@ import AttachmentGallery from './components/AttachmentGallery';
 import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 import { AiHealthIndicators } from './components/AiHealthIndicators';
+import { LoginModal } from './components/LoginModal';
+import { SuperAdminDashboard } from './components/SuperAdminDashboard';
+import { BulkSummaryView } from './components/BulkSummaryView';
+import { TenantIntegrationSettings } from './components/TenantIntegrationSettings';
+import { Shield, Building2, Layers, LogOut, Key } from 'lucide-react';
+
+interface UserSession {
+  id: number;
+  tenant_id: number | null;
+  email: string;
+  role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
+  tenant_name?: string;
+}
 
 // Database Driver Type
 type DbDriver = 'mongodb' | 'postgres';
@@ -138,8 +151,18 @@ const getTagBadgeStyle = (str: string) => {
 };
 
 export default function App() {
+  // Authentication & Multi-Tenant User Session
+  const [currentUser, setCurrentUser] = useState<UserSession | null>({
+    id: 1,
+    tenant_id: null,
+    email: 'fachrul',
+    role: 'SUPER_ADMIN',
+    tenant_name: 'SUPER ADMIN'
+  });
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence'>('inbox');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence' | 'superadmin' | 'bulk-summary' | 'tenant-settings'>('inbox');
   const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
@@ -1201,6 +1224,54 @@ export default function App() {
             </span>
           </button>
 
+          {/* Super Admin Dashboard button */}
+          <button 
+            onClick={() => setCurrentMenu('superadmin')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'superadmin' 
+                ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Super Admin Dashboard"
+          >
+            <Shield className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Super Admin SaaS Dashboard
+            </span>
+          </button>
+
+          {/* Daily Bulk Summary button */}
+          <button 
+            onClick={() => setCurrentMenu('bulk-summary')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'bulk-summary' 
+                ? 'bg-slate-800 text-indigo-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Daily Bulk Summaries"
+          >
+            <Layers className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Daily Bulk Summaries (RH/BM)
+            </span>
+          </button>
+
+          {/* Tenant Integration Settings button */}
+          <button 
+            onClick={() => setCurrentMenu('tenant-settings')}
+            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
+              currentMenu === 'tenant-settings' 
+                ? 'bg-slate-800 text-emerald-400 font-bold' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+            title="Tenant Mail & WA Setup"
+          >
+            <Server className="h-5.5 w-5.5" />
+            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
+              Tenant Mail & WA Setup
+            </span>
+          </button>
+
           {/* Settings Nav button */}
           <button 
             onClick={() => setCurrentMenu('settings')}
@@ -1234,6 +1305,9 @@ export default function App() {
               {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
               {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
               {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
+              {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
+              {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
+              {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
             </h1>
             <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200">
               <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
@@ -1275,6 +1349,36 @@ export default function App() {
                 </button>
               </>
             )}
+
+            {/* User Session & Login Button */}
+            <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+              {currentUser ? (
+                <div className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 py-1.5 rounded-xl transition-all cursor-pointer" onClick={() => setIsLoginModalOpen(true)}>
+                  <div className="w-6 h-6 rounded-lg bg-blue-600 text-white font-bold text-xs flex items-center justify-center">
+                    {currentUser.email[0].toUpperCase()}
+                  </div>
+                  <div className="text-left leading-tight">
+                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                      <span>{currentUser.email}</span>
+                      <span className="text-[9px] px-1.5 py-0.2 bg-blue-600 text-white rounded font-mono">
+                        {currentUser.role}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-500">
+                      {currentUser.role === 'SUPER_ADMIN' ? 'Super Admin' : `Divisi ${currentUser.tenant_name || currentUser.tenant_id}`}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsLoginModalOpen(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>Login Tenant</span>
+                </button>
+              )}
+            </div>
           </div>
         </header>
 
@@ -3092,7 +3196,45 @@ export default function App() {
           <EmailIntelligenceSection onAddToast={addToast} />
         )}
 
+        {/* SUPER ADMIN SAAS DASHBOARD SECTION */}
+        {currentMenu === 'superadmin' && (
+          <div className="flex-1 overflow-y-auto">
+            <SuperAdminDashboard />
+          </div>
+        )}
+
+        {/* DAILY BULK SUMMARY SECTION */}
+        {currentMenu === 'bulk-summary' && (
+          <div className="flex-1 overflow-y-auto">
+            <BulkSummaryView 
+              currentTenantId={currentUser?.tenant_id || undefined} 
+              tenantName={currentUser?.tenant_name} 
+            />
+          </div>
+        )}
+
+        {/* TENANT ADMIN SELF-SERVICE SETTINGS SECTION */}
+        {currentMenu === 'tenant-settings' && (
+          <div className="flex-1 overflow-y-auto">
+            <TenantIntegrationSettings 
+              currentTenantId={currentUser?.tenant_id || 1} 
+              tenantName={currentUser?.tenant_name || 'COS'} 
+              onAddToast={addToast}
+            />
+          </div>
+        )}
+
       </main>
+
+      {/* LOGIN MODAL */}
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          addToast('Login Berhasil', `Selamat datang kembali, ${user.email} (${user.role})`);
+        }}
+      />
 
       {/* 5. EDIT SUGGESTION MODAL OVERLAY */}
       {isEditSuggestionOpen && (

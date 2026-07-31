@@ -15,6 +15,7 @@ const SQLITE_DB_PATH = path.join(process.cwd(), 'emails.db');
 
 export interface Email {
   id?: number;
+  tenant_id?: number;
   message_id: string;
   subject: string;
   sender: string;
@@ -348,56 +349,105 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
   return existingSet;
 }
 
-// Get all emails (merges Supabase and SQLite)
-export async function dbGetAllEmails(): Promise<Email[]> {
+// Get all emails (merges PostgreSQL/MongoDB and SQLite)
+export async function dbGetAllEmails(tenantId?: number): Promise<Email[]> {
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
-  if (driver === 'mongodb') {
+
+  const { getDbService } = await import('./services/dbManager');
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
-      const { getDbService } = await import('./services/dbManager');
-      const dbService = await getDbService();
-      if (dbService.type === 'mongodb' && dbService.mongoDb) {
-        const col = dbService.mongoDb.collection('emails');
-        const rows = await col.find().sort({ date: -1 }).toArray();
-        return rows.map((row: any) => ({
-          id: row.id,
-          message_id: row.message_id,
-          subject: row.subject || '',
-          sender: row.sender || '',
-          receiver: row.receiver || '',
-          date: row.date || '',
-          body_text: row.body_text || '',
-          html_body: row.html_body || '',
-          tags: row.tags || [],
-          category: row.category || '',
-          sub_category: row.sub_category || '',
-          folder_parent: row.folder_parent || '',
-          folder_child: row.folder_child || '',
-          api_workflow_status: row.api_workflow_status || 'none',
-          api_workflow_log: row.api_workflow_log || '',
-          attachments: row.attachments || [],
-          is_read: !!row.is_read,
-          tag_type: row.tag_type || '',
-          summary: row.summary || '',
-          action_required: !!row.action_required,
-          suggested_tag: row.suggested_tag || '',
-          is_important: !!row.is_important,
-          urgency_level: row.urgency_level || 'Routine',
-          suggested_folder_parent: row.suggested_folder_parent || '',
-          suggested_folder_child: row.suggested_folder_child || '',
-          is_cit_order: !!row.is_cit_order,
-          cit_type: row.cit_type || 'None',
-          suggested_bank: row.suggested_bank || '',
-          extracted_notes: row.extracted_notes || '',
-          currency: row.currency || 'IDR',
-          denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
-          total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
-          ai_status: row.ai_status || 'PENDING',
-          is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
-        }));
-      }
+      const col = dbService.mongoDb.collection('emails');
+      const query = tenantId ? { tenant_id: Number(tenantId) } : {};
+      const rows = await col.find(query).sort({ date: -1 }).toArray();
+      return rows.map((row: any) => ({
+        id: row.id,
+        tenant_id: row.tenant_id,
+        message_id: row.message_id,
+        subject: row.subject || '',
+        sender: row.sender || '',
+        receiver: row.receiver || '',
+        date: row.date || '',
+        body_text: row.body_text || '',
+        html_body: row.html_body || '',
+        tags: row.tags || [],
+        category: row.category || '',
+        sub_category: row.sub_category || '',
+        folder_parent: row.folder_parent || '',
+        folder_child: row.folder_child || '',
+        api_workflow_status: row.api_workflow_status || 'none',
+        api_workflow_log: row.api_workflow_log || '',
+        attachments: row.attachments || [],
+        is_read: !!row.is_read,
+        tag_type: row.tag_type || '',
+        summary: row.summary || '',
+        action_required: !!row.action_required,
+        suggested_tag: row.suggested_tag || '',
+        is_important: !!row.is_important,
+        urgency_level: row.urgency_level || 'Routine',
+        suggested_folder_parent: row.suggested_folder_parent || '',
+        suggested_folder_child: row.suggested_folder_child || '',
+        is_cit_order: !!row.is_cit_order,
+        cit_type: row.cit_type || 'None',
+        suggested_bank: row.suggested_bank || '',
+        extracted_notes: row.extracted_notes || '',
+        currency: row.currency || 'IDR',
+        denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
+        total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
+        ai_status: row.ai_status || 'PENDING',
+        is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+      }));
     } catch (err) {
       console.error('[dbGetAllEmails] Error fetching from MongoDB:', err);
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = tenantId
+        ? 'SELECT * FROM public.emails WHERE tenant_id = $1 ORDER BY date DESC'
+        : 'SELECT * FROM public.emails ORDER BY date DESC';
+      const values = tenantId ? [tenantId] : [];
+      const res = await dbService.pgPool.query(query, values);
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        tenant_id: row.tenant_id,
+        message_id: row.message_id,
+        subject: row.subject || '',
+        sender: row.sender || '',
+        receiver: row.receiver || '',
+        date: row.date || '',
+        body_text: row.body_text || '',
+        html_body: row.html_body || '',
+        tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+        category: row.category || '',
+        sub_category: row.sub_category || '',
+        folder_parent: row.folder_parent || '',
+        folder_child: row.folder_child || '',
+        api_workflow_status: row.api_workflow_status || 'none',
+        api_workflow_log: row.api_workflow_log || '',
+        attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+        is_read: row.is_read === true || row.is_read === 1,
+        tag_type: row.tag_type || '',
+        summary: row.summary || '',
+        action_required: row.action_required === true || row.action_required === 1,
+        suggested_tag: row.suggested_tag || '',
+        is_important: row.is_important === true || row.is_important === 1,
+        urgency_level: row.urgency_level || 'Routine',
+        suggested_folder_parent: row.suggested_folder_parent || '',
+        suggested_folder_child: row.suggested_folder_child || '',
+        is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
+        cit_type: row.cit_type || 'None',
+        suggested_bank: row.suggested_bank || '',
+        extracted_notes: row.extracted_notes || '',
+        currency: row.currency || 'IDR',
+        denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+        total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+        ai_status: row.ai_status || 'PENDING',
+        is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+      }));
+    } catch (err) {
+      console.error('[dbGetAllEmails] Error fetching from PostgreSQL:', err);
     }
   }
 

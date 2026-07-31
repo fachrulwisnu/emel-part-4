@@ -3,12 +3,50 @@ import { getMongoDb, closeMongoConnection } from '../lib/mongodb';
 import { getPostgresPool, closePostgresPool } from '../lib/postgres';
 import { Db } from 'mongodb';
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
 
 export interface DbServiceInstance {
   type: 'mongodb' | 'postgres';
   mongoDb: Db | null;
   pgPool: pg.Pool | null;
   config: DatabaseConfig;
+}
+
+export interface Tenant {
+  id: number;
+  name: string;
+  ai_primary_model: string;
+  ai_fallback_model: string;
+  ai_models?: string[];
+  feature_individual_parsing: boolean;
+  feature_bulk_summary: boolean;
+  pop3_host?: string;
+  pop3_port?: number;
+  pop3_user?: string;
+  pop3_pass?: string;
+  wa_phone?: string;
+  admin_email?: string;
+  admin_password?: string;
+  created_at?: Date | string;
+}
+
+export interface User {
+  id: number;
+  tenant_id: number | null;
+  email: string;
+  password_hash: string;
+  role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
+  created_at?: Date | string;
+  tenant_name?: string;
+}
+
+export interface DailySummary {
+  id?: number;
+  tenant_id: number;
+  summary_date: string;
+  content_text: string;
+  is_sent_to_wa?: boolean;
+  created_at?: Date | string;
 }
 
 let lastActiveDriver: 'mongodb' | 'postgres' | null = null;
@@ -80,16 +118,17 @@ export async function getDbService(): Promise<DbServiceInstance> {
  */
 export async function dbSaveEmail(messageId: string, payload: any): Promise<void> {
   const dbService = await getDbService();
+  const tenantId = payload.tenant_id !== undefined ? payload.tenant_id : 1;
 
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('emails');
       await col.updateOne(
         { message_id: messageId },
-        { $set: { ...payload, message_id: messageId, updated_at: new Date() } },
+        { $set: { ...payload, tenant_id: tenantId, message_id: messageId, updated_at: new Date() } },
         { upsert: true }
       );
-      console.log(`[dbManager] Saved email to MongoDB: ${messageId}`);
+      console.log(`[dbManager] Saved email to MongoDB: ${messageId} (Tenant ID: ${tenantId})`);
     } catch (err) {
       console.error(`[dbManager] Failed to save email to MongoDB:`, err);
     }
@@ -97,21 +136,22 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
     try {
       const query = `
         INSERT INTO emails (
-          message_id, subject, sender, receiver, date, body_text, html_body, tags,
+          tenant_id, message_id, subject, sender, receiver, date, body_text, html_body, tags,
           category, sub_category, folder_parent, folder_child, attachments,
           is_read, tag_type, summary, action_required, suggested_tag, is_important,
           urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order,
           cit_type, suggested_bank, extracted_notes, currency, denomination_suggestion,
           total_amount, ai_status, is_summarized, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13,
-          $14, $15, $16, $17, $18, $19,
-          $20, $21, $22, $23,
-          $24, $25, $26, $27, $28,
-          $29, $30, $31, CURRENT_TIMESTAMP
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, $14,
+          $15, $16, $17, $18, $19, $20,
+          $21, $22, $23, $24,
+          $25, $26, $27, $28, $29,
+          $30, $31, $32, CURRENT_TIMESTAMP
         )
         ON CONFLICT(message_id) DO UPDATE SET
+          tenant_id = EXCLUDED.tenant_id,
           subject = EXCLUDED.subject,
           sender = EXCLUDED.sender,
           receiver = EXCLUDED.receiver,
@@ -146,6 +186,7 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
       `;
 
       const values = [
+        tenantId,
         messageId,
         payload.subject || '',
         payload.sender || '',
@@ -180,7 +221,7 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
       ];
 
       await dbService.pgPool.query(query, values);
-      console.log(`[dbManager] Saved email to PostgreSQL: ${messageId}`);
+      console.log(`[dbManager] Saved email to PostgreSQL: ${messageId} (Tenant ID: ${tenantId})`);
     } catch (err) {
       console.error(`[dbManager] Failed to save email to PostgreSQL:`, err);
     }
@@ -536,4 +577,428 @@ export async function dbDeleteWaSession(sessionId: string): Promise<void> {
       console.error(`[dbManager] Failed to delete WA Session in PostgreSQL:`, err);
     }
   }
+}
+
+// =========================================================================
+// SAAS MULTI-TENANT HELPERS (TENANTS, USERS, DAILY SUMMARIES)
+// =========================================================================
+
+/**
+ * Get all Tenants (with admin user email mapping)
+ */
+export async function dbGetTenants(): Promise<Tenant[]> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('tenants');
+      let tenants = await col.find().sort({ id: 1 }).toArray();
+      if (!tenants || tenants.length === 0) {
+        // Seed default tenants if empty
+        const defaultTenants: Tenant[] = [
+          { id: 1, name: 'COS', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'Nemotron 3 Super 120B', 'Custom AI Vision'], feature_individual_parsing: true, feature_bulk_summary: false, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'cos@corporate.com', pop3_pass: '••••••••', wa_phone: '6281234567890' },
+          { id: 2, name: 'RH', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'Qwen3 Next 80B'], feature_individual_parsing: false, feature_bulk_summary: true, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'rh@corporate.com', pop3_pass: '••••••••', wa_phone: '6289876543210' },
+          { id: 3, name: 'BM', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'StepFun AI Step 3.7 Flash'], feature_individual_parsing: false, feature_bulk_summary: true, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'bm@corporate.com', pop3_pass: '••••••••', wa_phone: '628555666777' }
+        ];
+        await col.insertMany(defaultTenants as any);
+        tenants = defaultTenants as any;
+      }
+      const usersCol = dbService.mongoDb.collection('users');
+      const users = await usersCol.find({ role: 'TENANT_ADMIN' }).toArray();
+
+      return tenants.map((t: any) => {
+        const admin = users.find((u: any) => u.tenant_id === t.id);
+        return {
+          id: t.id,
+          name: t.name,
+          ai_primary_model: t.ai_primary_model || 'Custom AI Core',
+          ai_fallback_model: t.ai_fallback_model || 'Nemotron 3 Super 120B',
+          ai_models: Array.isArray(t.ai_models) ? t.ai_models : (t.ai_primary_model ? [t.ai_primary_model, t.ai_fallback_model].filter(Boolean) : ['Custom AI Core']),
+          feature_individual_parsing: !!t.feature_individual_parsing,
+          feature_bulk_summary: !!t.feature_bulk_summary,
+          pop3_host: t.pop3_host || '',
+          pop3_port: t.pop3_port || 110,
+          pop3_user: t.pop3_user || '',
+          pop3_pass: t.pop3_pass || '',
+          wa_phone: t.wa_phone || '',
+          admin_email: admin ? admin.email : (t.admin_email || `${t.name.toLowerCase()}@corporate.com`),
+          created_at: t.created_at
+        };
+      });
+    } catch (err) {
+      console.error('[dbManager] Failed to get tenants from MongoDB:', err);
+      return [];
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = `
+        SELECT t.*, u.email as admin_email
+        FROM public.tenants t
+        LEFT JOIN public.users u ON u.tenant_id = t.id AND u.role = 'TENANT_ADMIN'
+        ORDER BY t.id ASC;
+      `;
+      const res = await dbService.pgPool.query(query);
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        ai_primary_model: row.ai_primary_model || 'Custom AI Core',
+        ai_fallback_model: row.ai_fallback_model || 'Nemotron 3 Super 120B',
+        ai_models: Array.isArray(row.ai_models) 
+          ? row.ai_models 
+          : (typeof row.ai_models === 'string' ? JSON.parse(row.ai_models) : [row.ai_primary_model || 'Custom AI Core']),
+        feature_individual_parsing: !!row.feature_individual_parsing,
+        feature_bulk_summary: !!row.feature_bulk_summary,
+        pop3_host: row.pop3_host || '',
+        pop3_port: row.pop3_port || 110,
+        pop3_user: row.pop3_user || '',
+        pop3_pass: row.pop3_pass || '',
+        wa_phone: row.wa_phone || '',
+        admin_email: row.admin_email || `${row.name.toLowerCase()}@corporate.com`,
+        created_at: row.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Failed to get tenants from PostgreSQL:', err);
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Get Tenant by ID
+ */
+export async function dbGetTenantById(id: number): Promise<Tenant | null> {
+  const tenants = await dbGetTenants();
+  return tenants.find(t => t.id === Number(id)) || null;
+}
+
+/**
+ * Insert or Update Tenant with Transactional Admin User Creation
+ */
+export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: string; admin_password?: string }): Promise<Tenant | null> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('tenants');
+      const usersCol = dbService.mongoDb.collection('users');
+      let tenantId = payload.id;
+      let newTenant: any;
+
+      const { admin_email, admin_password, ...cleanPayload } = payload;
+
+      if (tenantId) {
+        await col.updateOne({ id: tenantId }, { $set: cleanPayload }, { upsert: true });
+        newTenant = await col.findOne({ id: tenantId });
+      } else {
+        const last = await col.find().sort({ id: -1 }).limit(1).toArray();
+        tenantId = (last[0]?.id || 0) + 1;
+        newTenant = { ...cleanPayload, id: tenantId, created_at: new Date() };
+        await col.insertOne(newTenant);
+      }
+
+      if (admin_email && admin_password) {
+        const hash = bcrypt.hashSync(admin_password, 10);
+        await usersCol.updateOne(
+          { email: admin_email },
+          {
+            $set: {
+              tenant_id: tenantId,
+              email: admin_email,
+              password_hash: hash,
+              role: 'TENANT_ADMIN',
+              updated_at: new Date()
+            }
+          },
+          { upsert: true }
+        );
+      }
+
+      return {
+        ...newTenant,
+        admin_email: admin_email || newTenant.admin_email || ''
+      };
+    } catch (err) {
+      console.error('[dbManager] Failed to save tenant in MongoDB:', err);
+      return null;
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    const client = await dbService.pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const aiModelsJson = JSON.stringify(payload.ai_models || ['Custom AI Core']);
+      let tenantRow: any;
+
+      if (payload.id) {
+        const query = `
+          UPDATE public.tenants SET
+            name = COALESCE($1, name),
+            ai_primary_model = COALESCE($2, ai_primary_model),
+            ai_fallback_model = COALESCE($3, ai_fallback_model),
+            ai_models = COALESCE($4::jsonb, ai_models),
+            feature_individual_parsing = COALESCE($5, feature_individual_parsing),
+            feature_bulk_summary = COALESCE($6, feature_bulk_summary),
+            pop3_host = COALESCE($7, pop3_host),
+            pop3_port = COALESCE($8, pop3_port),
+            pop3_user = COALESCE($9, pop3_user),
+            pop3_pass = COALESCE($10, pop3_pass),
+            wa_phone = COALESCE($11, wa_phone)
+          WHERE id = $12
+          RETURNING *;
+        `;
+        const res = await client.query(query, [
+          payload.name, payload.ai_primary_model, payload.ai_fallback_model,
+          aiModelsJson,
+          payload.feature_individual_parsing, payload.feature_bulk_summary,
+          payload.pop3_host, payload.pop3_port, payload.pop3_user, payload.pop3_pass, payload.wa_phone,
+          payload.id
+        ]);
+        tenantRow = res.rows[0];
+      } else {
+        const query = `
+          INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, ai_models, feature_individual_parsing, feature_bulk_summary, pop3_host, pop3_port, pop3_user, pop3_pass, wa_phone)
+          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+          RETURNING *;
+        `;
+        const res = await client.query(query, [
+          payload.name,
+          payload.ai_primary_model || 'Custom AI Core',
+          payload.ai_fallback_model || 'Nemotron 3 Super 120B',
+          aiModelsJson,
+          !!payload.feature_individual_parsing,
+          !!payload.feature_bulk_summary,
+          payload.pop3_host || '',
+          payload.pop3_port || 110,
+          payload.pop3_user || '',
+          payload.pop3_pass || '',
+          payload.wa_phone || ''
+        ]);
+        tenantRow = res.rows[0];
+      }
+
+      if (!tenantRow) {
+        throw new Error('Gagal menyimpan atau memperbarui data divisi tenant.');
+      }
+
+      // Handle Admin User Creation / Update in Transaction
+      if (payload.admin_email && payload.admin_password) {
+        const hash = bcrypt.hashSync(payload.admin_password, 10);
+        const userQuery = `
+          INSERT INTO public.users (tenant_id, email, password_hash, role)
+          VALUES ($1, $2, $3, 'TENANT_ADMIN')
+          ON CONFLICT (email) DO UPDATE SET
+            password_hash = EXCLUDED.password_hash,
+            tenant_id = EXCLUDED.tenant_id,
+            role = 'TENANT_ADMIN';
+        `;
+        await client.query(userQuery, [tenantRow.id, payload.admin_email, hash]);
+      }
+
+      await client.query('COMMIT');
+      return {
+        ...tenantRow,
+        admin_email: payload.admin_email || tenantRow.admin_email || ''
+      };
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      console.error('[dbManager] Transaction failed saving tenant in PostgreSQL:', err);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+  return null;
+}
+
+/**
+ * Delete Tenant
+ */
+export async function dbDeleteTenant(id: number): Promise<boolean> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      await dbService.mongoDb.collection('tenants').deleteOne({ id: Number(id) });
+      return true;
+    } catch (err) {
+      console.error('[dbManager] Failed to delete tenant from MongoDB:', err);
+      return false;
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      await dbService.pgPool.query('DELETE FROM public.tenants WHERE id = $1', [id]);
+      return true;
+    } catch (err) {
+      console.error('[dbManager] Failed to delete tenant from PostgreSQL:', err);
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Get User by Email
+ */
+export async function dbGetUserByEmail(email: string): Promise<User | null> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('users');
+      let user = await col.findOne({ email });
+      if (!user) {
+        // Seed default users if empty
+        const count = await col.countDocuments();
+        if (count === 0) {
+          const defaultUsers = [
+            { id: 1, tenant_id: null, email: 'fachrul', password_hash: bcrypt.hashSync('bosskubabi', 10), role: 'SUPER_ADMIN' },
+            { id: 2, tenant_id: 1, email: 'cos', password_hash: bcrypt.hashSync('12345678', 10), role: 'TENANT_ADMIN' }
+          ];
+          await col.insertMany(defaultUsers as any);
+          if (email === 'fachrul') user = defaultUsers[0] as any;
+          if (email === 'cos') user = defaultUsers[1] as any;
+        }
+      }
+      if (user) {
+        let tenant_name = 'SUPER ADMIN';
+        if (user.tenant_id) {
+          const tenant = await dbGetTenantById(user.tenant_id);
+          if (tenant) tenant_name = tenant.name;
+        }
+        return {
+          id: user.id,
+          tenant_id: user.tenant_id || null,
+          email: user.email,
+          password_hash: user.password_hash,
+          role: user.role,
+          created_at: user.created_at,
+          tenant_name
+        };
+      }
+    } catch (err) {
+      console.error('[dbManager] Failed to get user by email from MongoDB:', err);
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = `
+        SELECT u.*, t.name as tenant_name
+        FROM public.users u
+        LEFT JOIN public.tenants t ON u.tenant_id = t.id
+        WHERE u.email = $1;
+      `;
+      const res = await dbService.pgPool.query(query, [email]);
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        return {
+          id: row.id,
+          tenant_id: row.tenant_id || null,
+          email: row.email,
+          password_hash: row.password_hash,
+          role: row.role,
+          created_at: row.created_at,
+          tenant_name: row.role === 'SUPER_ADMIN' ? 'SUPER ADMIN' : (row.tenant_name || 'Division')
+        };
+      }
+    } catch (err) {
+      console.error('[dbManager] Failed to get user by email from PostgreSQL:', err);
+    }
+  }
+  return null;
+}
+
+/**
+ * Validate User Credentials
+ */
+export async function dbValidateUserCredentials(email: string, password: string): Promise<User | null> {
+  const user = await dbGetUserByEmail(email);
+  if (!user) return null;
+
+  const matches = bcrypt.compareSync(password, user.password_hash);
+  if (matches) {
+    return user;
+  }
+  return null;
+}
+
+/**
+ * Save / Get Daily Summaries
+ */
+export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('daily_summaries');
+      await col.insertOne({
+        ...summary,
+        created_at: new Date()
+      });
+      console.log(`[dbManager] Saved Daily Summary in MongoDB for Tenant ID: ${summary.tenant_id}`);
+    } catch (err) {
+      console.error('[dbManager] Failed to save Daily Summary in MongoDB:', err);
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = `
+        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa)
+        VALUES ($1, $2, $3, $4);
+      `;
+      await dbService.pgPool.query(query, [
+        summary.tenant_id,
+        summary.summary_date,
+        summary.content_text,
+        !!summary.is_sent_to_wa
+      ]);
+      console.log(`[dbManager] Saved Daily Summary in PostgreSQL for Tenant ID: ${summary.tenant_id}`);
+    } catch (err) {
+      console.error('[dbManager] Failed to save Daily Summary in PostgreSQL:', err);
+    }
+  }
+}
+
+/**
+ * Get Daily Summaries for Tenant
+ */
+export async function dbGetDailySummaries(tenantId?: number): Promise<DailySummary[]> {
+  const dbService = await getDbService();
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('daily_summaries');
+      const query = tenantId ? { tenant_id: Number(tenantId) } : {};
+      const res = await col.find(query).sort({ created_at: -1 }).toArray();
+      return res.map((r: any) => ({
+        id: r._id,
+        tenant_id: r.tenant_id,
+        summary_date: r.summary_date,
+        content_text: r.content_text,
+        is_sent_to_wa: !!r.is_sent_to_wa,
+        created_at: r.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Failed to get Daily Summaries from MongoDB:', err);
+      return [];
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = tenantId
+        ? 'SELECT * FROM public.daily_summaries WHERE tenant_id = $1 ORDER BY created_at DESC'
+        : 'SELECT * FROM public.daily_summaries ORDER BY created_at DESC';
+      const values = tenantId ? [tenantId] : [];
+      const res = await dbService.pgPool.query(query, values);
+      return res.rows.map((row: any) => ({
+        id: row.id,
+        tenant_id: row.tenant_id,
+        summary_date: row.summary_date,
+        content_text: row.content_text,
+        is_sent_to_wa: !!row.is_sent_to_wa,
+        created_at: row.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Failed to get Daily Summaries from PostgreSQL:', err);
+      return [];
+    }
+  }
+  return [];
 }

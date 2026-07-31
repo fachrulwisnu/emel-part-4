@@ -395,11 +395,97 @@ async function startServer() {
     }
   });
 
-  // Get saved emails from active DB (Supabase if credentials filled, otherwise SQLite)
+  // Get saved emails from active DB (filtered by optional tenant_id)
   app.get("/api/emails", async (req, res) => {
     try {
-      const emails = await dbGetAllEmails();
+      const tenantId = req.query.tenant_id 
+        ? Number(req.query.tenant_id) 
+        : (req.headers['x-tenant-id'] ? Number(req.headers['x-tenant-id']) : undefined);
+      const emails = await dbGetAllEmails(tenantId);
       res.json({ success: true, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // ==========================================
+  // MULTI-TENANT SAAS & AUTHENTICATION API
+  // ==========================================
+
+  // Authentication: Login endpoint
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) {
+        return res.status(400).json({ success: false, message: "Email dan password wajib diisi" });
+      }
+      const { dbValidateUserCredentials } = await import("./src/services/dbManager");
+      const user = await dbValidateUserCredentials(email, password);
+      if (!user) {
+        return res.status(401).json({ success: false, message: "Email atau password salah" });
+      }
+      const { password_hash, ...userNoHash } = user;
+      res.json({ success: true, user: userNoHash });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Multi-Tenant: Get all tenants or single tenant
+  app.get("/api/tenants", async (req, res) => {
+    try {
+      const { dbGetTenants, dbGetTenantById } = await import("./src/services/dbManager");
+      if (req.query.id) {
+        const tenant = await dbGetTenantById(Number(req.query.id));
+        return res.json({ success: true, tenant });
+      }
+      const tenants = await dbGetTenants();
+      res.json({ success: true, tenants });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Multi-Tenant: Update or Create Tenant settings (AI Models, Feature Toggles, POP3, WA)
+  app.post("/api/tenants", async (req, res) => {
+    try {
+      const { dbSaveTenant } = await import("./src/services/dbManager");
+      const tenant = await dbSaveTenant(req.body);
+      res.json({ success: true, tenant });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Multi-Tenant: Delete Tenant
+  app.delete("/api/tenants/:id", async (req, res) => {
+    try {
+      const { dbDeleteTenant } = await import("./src/services/dbManager");
+      const success = await dbDeleteTenant(Number(req.params.id));
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Multi-Tenant: Get Daily Bulk Summaries for Division/Tenant
+  app.get("/api/daily-summaries", async (req, res) => {
+    try {
+      const { dbGetDailySummaries } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
+      const summaries = await dbGetDailySummaries(tenantId);
+      res.json({ success: true, summaries });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Multi-Tenant: Trigger Daily Bulk Summary manually
+  app.post("/api/daily-summaries/trigger", async (req, res) => {
+    try {
+      const { performBulkSummaryForTenants } = await import("./src/cron");
+      await performBulkSummaryForTenants();
+      res.json({ success: true, message: "Bulk summaries generated successfully for all enabled divisions." });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }

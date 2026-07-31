@@ -11,6 +11,8 @@ import {
   dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
+import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, Tenant } from './services/dbManager';
+import { generateBulkSummary } from './services/aiProcessingService';
 
 // Import broadcastEvent dynamically from server to prevent circular dependencies
 let broadcastEventFn: ((event: string, data: any) => void) | null = null;
@@ -20,6 +22,57 @@ export function registerBroadcaster(fn: (event: string, data: any) => void) {
 }
 
 let isSyncing = false;
+
+/**
+ * Executes Bulk Summary for Tenants with feature_bulk_summary enabled (e.g., RH, BM)
+ */
+export async function performBulkSummaryForTenants(): Promise<void> {
+  try {
+    const tenants = await dbGetTenants();
+    const bulkTenants = tenants.filter(t => t.feature_bulk_summary);
+
+    if (bulkTenants.length === 0) {
+      return;
+    }
+
+    console.log(`[Bulk Summary Cron] Processing daily bulk summary for ${bulkTenants.length} tenants...`);
+
+    for (const tenant of bulkTenants) {
+      const emails = await dbGetAllEmails(tenant.id);
+      // Get unread or non-summarized emails
+      const pendingEmails = emails.filter(e => !e.is_summarized || !e.is_read || e.is_important);
+
+      if (pendingEmails.length === 0) {
+        console.log(`[Bulk Summary Cron] Tenant "${tenant.name}" (ID: ${tenant.id}) has no pending emails for bulk summary.`);
+        continue;
+      }
+
+      console.log(`[Bulk Summary Cron] Generating Bulk Summary for Tenant "${tenant.name}" (${pendingEmails.length} emails)...`);
+      const summaryContent = await generateBulkSummary(tenant.name, pendingEmails, tenant.ai_primary_model);
+
+      const summaryDate = new Date().toISOString().split('T')[0];
+      await dbSaveDailySummary({
+        tenant_id: tenant.id,
+        summary_date: summaryDate,
+        content_text: summaryContent,
+        is_sent_to_wa: false
+      });
+
+      // Mark emails as summarized
+      for (const email of pendingEmails) {
+        await dbSaveEmail(email.message_id, {
+          ...email,
+          tenant_id: tenant.id,
+          is_summarized: true
+        });
+      }
+
+      console.log(`[Bulk Summary Cron] Daily Bulk Summary created for Tenant "${tenant.name}"!`);
+    }
+  } catch (err) {
+    console.error('[Bulk Summary Cron] Error running bulk summary generator:', err);
+  }
+}
 
 /**
  * Performs POP3 fetch, dynamic tagging, parsing, CIT API automation triggering, and DB saving.
@@ -250,13 +303,39 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               attachments: parsedAttachments
             };
 
-            // Save to DB (SQLite and Supabase) and analyze with NVIDIA AI
+            // Multi-tenant processing & routing based on feature flags
             try {
-              console.log(`Memproses summary untuk email: [${subject}]`);
-              await syncAndAnalyzeEmail(newEmail);
+              let tenants = await dbGetTenants();
+              if (!tenants || tenants.length === 0) {
+                tenants = [{ id: 1, name: 'COS', ai_primary_model: 'Core', ai_fallback_model: 'Nemotron 3 Super 120B', feature_individual_parsing: true, feature_bulk_summary: false }];
+              }
+
+              for (const tenant of tenants) {
+                const tenantEmail: Email = {
+                  ...newEmail,
+                  tenant_id: tenant.id
+                };
+
+                if (tenant.feature_individual_parsing) {
+                  // COS Division: Individual parsing with AI
+                  console.log(`[Multi-Tenant Cron] Processing individual AI parsing for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);
+                  await syncAndAnalyzeEmail(tenantEmail);
+                } else if (tenant.feature_bulk_summary) {
+                  // RH/BM Division: Skip individual parsing, queue for Bulk Summary
+                  console.log(`[Multi-Tenant Cron] Storing raw email for Bulk Summary for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);
+                  await dbSaveEmail(item.uid, {
+                    ...tenantEmail,
+                    tenant_id: tenant.id,
+                    ai_status: 'SKIPPED_BULK',
+                    summary: 'Dijadwalkan untuk Daily Bulk Summary',
+                    is_read: false,
+                    is_summarized: false
+                  });
+                }
+              }
               addedCount++;
             } catch (apiOrDbErr: any) {
-              console.error(`[Cron Sync] Error in NVIDIA AI or Supabase Upsert for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
+              console.error(`[Cron Sync] Error in Multi-Tenant processing for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
               return;
             }
 
@@ -290,6 +369,10 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
 
       console.log(`[Cron Sync] Successfully synced POP3 emails. Added count: ${addedCount}`);
       await client.sendCommand('QUIT');
+
+      // Trigger daily bulk summary generation for bulk-summary enabled tenants (RH/BM)
+      await performBulkSummaryForTenants();
+
       return { success: true, count: addedCount, message: `Synced ${addedCount} new emails successfully.` };
 
     } catch (syncErr: any) {

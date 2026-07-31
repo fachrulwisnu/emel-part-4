@@ -854,3 +854,62 @@ export async function executeControlledBulkProcess(
   }
 }
 
+/**
+ * Generates a Consolidated Daily Bulk Summary for Non-COS Divisions (e.g. RH, BM)
+ */
+export async function generateBulkSummary(tenantName: string, emails: any[], modelName: string = 'Core'): Promise<string> {
+  if (!emails || emails.length === 0) {
+    return `Tidak ada email baru atau penting untuk dikaji pada divisi ${tenantName}.`;
+  }
+
+  const emailListStr = emails.map((e, idx) => {
+    const subject = e.subject || '(Tanpa Subjek)';
+    const sender = e.sender || 'Pengirim Tidak Diketahui';
+    const date = e.date || '';
+    const bodySnippet = (e.body_text || e.summary || '').slice(0, 300);
+    return `[${idx + 1}] Tanggal: ${date}\nDari: ${sender}\nSubjek: ${subject}\nRingkasan/Isi: ${bodySnippet}`;
+  }).join('\n\n---\n\n');
+
+  const systemPrompt = `Anda adalah Asisten Eksekutif AI SaaS untuk Divisi ${tenantName}.
+Tugas Anda adalah membuat Bulk Summary (Rangkuman Harian Konsolidasi) yang ringkas, profesional, dan terstruktur dari kumpulan email belum dibaca/penting untuk dikirim via WhatsApp ke tim Divisi ${tenantName}.
+
+Format Output WhatsApp yang dianjurkan:
+*RANGKUMAN EMAIL HARIAN DIVISI ${tenantName.toUpperCase()}*
+Tanggal: ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+
+*RINGKASAN UTAMA & HIGHLIGHTS:*
+• [Tuliskan 2-4 poin ringkasan utama]
+
+*DAFTAR EMAIL PENTING / DIBUTUHKAN TINDAKAN:*
+• *[Nama Pengirim / Subjek]*: [Detail singkat tindakan]
+
+*TINDAKAN LENGKAP BISA DILIHAT DI DASHBOARD SAAS.*`;
+
+  const userPrompt = `Berikut adalah ${emails.length} email belum terbaca/penting untuk Divisi ${tenantName}:\n\n${emailListStr}`;
+
+  try {
+    const response = await customAi.chat.completions.create({
+      model: modelName || 'Core',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 1500
+    });
+
+    const summaryText = response.choices[0]?.message?.content || '';
+    if (summaryText.trim()) return summaryText.trim();
+  } catch (err) {
+    console.warn(`Primary AI error for bulk summary (${modelName}), trying fallback Gemini:`, err);
+  }
+
+  try {
+    const fallbackText = await getAiCompletion(`${systemPrompt}\n\n${userPrompt}`);
+    return fallbackText || `Rangkuman ${emails.length} email untuk Divisi ${tenantName} berhasil dibuat.`;
+  } catch (err2) {
+    console.error('Fallback AI also failed for bulk summary:', err2);
+    return `*RANGKUMAN HARIAN DIVISI ${tenantName}*\nTotal ${emails.length} email baru diterima. Silakan cek dashboard untuk detail.`;
+  }
+}
+

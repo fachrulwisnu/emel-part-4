@@ -12,79 +12,142 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query(`
-      CREATE TABLE IF NOT EXISTS emails (
-        id SERIAL PRIMARY KEY,
-        message_id VARCHAR(255) UNIQUE NOT NULL,
-        subject TEXT,
-        sender TEXT,
-        receiver TEXT,
-        date TEXT,
-        body_text TEXT,
-        html_body TEXT,
-        tags TEXT,
-        category VARCHAR(100),
-        sub_category VARCHAR(100),
-        folder_parent VARCHAR(100),
-        folder_child VARCHAR(100),
-        attachments TEXT,
-        api_workflow_status VARCHAR(50),
-        api_workflow_log TEXT,
-        is_read INTEGER DEFAULT 0,
-        tag_type VARCHAR(50),
-        summary TEXT,
-        action_required INTEGER DEFAULT 0,
-        suggested_tag VARCHAR(100),
-        is_important INTEGER DEFAULT 0,
-        urgency_level VARCHAR(50),
-        suggested_folder_parent VARCHAR(100),
-        suggested_folder_child VARCHAR(100),
-        is_cit_order INTEGER DEFAULT 0,
-        cit_type VARCHAR(50),
-        suggested_bank VARCHAR(100),
-        extracted_notes TEXT,
-        currency VARCHAR(10) DEFAULT 'IDR',
-        denomination_suggestion INTEGER,
-        total_amount NUMERIC,
-        ai_status VARCHAR(50) DEFAULT 'PENDING',
-        is_summarized INTEGER DEFAULT 0,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+      CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+      CREATE TABLE IF NOT EXISTS public.tenants (
+          id SERIAL PRIMARY KEY,
+          name TEXT UNIQUE NOT NULL,
+          ai_primary_model TEXT DEFAULT 'Custom AI Core',
+          ai_fallback_model TEXT DEFAULT 'Nemotron 3 Super 120B',
+          ai_models JSONB DEFAULT '["Custom AI Core", "Nemotron 3 Super 120B"]'::jsonb,
+          feature_individual_parsing BOOLEAN DEFAULT FALSE,
+          feature_bulk_summary BOOLEAN DEFAULT FALSE,
+          pop3_host TEXT DEFAULT '',
+          pop3_port INTEGER DEFAULT 110,
+          pop3_user TEXT DEFAULT '',
+          pop3_pass TEXT DEFAULT '',
+          wa_phone TEXT DEFAULT '',
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS custom_filters (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255),
-        match_from TEXT,
-        match_subject TEXT,
-        match_body TEXT,
-        action_parent VARCHAR(100),
-        action_child VARCHAR(100),
-        trigger_api INTEGER DEFAULT 0,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      -- Ensure new columns exist on existing tables if created previously
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS ai_models JSONB DEFAULT '["Custom AI Core", "Nemotron 3 Super 120B"]'::jsonb;
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_host TEXT DEFAULT '';
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_port INTEGER DEFAULT 110;
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_user TEXT DEFAULT '';
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_pass TEXT DEFAULT '';
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS wa_phone TEXT DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS public.users (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('SUPER_ADMIN', 'TENANT_ADMIN')),
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS email_analysis (
-        id SERIAL PRIMARY KEY,
-        message_id VARCHAR(255) UNIQUE NOT NULL,
-        folder VARCHAR(100),
-        sub_folder VARCHAR(100),
-        tags TEXT,
-        summary_email TEXT,
-        summary_attachments TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      CREATE TABLE IF NOT EXISTS public.emails (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          message_id TEXT UNIQUE NOT NULL,
+          uid TEXT,
+          subject TEXT,
+          sender TEXT,
+          receiver TEXT,
+          date TIMESTAMPTZ,
+          body_text TEXT,
+          html_body TEXT,
+          tags JSONB DEFAULT '[]'::jsonb,
+          category TEXT,
+          sub_category TEXT,
+          folder_parent TEXT,
+          folder_child TEXT,
+          api_workflow_status TEXT,
+          api_workflow_log TEXT,
+          attachments JSONB DEFAULT '[]'::jsonb,
+          is_read BOOLEAN DEFAULT FALSE,
+          tag_type TEXT,
+          summary TEXT,
+          action_required BOOLEAN DEFAULT FALSE,
+          suggested_tag TEXT,
+          is_important BOOLEAN DEFAULT FALSE,
+          urgency_level TEXT,
+          suggested_folder_parent TEXT,
+          suggested_folder_child TEXT,
+          is_cit_order BOOLEAN DEFAULT FALSE,
+          cit_type TEXT,
+          suggested_bank TEXT,
+          extracted_notes TEXT,
+          currency TEXT DEFAULT 'IDR',
+          denomination_suggestion BIGINT,
+          total_amount BIGINT,
+          ai_status TEXT DEFAULT 'PENDING',
+          is_summarized BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_emails_tenant_id ON public.emails(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_emails_message_id ON public.emails(message_id);
+      CREATE INDEX IF NOT EXISTS idx_emails_date ON public.emails(date DESC);
+
+      CREATE TABLE IF NOT EXISTS public.custom_filters (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          name TEXT,
+          match_from TEXT,
+          match_subject TEXT,
+          match_body TEXT,
+          action_parent TEXT,
+          action_child TEXT,
+          trigger_api INTEGER DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS wa_sessions (
-        id SERIAL PRIMARY KEY,
-        session_id VARCHAR(255) UNIQUE NOT NULL,
-        creds JSONB,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      CREATE TABLE IF NOT EXISTS public.email_analysis (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          message_id TEXT UNIQUE NOT NULL,
+          folder TEXT,
+          sub_folder TEXT,
+          tags JSONB DEFAULT '[]'::jsonb,
+          summary_email TEXT,
+          summary_attachments JSONB DEFAULT '[]'::jsonb,
+          attachment_summary JSONB DEFAULT '[]'::jsonb,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id);
-      CREATE INDEX IF NOT EXISTS idx_email_analysis_msg_id ON email_analysis(message_id);
-      CREATE INDEX IF NOT EXISTS idx_wa_sessions_id ON wa_sessions(session_id);
+      CREATE TABLE IF NOT EXISTS public.wa_sessions (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          session_id TEXT UNIQUE NOT NULL,
+          creds JSONB,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS public.daily_summaries (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          summary_date DATE NOT NULL,
+          content_text TEXT NOT NULL,
+          is_sent_to_wa BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, feature_individual_parsing, feature_bulk_summary) 
+      VALUES 
+          ('COS', 'Core', 'Nemotron 3 Super 120B', TRUE, FALSE),
+          ('RH', 'Core', 'Nemotron 3 Super 120B', FALSE, TRUE),
+          ('BM', 'Core', 'Nemotron 3 Super 120B', FALSE, TRUE)
+      ON CONFLICT (name) DO NOTHING;
+
+      INSERT INTO public.users (tenant_id, email, password_hash, role) 
+      VALUES 
+          (NULL, 'fachrul', crypt('bosskubabi', gen_salt('bf')), 'SUPER_ADMIN'),
+          ((SELECT id FROM public.tenants WHERE name = 'COS'), 'cos', crypt('12345678', gen_salt('bf')), 'TENANT_ADMIN')
+      ON CONFLICT (email) DO NOTHING;
     `);
   } catch (err) {
     console.error('[PostgreSQL] Error initializing database tables:', err);
