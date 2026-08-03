@@ -17,6 +17,7 @@ export interface Email {
   id?: number;
   tenant_id?: number;
   message_id: string;
+  source_email?: string;
   subject: string;
   sender: string;
   receiver: string;
@@ -50,10 +51,14 @@ export interface Email {
   total_amount?: number;
   ai_status?: string;
   is_summarized?: boolean;
+  target_tickets?: number;
+  processed_tickets?: number;
+  order_status?: string;
 }
 
 export interface CustomFilter {
   id?: number;
+  tenant_id?: number;
   name: string;
   match_from: string;
   match_subject: string;
@@ -350,7 +355,7 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
 }
 
 // Get all emails (merges PostgreSQL/MongoDB and SQLite)
-export async function dbGetAllEmails(tenantId?: number): Promise<Email[]> {
+export async function dbGetAllEmails(tenantId?: number, sourceEmail?: string): Promise<Email[]> {
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
 
@@ -360,12 +365,16 @@ export async function dbGetAllEmails(tenantId?: number): Promise<Email[]> {
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('emails');
-      const query = tenantId ? { tenant_id: Number(tenantId) } : {};
+      const query: any = {};
+      if (tenantId) query.tenant_id = Number(tenantId);
+      if (sourceEmail) query.source_email = sourceEmail;
+
       const rows = await col.find(query).sort({ date: -1 }).toArray();
       return rows.map((row: any) => ({
         id: row.id,
         tenant_id: row.tenant_id,
         message_id: row.message_id,
+        source_email: row.source_email || '',
         subject: row.subject || '',
         sender: row.sender || '',
         receiver: row.receiver || '',
@@ -397,22 +406,40 @@ export async function dbGetAllEmails(tenantId?: number): Promise<Email[]> {
         denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
         total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
         ai_status: row.ai_status || 'PENDING',
-        is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0),
+        target_tickets: row.target_tickets !== undefined && row.target_tickets !== null ? Number(row.target_tickets) : 1,
+        processed_tickets: row.processed_tickets !== undefined && row.processed_tickets !== null ? Number(row.processed_tickets) : 0,
+        order_status: row.order_status || 'PENDING'
       }));
     } catch (err) {
       console.error('[dbGetAllEmails] Error fetching from MongoDB:', err);
     }
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
-      const query = tenantId
-        ? 'SELECT * FROM public.emails WHERE tenant_id = $1 ORDER BY date DESC'
-        : 'SELECT * FROM public.emails ORDER BY date DESC';
-      const values = tenantId ? [tenantId] : [];
+      let query = 'SELECT * FROM public.emails';
+      const conditions: string[] = [];
+      const values: any[] = [];
+
+      if (tenantId) {
+        values.push(tenantId);
+        conditions.push(`tenant_id = $${values.length}`);
+      }
+      if (sourceEmail) {
+        values.push(sourceEmail);
+        conditions.push(`source_email = $${values.length}`);
+      }
+
+      if (conditions.length > 0) {
+        query += ' WHERE ' + conditions.join(' AND ');
+      }
+      query += ' ORDER BY date DESC';
+
       const res = await dbService.pgPool.query(query, values);
       return res.rows.map((row: any) => ({
         id: row.id,
         tenant_id: row.tenant_id,
         message_id: row.message_id,
+        source_email: row.source_email || '',
         subject: row.subject || '',
         sender: row.sender || '',
         receiver: row.receiver || '',
@@ -444,7 +471,10 @@ export async function dbGetAllEmails(tenantId?: number): Promise<Email[]> {
         denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
         total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
         ai_status: row.ai_status || 'PENDING',
-        is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0),
+        target_tickets: row.target_tickets !== undefined && row.target_tickets !== null ? Number(row.target_tickets) : 1,
+        processed_tickets: row.processed_tickets !== undefined && row.processed_tickets !== null ? Number(row.processed_tickets) : 0,
+        order_status: row.order_status || 'PENDING'
       }));
     } catch (err) {
       console.error('[dbGetAllEmails] Error fetching from PostgreSQL:', err);
@@ -1192,6 +1222,9 @@ export async function analyzeEmail(messageId: string): Promise<void> {
       return;
     }
 
+    // Check dynamic filters first for auto-tagging & folder creation
+    const filterRouting = await applyDynamicFilters(email);
+
     // Move to ANALYZING state
     console.log(`[Async AI] Memproses email: "${email.subject}" (${messageId})`);
     await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
@@ -1224,7 +1257,10 @@ export async function analyzeEmail(messageId: string): Promise<void> {
           subject: email.subject || '',
           body_text: email.body_text || '',
           sender: email.sender || '',
-          date: email.date || ''
+          date: email.date || '',
+          routingPromptContext: filterRouting.routingPromptContext,
+          action_parent: filterRouting.action_parent,
+          action_child: filterRouting.action_child
         });
         console.log(`[Parallel AI] Summary and Tagging completed for: ${messageId}`);
       } catch (err) {
@@ -1247,7 +1283,10 @@ export async function analyzeEmail(messageId: string): Promise<void> {
             sender: email.sender || '',
             date: email.date || '',
             body_text: email.body_text || '',
-            attachments: attachments
+            attachments: attachments,
+            routingPromptContext: filterRouting.routingPromptContext,
+            action_parent: filterRouting.action_parent,
+            action_child: filterRouting.action_child
           });
 
           // Save intelligence to table email_analysis
@@ -1297,8 +1336,12 @@ export async function analyzeEmail(messageId: string): Promise<void> {
       cit_type = suggested_tag === 'ATM' ? 'ATM' : (suggested_tag === 'CIT' ? 'CIT' : 'None');
       is_cit_order = summaryData?.is_cit_order !== undefined ? !!summaryData.is_cit_order : (cit_type !== 'None');
 
-      suggested_folder_parent = intelligenceData?.folder || summaryData?.suggested_folder_parent || 'Operation';
-      suggested_folder_child = intelligenceData?.sub_folder || summaryData?.suggested_folder_child || 'General';
+      suggested_folder_parent = filterRouting.matched
+        ? filterRouting.action_parent
+        : (intelligenceData?.folder || summaryData?.suggested_folder_parent || 'Operation');
+      suggested_folder_child = filterRouting.matched
+        ? filterRouting.action_child
+        : (intelligenceData?.sub_folder || summaryData?.suggested_folder_child || 'General');
 
       suggested_bank = suggested_folder_parent;
       extracted_notes = intelligenceData?.summary_attachments && intelligenceData.summary_attachments.length > 0
@@ -1490,12 +1533,67 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
             denomination_suggestion: row.denomination_suggestion !== undefined ? Number(row.denomination_suggestion) : undefined,
             total_amount: row.total_amount !== undefined ? Number(row.total_amount) : undefined,
             ai_status: row.ai_status || 'PENDING',
-            is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+            is_summarized: row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0),
+            target_tickets: row.target_tickets !== undefined && row.target_tickets !== null ? Number(row.target_tickets) : 1,
+            processed_tickets: row.processed_tickets !== undefined && row.processed_tickets !== null ? Number(row.processed_tickets) : 0,
+            order_status: row.order_status || 'PENDING'
           };
         }
       }
     } catch (err) {
       console.error('[dbGetEmailByMessageId] MongoDB error:', err);
+    }
+  } else if (driver === 'postgres') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        const res = await dbService.pgPool.query('SELECT * FROM public.emails WHERE message_id = $1', [messageId]);
+        if (res.rows.length > 0) {
+          const row = res.rows[0];
+          return {
+            id: row.id,
+            message_id: row.message_id,
+            subject: row.subject || '',
+            sender: row.sender || '',
+            receiver: row.receiver || '',
+            date: row.date || '',
+            body_text: row.body_text || '',
+            html_body: row.html_body || '',
+            tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+            category: row.category || '',
+            sub_category: row.sub_category || '',
+            folder_parent: row.folder_parent || '',
+            folder_child: row.folder_child || '',
+            api_workflow_status: row.api_workflow_status || 'none',
+            api_workflow_log: row.api_workflow_log || '',
+            attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+            is_read: row.is_read === true || row.is_read === 1,
+            tag_type: row.tag_type || '',
+            summary: row.summary || '',
+            action_required: row.action_required === true || row.action_required === 1,
+            suggested_tag: row.suggested_tag || '',
+            is_important: row.is_important === true || row.is_important === 1,
+            urgency_level: row.urgency_level || 'Routine',
+            suggested_folder_parent: row.suggested_folder_parent || '',
+            suggested_folder_child: row.suggested_folder_child || '',
+            is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
+            cit_type: row.cit_type || 'None',
+            suggested_bank: row.suggested_bank || '',
+            extracted_notes: row.extracted_notes || '',
+            currency: row.currency || 'IDR',
+            denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+            total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+            ai_status: row.ai_status || 'PENDING',
+            is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0),
+            target_tickets: row.target_tickets !== undefined && row.target_tickets !== null ? Number(row.target_tickets) : 1,
+            processed_tickets: row.processed_tickets !== undefined && row.processed_tickets !== null ? Number(row.processed_tickets) : 0,
+            order_status: row.order_status || 'PENDING'
+          };
+        }
+      }
+    } catch (err) {
+      console.error('[dbGetEmailByMessageId] PostgreSQL error:', err);
     }
   }
 
@@ -1587,15 +1685,7 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   if (!folderParent || !folderChild) {
     const filters = await dbGetCustomFilters();
     for (const filter of filters) {
-      if (!filter.match_from && !filter.match_subject && !filter.match_body) {
-        continue;
-      }
-      let isMatch = true;
-      if (filter.match_from && !email.sender.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
-      if (filter.match_subject && !email.subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
-      if (filter.match_body && !email.body_text.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
-
-      if (isMatch) {
+      if (matchCustomFilterRule(filter, email.sender, email.subject, email.body_text)) {
         folderParent = filter.action_parent;
         folderChild = filter.action_child;
         break;
@@ -2127,46 +2217,99 @@ export async function dbApplyRetroactiveFilter(filter: CustomFilter): Promise<nu
   });
 }
 
+export function matchCustomFilterRule(
+  filter: { match_from?: string; match_subject?: string; match_body?: string },
+  sender: string = '',
+  subject: string = '',
+  bodyText: string = ''
+): boolean {
+  if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+    return false;
+  }
+
+  const senderStr = (sender || '').toLowerCase().trim();
+  const subjectStr = (subject || '').toLowerCase().trim();
+  const bodyStr = (bodyText || '').toLowerCase().trim();
+
+  let isMatch = true;
+
+  if (filter.match_from && filter.match_from.trim()) {
+    const terms = filter.match_from.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+    const matchFromSuccess = terms.some(term => {
+      if (!term) return false;
+      if (senderStr.includes(term)) return true;
+      if (senderStr.length > 3 && term.includes(senderStr)) return true;
+      return false;
+    });
+    if (!matchFromSuccess) isMatch = false;
+  }
+
+  if (isMatch && filter.match_subject && filter.match_subject.trim()) {
+    const terms = filter.match_subject.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+    const matchSubjSuccess = terms.some(term => term && subjectStr.includes(term));
+    if (!matchSubjSuccess) isMatch = false;
+  }
+
+  if (isMatch && filter.match_body && filter.match_body.trim()) {
+    const terms = filter.match_body.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+    const matchBodySuccess = terms.some(term => term && bodyStr.includes(term));
+    if (!matchBodySuccess) isMatch = false;
+  }
+
+  return isMatch;
+}
+
+export interface FilterRoutingResult {
+  matched: boolean;
+  action_parent: string;
+  action_child: string;
+  filter_name?: string;
+  routingPromptContext?: string;
+}
+
 /**
  * Matches subject, sender, and body_text with Dynamic Filter Rules from Supabase/local db.
  * If match found, updates folder_parent and folder_child fields.
  */
-export async function applyDynamicFilters(emailData: Email): Promise<boolean> {
+export async function applyDynamicFilters(emailData: Email): Promise<FilterRoutingResult> {
   try {
     const filters = await dbGetCustomFilters();
     let matched = false;
     let folderParent = emailData.folder_parent || '';
     let folderChild = emailData.folder_child || '';
+    let filterName = '';
 
     for (const filter of filters) {
-      if (!filter.match_from && !filter.match_subject && !filter.match_body) {
-        continue;
-      }
-      let isMatch = true;
-      if (filter.match_from && !emailData.sender?.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
-      if (filter.match_subject && !emailData.subject?.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
-      if (filter.match_body && !emailData.body_text?.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
-
-      if (isMatch) {
+      if (matchCustomFilterRule(filter, emailData.sender, emailData.subject, emailData.body_text)) {
         folderParent = filter.action_parent;
         folderChild = filter.action_child;
+        filterName = filter.name || '';
         matched = true;
         break; // Match first rule found
       }
     }
 
     if (matched) {
-      console.log(`[applyDynamicFilters] Email "${emailData.subject}" (ID: ${emailData.message_id}) matched custom filter. Updating folder to "${folderParent} > ${folderChild}".`);
+      console.log(`[applyDynamicFilters] Email "${emailData.subject}" (ID: ${emailData.message_id}) matched custom filter "${filterName}". Updating folder to "${folderParent} > ${folderChild}".`);
       await dbUpdateEmailFields(emailData.message_id, {
         folder_parent: folderParent,
         folder_child: folderChild
       });
-      return true;
+
+      const routingPromptContext = `SYSTEM INSTRUCTION: Berdasarkan aturan routing internal, email ini telah diidentifikasi secara pasti berasal dari ${folderParent} cabang ${folderChild}. Anda WAJIB menggunakan informasi ini dan mengisikannya ke dalam field 'Branch/Cabang' pada hasil ekstraksi JSON Anda.`;
+
+      return {
+        matched: true,
+        action_parent: folderParent,
+        action_child: folderChild,
+        filter_name: filterName,
+        routingPromptContext
+      };
     }
   } catch (err) {
     console.error('[applyDynamicFilters] Error processing dynamic filters:', err);
   }
-  return false;
+  return { matched: false, action_parent: '', action_child: '', routingPromptContext: '' };
 }
 
 // Granular fields update for "Smart Apply" and "Edit Suggestion" actions
@@ -2175,6 +2318,8 @@ export async function dbUpdateEmailFields(
   fields: {
     folder_parent?: string;
     folder_child?: string;
+    suggested_folder_parent?: string;
+    suggested_folder_child?: string;
     tags?: string[];
     is_important?: boolean;
     urgency_level?: string;
@@ -2199,6 +2344,8 @@ export async function dbUpdateEmailFields(
   
   if (fields.folder_parent !== undefined) { sets.push('folder_parent = ?'); params.push(fields.folder_parent); }
   if (fields.folder_child !== undefined) { sets.push('folder_child = ?'); params.push(fields.folder_child); }
+  if (fields.suggested_folder_parent !== undefined) { sets.push('suggested_folder_parent = ?'); params.push(fields.suggested_folder_parent); }
+  if (fields.suggested_folder_child !== undefined) { sets.push('suggested_folder_child = ?'); params.push(fields.suggested_folder_child); }
   if (fields.tags !== undefined) { sets.push('tags = ?'); params.push(JSON.stringify(fields.tags)); }
   if (fields.is_important !== undefined) { sets.push('is_important = ?'); params.push(fields.is_important ? 1 : 0); }
   if (fields.urgency_level !== undefined) { sets.push('urgency_level = ?'); params.push(fields.urgency_level); }
@@ -3291,5 +3438,90 @@ export async function dbGetPendingIntelligenceEmails(): Promise<Email[]> {
     return hasAttachments && !analyzedMessageIds.has(email.message_id);
   });
 }
+
+/**
+ * FLOW: Retroactive Tagging / Backfill Folders
+ * 1. Ambil seluruh master filter aktif dari database (tabel `custom_filters`).
+ * 2. Query seluruh data email historis di database.
+ * 3. Looping setiap email dan cocokkan terhadap aturan custom_filters (pemeriksaan tenant_id & matchCustomFilterRule).
+ * 4. Jika cocok, siapkan update folder_parent, folder_child, dan suggested fields.
+ * 5. Eksekusi update database untuk memperbarui tagging folder secara otomatis.
+ * 6. Kembalikan statistik totalProcessed dan totalMatched untuk notifikasi UI.
+ */
+export async function dbBackfillFolders(): Promise<{ success: boolean; totalProcessed: number; totalMatched: number; message: string }> {
+  try {
+    const db = getSqliteDb();
+    const filters = await dbGetCustomFilters();
+
+    const emails: any[] = await new Promise((resolve, reject) => {
+      db.all(
+        "SELECT id, message_id, sender, subject, body_text, folder_parent, folder_child, tenant_id FROM emails",
+        [],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        }
+      );
+    });
+
+    let totalMatched = 0;
+
+    for (const email of emails) {
+      let matchedFilter: any = null;
+      for (const filter of filters) {
+        if (filter.tenant_id && filter.tenant_id !== 1 && email.tenant_id && filter.tenant_id !== email.tenant_id) {
+          continue;
+        }
+        if (matchCustomFilterRule(filter, email.sender, email.subject, email.body_text)) {
+          matchedFilter = filter;
+          break;
+        }
+      }
+
+      if (matchedFilter) {
+        totalMatched++;
+        const parent = matchedFilter.action_parent;
+        const child = matchedFilter.action_child;
+
+        await dbUpdateEmailFields(email.message_id, {
+          folder_parent: parent,
+          folder_child: child,
+          suggested_folder_parent: parent,
+          suggested_folder_child: child,
+          suggested_bank: parent
+        });
+
+        try {
+          db.run(
+            "UPDATE email_analysis SET folder = ?, sub_folder = ? WHERE message_id = ?",
+            [parent, child, email.message_id],
+            () => {}
+          );
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+
+    const message = `Berhasil men-tagging ${totalMatched} email lama`;
+    console.log(`[Backfill Folders] ${message} dari total ${emails.length} email.`);
+
+    return {
+      success: true,
+      totalProcessed: emails.length,
+      totalMatched,
+      message
+    };
+  } catch (err: any) {
+    console.error('[Backfill Folders] Error during backfill:', err);
+    return {
+      success: false,
+      totalProcessed: 0,
+      totalMatched: 0,
+      message: `Gagal melakukan backfill: ${err.message || String(err)}`
+    };
+  }
+}
+
 
 

@@ -16,8 +16,23 @@ import {
   EyeOff, 
   Check, 
   Smartphone,
-  HelpCircle
+  HelpCircle,
+  Plus,
+  Trash2,
+  Edit2,
+  X
 } from 'lucide-react';
+
+interface MailConfig {
+  id?: number;
+  tenant_id: number;
+  email_address: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  is_active?: boolean;
+}
 
 interface TenantIntegrationSettingsProps {
   currentTenantId?: number;
@@ -31,105 +46,198 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
   onAddToast
 }) => {
   const [isLoading, setIsLoading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [isTestingPop3, setIsTestingPop3] = useState(false);
-  const [isTestingWa, setIsTestingWa] = useState(false);
+  const [mailConfigs, setMailConfigs] = useState<MailConfig[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingConfig, setEditingConfig] = useState<MailConfig | null>(null);
+  
+  // Modal Form State
+  const [formEmailAddress, setFormEmailAddress] = useState('');
+  const [formHost, setFormHost] = useState('');
+  const [formPort, setFormPort] = useState(995);
+  const [formUsername, setFormUsername] = useState('');
+  const [formPassword, setFormPassword] = useState('');
+  const [formIsActive, setFormIsActive] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
-  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [testingId, setTestingId] = useState<number | null>(null);
 
-  // Form States
-  const [pop3Host, setPop3Host] = useState('pop.secureserver.net');
-  const [pop3Port, setPop3Port] = useState(110);
-  const [pop3User, setPop3User] = useState(`${tenantName.toLowerCase()}@corporate.com`);
-  const [pop3Pass, setPop3Pass] = useState('SecretPass123!');
+  // WhatsApp States
   const [waPhone, setWaPhone] = useState('6281234567890');
-  const [waStatus, setWaStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'PAIRING'>('CONNECTED');
+  const [isSavingWa, setIsSavingWa] = useState(false);
 
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Load Tenant Info
-  const loadTenantConfig = async () => {
+  // Load Mail Configurations
+  const loadMailConfigs = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/tenants?id=${currentTenantId}`);
+      const res = await fetch(`/api/mail-configs?tenant_id=${currentTenantId}`);
       const data = await res.json();
-      if (data.success && data.tenant) {
-        const t = data.tenant;
-        if (t.pop3_host) setPop3Host(t.pop3_host);
-        if (t.pop3_port) setPop3Port(t.pop3_port);
-        if (t.pop3_user) setPop3User(t.pop3_user);
-        if (t.pop3_pass) setPop3Pass(t.pop3_pass);
-        if (t.wa_phone) setWaPhone(t.wa_phone);
+      if (data.success && data.configs) {
+        setMailConfigs(data.configs);
       }
     } catch (err) {
-      console.error('Failed to load tenant integration settings:', err);
+      console.error('Failed to load mail configs:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Load Tenant Info (WA Phone)
+  const loadTenantConfig = async () => {
+    try {
+      const res = await fetch(`/api/tenants?id=${currentTenantId}`);
+      const data = await res.json();
+      if (data.success && data.tenant) {
+        if (data.tenant.wa_phone) setWaPhone(data.tenant.wa_phone);
+      }
+    } catch (err) {
+      console.error('Failed to load tenant WA info:', err);
+    }
+  };
+
   useEffect(() => {
+    loadMailConfigs();
     loadTenantConfig();
   }, [currentTenantId]);
 
-  const handleSaveConfig = async (e: React.FormEvent) => {
+  const handleOpenAddModal = () => {
+    setEditingConfig(null);
+    setFormEmailAddress('');
+    setFormHost('pop.secureserver.net');
+    setFormPort(995);
+    setFormUsername('');
+    setFormPassword('');
+    setFormIsActive(true);
+    setIsModalOpen(true);
+  };
+
+  const handleOpenEditModal = (config: MailConfig) => {
+    setEditingConfig(config);
+    setFormEmailAddress(config.email_address);
+    setFormHost(config.host);
+    setFormPort(config.port || 995);
+    setFormUsername(config.username);
+    setFormPassword(config.password || '');
+    setFormIsActive(config.is_active !== false);
+    setIsModalOpen(true);
+  };
+
+  const handleSaveMailConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSaving(true);
+    if (!formEmailAddress || !formHost || !formUsername) {
+      setStatusMsg({ type: 'error', text: 'Semua field wajib diisi' });
+      return;
+    }
+
+    setIsSavingConfig(true);
     setStatusMsg(null);
 
     try {
       const payload = {
-        id: currentTenantId,
-        name: tenantName,
-        pop3_host: pop3Host,
-        pop3_port: Number(pop3Port),
-        pop3_user: pop3User,
-        pop3_pass: pop3Pass,
-        wa_phone: waPhone
+        tenant_id: currentTenantId,
+        email_address: formEmailAddress.trim(),
+        host: formHost.trim(),
+        port: Number(formPort) || 995,
+        username: formUsername.trim(),
+        password: formPassword,
+        is_active: formIsActive
       };
 
-      const res = await fetch('/api/tenants', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-
-      if (data.success) {
-        setStatusMsg({ type: 'success', text: `Kredensial Mail & WA Divisi ${tenantName} berhasil disimpan!` });
-        if (onAddToast) onAddToast('Simpan Berhasil', `Konfigurasi server email & WA Divisi ${tenantName} telah terbarui.`);
+      let res;
+      if (editingConfig && editingConfig.id) {
+        res = await fetch(`/api/mail-configs/${editingConfig.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
       } else {
-        setStatusMsg({ type: 'error', text: data.message || 'Gagal menyimpan kredensial.' });
+        res = await fetch('/api/mail-configs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+
+      const data = await res.json();
+      if (data.success) {
+        setStatusMsg({ type: 'success', text: `Konfigurasi email ${formEmailAddress} berhasil disimpan!` });
+        if (onAddToast) onAddToast('Simpan Berhasil', `Akun ${formEmailAddress} terkonfigurasi untuk ${tenantName}.`);
+        setIsModalOpen(false);
+        loadMailConfigs();
+      } else {
+        setStatusMsg({ type: 'error', text: data.message || 'Gagal menyimpan akun email' });
       }
     } catch (err) {
-      setStatusMsg({ type: 'error', text: 'Terjadi kesalahan saat terhubung ke server.' });
+      setStatusMsg({ type: 'error', text: 'Terjadi kesalahan saat menghubungi server.' });
     } finally {
-      setIsSaving(false);
+      setIsSavingConfig(false);
     }
   };
 
-  const handleTestPop3 = async () => {
-    setIsTestingPop3(true);
-    setTimeout(() => {
-      setIsTestingPop3(false);
-      setStatusMsg({
-        type: 'success',
-        text: `Tes Koneksi POP3 Berhasil! Server ${pop3Host}:${pop3Port} merespons ok (+OK Hello from POP3 Server).`
-      });
-      if (onAddToast) onAddToast('Koneksi POP3 OK', `Otentikasi user "${pop3User}" ke ${pop3Host} berhasil.`);
-    }, 1200);
+  const handleDeleteMailConfig = async (id: number, emailAddr: string) => {
+    if (!confirm(`Apakah Anda yakin ingin menghapus akun email ${emailAddr}?`)) return;
+    try {
+      const res = await fetch(`/api/mail-configs/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setStatusMsg({ type: 'success', text: `Akun email ${emailAddr} berhasil dihapus.` });
+        if (onAddToast) onAddToast('Hapus Akun', `Akun ${emailAddr} telah dihapus.`);
+        loadMailConfigs();
+      } else {
+        setStatusMsg({ type: 'error', text: data.message || 'Gagal menghapus akun' });
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: 'Gagal terhubung ke server' });
+    }
   };
 
-  const handleTestWa = async () => {
-    setIsTestingWa(true);
-    setTimeout(() => {
-      setIsTestingWa(false);
-      setStatusMsg({
-        type: 'success',
-        text: `Tes Pesan WhatsApp Terkirim! Notifikasi pengujian berhasil dikirim ke nomor ${waPhone}.`
+  const handleTestPop3Config = async (config: MailConfig) => {
+    if (!config.id) return;
+    setTestingId(config.id);
+    try {
+      const res = await fetch('/api/mail-configs/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: config.host,
+          port: config.port,
+          username: config.username,
+          password: config.password
+        })
       });
-      if (onAddToast) onAddToast('WA Test Sent', `Pesan simulasi rangkuman email telah dikirim ke +${waPhone}.`);
-    }, 1200);
+      const data = await res.json();
+      if (data.success) {
+        setStatusMsg({ type: 'success', text: data.message });
+        if (onAddToast) onAddToast('Tes POP3 Sukses', `Otentikasi ${config.email_address} berhasil.`);
+      } else {
+        setStatusMsg({ type: 'error', text: data.message || 'Tes POP3 gagal.' });
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: 'Gagal melakukan tes koneksi POP3.' });
+    } finally {
+      setTestingId(null);
+    }
+  };
+
+  const handleSaveWaConfig = async () => {
+    setIsSavingWa(true);
+    try {
+      const res = await fetch('/api/tenants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: currentTenantId, name: tenantName, wa_phone: waPhone })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStatusMsg({ type: 'success', text: `Nomor WhatsApp blast untuk ${tenantName} berhasil disimpan!` });
+        if (onAddToast) onAddToast('WA Saved', `Nomor WA terbarui ke +${waPhone}`);
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: 'Gagal menyimpan nomor WA.' });
+    } finally {
+      setIsSavingWa(false);
+    }
   };
 
   return (
@@ -142,297 +250,298 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/20 text-blue-300 border border-blue-400/30 rounded-full text-xs font-semibold mb-2">
               <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Tenant Self-Service Integration Setup</span>
+              <span>Multi-Account Mail Integration Setup</span>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight">Mail Server & WA Setup: Divisi {tenantName}</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Email Accounts & WA Setup: Divisi {tenantName}</h1>
             <p className="text-sm text-slate-300 mt-1">
-              Isolasi kredensial POP3 email dan sesi WhatsApp secara independen untuk Divisi {tenantName}.
+              Kelola beberapa akun email POP3/IMAP secara independen untuk Divisi {tenantName} tanpa mencampur data antar-tenant.
             </p>
           </div>
+          
+          <button
+            onClick={handleOpenAddModal}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Tambah Akun Email</span>
+          </button>
+        </div>
+      </div>
 
-          <div className="flex items-center gap-2 self-start md:self-auto bg-white/10 px-3.5 py-2 rounded-xl backdrop-blur-xs border border-white/15">
-            <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs font-mono font-bold text-slate-200">Tenant ID: #{currentTenantId}</span>
+      {/* Global Alert Notification */}
+      {statusMsg && (
+        <div className={`p-4 rounded-xl flex items-start gap-3 text-sm font-medium border ${
+          statusMsg.type === 'success' 
+            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+            : 'bg-rose-50 text-rose-800 border-rose-200'
+        }`}>
+          {statusMsg.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600 mt-0.5" />
+          ) : (
+            <AlertCircle className="w-5 h-5 shrink-0 text-rose-600 mt-0.5" />
+          )}
+          <div className="flex-1">{statusMsg.text}</div>
+          <button onClick={() => setStatusMsg(null)} className="text-slate-400 hover:text-slate-600 text-xs font-bold">Dismiss</button>
+        </div>
+      )}
+
+      {/* MULTI-ACCOUNT EMAIL TABLE */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-800">Daftar Akun Email POP3/IMAP ({mailConfigs.length})</h2>
+              <p className="text-xs text-slate-500">Setiap email yang masuk akan secara otomatis diisolasikan ke `tenant_id` {tenantName}.</p>
+            </div>
+          </div>
+          <button
+            onClick={loadMailConfigs}
+            disabled={isLoading}
+            className="p-2 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-100 transition-colors"
+            title="Refresh List"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {mailConfigs.length === 0 ? (
+          <div className="p-12 text-center">
+            <Mail className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+            <p className="text-sm font-semibold text-slate-700">Belum ada akun email terkonfigurasi</p>
+            <p className="text-xs text-slate-400 mt-1 mb-4">Tambahkan setidaknya 1 akun POP3 untuk menerima inbox otomatis harian.</p>
+            <button
+              onClick={handleOpenAddModal}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-bold text-xs rounded-xl hover:bg-blue-700"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Tambah Akun Email Baru</span>
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-700">
+              <thead className="bg-slate-50 border-b border-slate-200 uppercase font-bold text-slate-400">
+                <tr>
+                  <th className="px-5 py-3">Alamat Email</th>
+                  <th className="px-5 py-3">POP3 Server & Port</th>
+                  <th className="px-5 py-3">Username</th>
+                  <th className="px-5 py-3 text-center">Status</th>
+                  <th className="px-5 py-3 text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {mailConfigs.map((config) => (
+                  <tr key={config.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-5 py-3.5 font-bold text-slate-900">
+                      <div className="flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-blue-500" />
+                        <span>{config.email_address}</span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5 font-mono text-slate-600">
+                      {config.host}:{config.port || 995}
+                    </td>
+                    <td className="px-5 py-3.5 font-mono text-slate-600">
+                      {config.username}
+                    </td>
+                    <td className="px-5 py-3.5 text-center">
+                      {config.is_active !== false ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <Check className="w-3 h-3" /> Aktif
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200">
+                          Nonaktif
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3.5 text-right space-x-2">
+                      <button
+                        onClick={() => handleTestPop3Config(config)}
+                        disabled={testingId === config.id}
+                        className="px-2.5 py-1 text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
+                      >
+                        {testingId === config.id ? 'Testing...' : 'Tes POP3'}
+                      </button>
+                      <button
+                        onClick={() => handleOpenEditModal(config)}
+                        className="px-2.5 py-1 text-[11px] bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold rounded-lg transition-colors cursor-pointer"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteMailConfig(config.id!, config.email_address)}
+                        className="px-2.5 py-1 text-[11px] bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg transition-colors cursor-pointer"
+                      >
+                        Hapus
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* WHATSAPP BLAST INTEGRATION SECTION */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div className="flex items-center space-x-3 border-b border-slate-100 pb-4">
+          <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
+            <Smartphone className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-800">WhatsApp Blast Target (Divisi {tenantName})</h2>
+            <p className="text-xs text-slate-500">Nomor WhatsApp penerima rangkuman harian kolektif dan pemberitahuan penting.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div className="md:col-span-2 space-y-1.5">
+            <label className="text-xs font-bold text-slate-700">Nomor WhatsApp Target (Format Internasional Ex: 628123...)</label>
+            <input
+              type="text"
+              value={waPhone}
+              onChange={(e) => setWaPhone(e.target.value)}
+              placeholder="6281234567890"
+              className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none font-mono"
+            />
+          </div>
+          <div>
+            <button
+              onClick={handleSaveWaConfig}
+              disabled={isSavingWa}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer"
+            >
+              <Save className="w-4 h-4" />
+              <span>{isSavingWa ? 'Saving...' : 'Simpan Nomor WA'}</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {statusMsg && (
-        <div className={`p-4 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 shadow-xs ${
-          statusMsg.type === 'success' 
-            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' 
-            : 'bg-rose-50 text-rose-800 border border-rose-200'
-        }`}>
-          <div className="flex items-center gap-2">
-            {statusMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" /> : <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />}
-            <span>{statusMsg.text}</span>
-          </div>
-          <button onClick={() => setStatusMsg(null)} className="text-slate-400 hover:text-slate-600 text-xs">✕</button>
-        </div>
-      )}
-
-      {/* Main Settings Cards Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* 1. POP3 MAIL SERVER CARD */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col justify-between">
-          <div>
-            <div className="p-5 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-blue-100 text-blue-700 rounded-xl">
-                  <Mail className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 text-sm">Server Email POP3 (Divisi {tenantName})</h3>
-                  <p className="text-[11px] text-slate-500">Kredensial penarikan email otomatis per divisi</p>
-                </div>
+      {/* MODAL ADD / EDIT MAIL CONFIG */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-100">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center space-x-2">
+                <Server className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-sm text-slate-900">
+                  {editingConfig ? 'Edit Akun Email POP3' : 'Tambah Akun Email Baru'}
+                </h3>
               </div>
-              <span className="text-[10px] font-mono bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-200 font-bold">
-                POP3 Server
-              </span>
+              <button 
+                onClick={() => setIsModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <form onSubmit={handleSaveConfig} className="p-5 space-y-4 text-xs">
-              
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
-                  <span>POP3 Hostname</span>
-                  <span className="text-[10px] text-slate-400 font-normal">Contoh: pop.secureserver.net</span>
-                </label>
-                <div className="relative">
-                  <Server className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    value={pop3Host}
-                    onChange={(e) => setPop3Host(e.target.value)}
-                    required
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-hidden focus:border-blue-500 focus:bg-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-1">
-                  <label className="block font-semibold text-slate-700 mb-1">Port</label>
-                  <input
-                    type="number"
-                    value={pop3Port}
-                    onChange={(e) => setPop3Port(Number(e.target.value))}
-                    required
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-hidden focus:border-blue-500 focus:bg-white"
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <label className="block font-semibold text-slate-700 mb-1">Metode Keamanan</label>
-                  <select className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-medium">
-                    <option>Standard / TLS (Port 110/995)</option>
-                    <option>SSL Direct (Port 995)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Username / Email Address</label>
+            <form onSubmit={handleSaveMailConfig} className="p-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Alamat Email (Source Email)</label>
                 <input
                   type="email"
-                  value={pop3User}
-                  onChange={(e) => setPop3User(e.target.value)}
                   required
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-hidden focus:border-blue-500 focus:bg-white"
+                  placeholder="admin@tenant.com"
+                  value={formEmailAddress}
+                  onChange={(e) => setFormEmailAddress(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none"
                 />
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Email Password</label>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2 space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700">POP3 Server Host</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="pop.secureserver.net"
+                    value={formHost}
+                    onChange={(e) => setFormHost(e.target.value)}
+                    className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none font-mono"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-700">Port</label>
+                  <input
+                    type="number"
+                    required
+                    value={formPort}
+                    onChange={(e) => setFormPort(Number(e.target.value))}
+                    className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Username POP3</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="admin@tenant.com"
+                  value={formUsername}
+                  onChange={(e) => setFormUsername(e.target.value)}
+                  className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none font-mono"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700">Password POP3</label>
                 <div className="relative">
                   <input
                     type={showPassword ? 'text' : 'password'}
-                    value={pop3Pass}
-                    onChange={(e) => setPop3Pass(e.target.value)}
                     required
-                    className="w-full px-3 py-2 pr-9 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-hidden focus:border-blue-500 focus:bg-white"
+                    placeholder="••••••••••••"
+                    value={formPassword}
+                    onChange={(e) => setFormPassword(e.target.value)}
+                    className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-blue-500 focus:outline-none font-mono pr-10"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                   >
-                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
 
-              <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
+              <div className="flex items-center gap-2 pt-2">
+                <input
+                  type="checkbox"
+                  id="isActiveCheck"
+                  checked={formIsActive}
+                  onChange={(e) => setFormIsActive(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                />
+                <label htmlFor="isActiveCheck" className="text-xs font-bold text-slate-700">
+                  Aktifkan pengambilan otomatis (POP3 Cron Sync)
+                </label>
+              </div>
+
+              <div className="pt-4 flex items-center justify-end space-x-2 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={handleTestPop3}
-                  disabled={isTestingPop3}
-                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl transition-all text-xs flex items-center gap-1.5"
+                  onClick={() => setIsModalOpen(false)}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-50 font-bold text-xs rounded-xl text-slate-600 cursor-pointer"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isTestingPop3 ? 'animate-spin' : ''}`} />
-                  <span>{isTestingPop3 ? 'Testing...' : 'Tes POP3'}</span>
+                  Batal
                 </button>
-
                 <button
                   type="submit"
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-xs transition-all text-xs flex items-center gap-1.5"
+                  disabled={isSavingConfig}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
                 >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{isSaving ? 'Menyimpan...' : 'Simpan POP3'}</span>
+                  {isSavingConfig ? 'Saving...' : 'Simpan Akun'}
                 </button>
               </div>
-
             </form>
-          </div>
-        </div>
-
-        {/* 2. WHATSAPP BLAST & SESSION CARD */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col justify-between">
-          <div>
-            <div className="p-5 border-b border-slate-100 bg-slate-50/60 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-100 text-emerald-700 rounded-xl">
-                  <MessageSquare className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 text-sm">Notifikasi & WA Blast (Divisi {tenantName})</h3>
-                  <p className="text-[11px] text-slate-500">Manajemen nomor penerima & sesi WhatsApp</p>
-                </div>
-              </div>
-
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-bold flex items-center gap-1 ${
-                waStatus === 'CONNECTED' 
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
-                  : 'bg-rose-50 text-rose-700 border-rose-200'
-              }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${waStatus === 'CONNECTED' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                <span>{waStatus}</span>
-              </span>
-            </div>
-
-            <div className="p-5 space-y-4 text-xs">
-              
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Nomor WhatsApp Target Blast/Alert</label>
-                <div className="relative">
-                  <Smartphone className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input
-                    type="text"
-                    value={waPhone}
-                    onChange={(e) => setWaPhone(e.target.value)}
-                    placeholder="6281234567890"
-                    required
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-hidden focus:border-emerald-500 focus:bg-white"
-                  />
-                </div>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Format menggunakan kode negara tanpa tanda plus (Contoh: 6281234567890)
-                </p>
-              </div>
-
-              {/* QR Session Pairing Card */}
-              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                    <QrCode className="w-4 h-4 text-emerald-600" />
-                    <span>Sesi Sockets WhatsApp Web</span>
-                  </span>
-                  <span className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                    Sesi Aktif ({tenantName})
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Sesi WhatsApp ini akan digunakan oleh AI Cron Job untuk mengirimkan Daily Bulk Summary dan alert tiket darurat khusus divisi {tenantName}.
-                </p>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsQrModalOpen(true)}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center gap-1.5 shadow-xs"
-                  >
-                    <QrCode className="w-3.5 h-3.5" />
-                    <span>Scan QR Code Sesi WA</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleTestWa}
-                    disabled={isTestingWa}
-                    className="px-3 py-1.5 bg-white border border-slate-200 hover:border-emerald-400 text-slate-700 font-semibold rounded-lg text-xs transition-all flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <Send className={`w-3 h-3 text-emerald-600 ${isTestingWa ? 'animate-bounce' : ''}`} />
-                    <span>{isTestingWa ? 'Mengirim...' : 'Tes Kirim WA'}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-slate-100 flex justify-end">
-                <button
-                  type="button"
-                  onClick={handleSaveConfig}
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl shadow-xs transition-all text-xs flex items-center gap-1.5"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>{isSaving ? 'Menyimpan...' : 'Simpan Kredensial WA'}</span>
-                </button>
-              </div>
-
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Information Banner */}
-      <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl flex items-start gap-3 text-xs text-blue-900">
-        <HelpCircle className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-        <div className="space-y-1">
-          <strong className="font-bold block">Pemberitahuan Isolasi Multi-Tenant:</strong>
-          <p className="text-blue-800 leading-relaxed">
-            Sistem backend telah mengisolasi penarikan email dan blasting notifikasi. Semua email yang ditarik menggunakan server POP3 di atas akan ditandai dengan <code>tenant_id: #{currentTenantId}</code> dan tidak akan pernah bercampur dengan email milik divisi lain.
-          </p>
-        </div>
-      </div>
-
-      {/* QR Code Modal Overlay */}
-      {isQrModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-sm p-6 text-center space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                <QrCode className="w-4 h-4 text-emerald-600" />
-                <span>Pairing Sesi WhatsApp Web</span>
-              </h3>
-              <button onClick={() => setIsQrModalOpen(false)} className="text-slate-400 hover:text-slate-600">✕</button>
-            </div>
-
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 inline-block">
-              <img 
-                src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=WA_SESSION_TENANT_AUTOMATION" 
-                alt="WhatsApp Pairing QR"
-                className="w-44 h-44 mx-auto rounded-lg"
-              />
-            </div>
-
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Buka aplikasi WhatsApp di HP Anda &gt; Menu Perangkat Tertaut &gt; Tautkan Perangkat, lalu arahkan kamera ke QR Code ini.
-            </p>
-
-            <button
-              onClick={() => {
-                setWaStatus('CONNECTED');
-                setIsQrModalOpen(false);
-                if (onAddToast) onAddToast('WhatsApp Paired', `Sesi WA Divisi ${tenantName} telah terhubung.`);
-              }}
-              className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs"
-            >
-              Saya Sudah Scan (Hubungkan)
-            </button>
           </div>
         </div>
       )}

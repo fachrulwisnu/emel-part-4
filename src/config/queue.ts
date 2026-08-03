@@ -33,7 +33,7 @@ export const redisConnectionOptions = {
 export const redisConnection = new Redis(redisConnectionOptions);
 
 redisConnection.on('error', (err) => {
-  if (err.code !== 'ECONNREFUSED') {
+  if ((err as any)?.code !== 'ECONNREFUSED') {
     console.warn('[Redis Connection Warning]', err.message);
   }
 });
@@ -55,6 +55,12 @@ export const emailQueue = new Queue(QUEUE_NAME, {
       type: 'exponential', // Backoff bertahap (5s, 10s, 20s...)
       delay: 5000
     }
+  }
+});
+
+emailQueue.on('error', (err) => {
+  if ((err as any)?.code !== 'ECONNREFUSED') {
+    console.warn('[Redis Queue Warning]', err.message);
   }
 });
 

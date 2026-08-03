@@ -24,6 +24,14 @@ import {
   Sliders 
 } from 'lucide-react';
 
+export interface TenantPermissions {
+  dashboard: boolean;
+  cit_dispatch: boolean;
+  daily_summary: boolean;
+  mail_wa_setup: boolean;
+  dynamic_filters: boolean;
+}
+
 export interface TenantConfig {
   id: number;
   name: string;
@@ -39,6 +47,7 @@ export interface TenantConfig {
   wa_phone?: string;
   admin_email?: string;
   admin_password?: string;
+  permissions?: TenantPermissions;
   created_at?: string;
 }
 
@@ -259,7 +268,14 @@ export const SuperAdminTenantsView: React.FC = () => {
                   pop3_port: 110,
                   pop3_user: '',
                   pop3_pass: '',
-                  wa_phone: ''
+                  wa_phone: '',
+                  permissions: {
+                    dashboard: true,
+                    cit_dispatch: true,
+                    daily_summary: true,
+                    mail_wa_setup: true,
+                    dynamic_filters: true
+                  }
                 });
               }}
               className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
@@ -581,6 +597,63 @@ export const SuperAdminTenantsView: React.FC = () => {
                       </div>
                     </div>
 
+                  </div>
+
+                  {/* TENANT ADMIN PERMISSIONS CHECKLIST */}
+                  <div className="pt-2 border-t border-slate-200 space-y-3">
+                    <label className="block font-bold text-slate-800 text-xs uppercase tracking-wider">
+                      Hak Akses & Permission Tenant Admin (RBAC):
+                    </label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {[
+                        { key: 'dashboard', label: 'AI Email Intelligence Dashboard', desc: 'Akses menu Dashboard & Email Ingestion' },
+                        { key: 'cit_dispatch', label: 'CIT Dispatch Management', desc: 'Akses menu CIT Order Tracking & Dispatch' },
+                        { key: 'daily_summary', label: 'Daily Bulk Email Summary', desc: 'Akses menu Bulk Summary & Ringkasan WA' },
+                        { key: 'mail_wa_setup', label: 'Mail & WA Setup', desc: 'Konfigurasi akun POP3 Mail & WhatsApp' },
+                        { key: 'dynamic_filters', label: 'Dynamic Filters', desc: 'Konfigurasi Aturan Filter Email Otomatis' },
+                      ].map((perm) => {
+                        const currentPerms = editingTenant.permissions || {
+                          dashboard: true,
+                          cit_dispatch: true,
+                          daily_summary: true,
+                          mail_wa_setup: true,
+                          dynamic_filters: true
+                        };
+                        const isChecked = !!currentPerms[perm.key as keyof TenantPermissions];
+
+                        return (
+                          <div 
+                            key={perm.key}
+                            onClick={() => {
+                              setEditingTenant({
+                                ...editingTenant,
+                                permissions: {
+                                  ...currentPerms,
+                                  [perm.key]: !isChecked
+                                }
+                              });
+                            }}
+                            className={`p-3 rounded-xl border transition-all cursor-pointer flex items-start gap-3 ${
+                              isChecked 
+                                ? 'bg-blue-50/70 border-blue-300' 
+                                : 'bg-slate-50 border-slate-200 opacity-60 hover:opacity-80'
+                            }`}
+                          >
+                            <input 
+                              type="checkbox" 
+                              checked={isChecked}
+                              onChange={() => {}} // handled by parent onClick
+                              className="mt-0.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            />
+                            <div>
+                              <div className="text-xs font-bold text-slate-900">{perm.label}</div>
+                              <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{perm.desc}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
                 </div>

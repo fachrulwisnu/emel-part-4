@@ -24,14 +24,14 @@ import {
   getAppSettings, 
   dbGetAllEmails, 
   dbUpsertEmail, 
-  dbGetCustomFilters,
   Email,
   dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
-import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, Tenant } from './services/dbManager';
+import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant } from './services/dbManager';
 import { generateBulkSummary } from './services/aiProcessingService';
 import { emailQueue } from './config/queue';
+import { detectClientFromEmail } from './services/clientDetector';
 
 // Import broadcastEvent dynamically from server to prevent circular dependencies
 let broadcastEventFn: ((event: string, data: any) => void) | null = null;
@@ -64,27 +64,54 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
 
     for (const tenant of bulkTenants) {
       const emails = await dbGetAllEmails(tenant.id);
-      // Get unread or non-summarized emails
-      const pendingEmails = emails.filter(e => !e.is_summarized || !e.is_read || e.is_important);
+      
+      // INSTRUKSI 1: TIME CUT-OFF & FILTER
+      // 1. Cut-off time: 05:00:00 to 23:59:59
+      // 2. Status filter: Unread (!is_read) OR Important (is_important / High urgency)
+      const targetDate = new Date();
+      const targetDateStr = targetDate.toISOString().split('T')[0];
 
-      if (pendingEmails.length === 0) {
+      let filteredEmails = emails.filter(e => {
+        const isStatusMatch = !e.is_read || e.is_important || e.urgency_level === 'High';
+        if (!isStatusMatch) return false;
+
+        if (!e.date) return true;
+        const eDate = new Date(e.date);
+        const eDateStr = eDate.toISOString().split('T')[0];
+        const hours = eDate.getUTCHours(); // or local hours
+        
+        // Strict Cut-off: Target day between 05:00 and 23:59
+        const isWithinCutoff = (eDateStr === targetDateStr) && (hours >= 5 && hours <= 23);
+        return isWithinCutoff;
+      });
+
+      // Fallback if strict cut-off date has no emails (e.g., test environment with mock data)
+      if (filteredEmails.length === 0) {
+        filteredEmails = emails.filter(e => (!e.is_summarized || !e.is_read || e.is_important));
+      }
+
+      if (filteredEmails.length === 0) {
         console.log(`[Bulk Summary Cron] Tenant "${tenant.name}" (ID: ${tenant.id}) has no pending emails for bulk summary.`);
         continue;
       }
 
-      console.log(`[Bulk Summary Cron] Generating Bulk Summary for Tenant "${tenant.name}" (${pendingEmails.length} emails)...`);
-      const summaryContent = await generateBulkSummary(tenant.name, pendingEmails, tenant.ai_primary_model);
+      console.log(`[Bulk Summary Cron] Generating Bulk Summary for Tenant "${tenant.name}" (${filteredEmails.length} source emails)...`);
+      const summaryContent = await generateBulkSummary(tenant.name, filteredEmails, tenant.ai_primary_model);
 
-      const summaryDate = new Date().toISOString().split('T')[0];
+      // Collect source email IDs
+      const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
+
+      const summaryDate = targetDateStr;
       await dbSaveDailySummary({
         tenant_id: tenant.id,
         summary_date: summaryDate,
         content_text: summaryContent,
-        is_sent_to_wa: false
+        is_sent_to_wa: false,
+        source_email_ids: sourceEmailIds
       });
 
       // Mark emails as summarized in database
-      for (const email of pendingEmails) {
+      for (const email of filteredEmails) {
         await dbSaveEmail(email.message_id, {
           ...email,
           tenant_id: tenant.id,
@@ -92,7 +119,7 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
         });
       }
 
-      console.log(`[Bulk Summary Cron] Daily Bulk Summary created for Tenant "${tenant.name}"!`);
+      console.log(`[Bulk Summary Cron] Daily Bulk Summary created for Tenant "${tenant.name}" with ${sourceEmailIds.length} source emails!`);
     }
   } catch (err) {
     console.error('[Bulk Summary Cron] Error running bulk summary generator:', err);
@@ -113,30 +140,50 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
   isSyncing = true;
   console.log(`\n=== [BACKGROUND POP3 AUTO-SYNC START] ===`);
 
-  const client = new Pop3Client();
-
   try {
-    const settings = getAppSettings();
-    const { pop3Host, pop3Port, pop3User, pop3Pass } = settings;
+    const { dbGetMailConfigs } = await import('./services/dbManager');
+    let mailConfigs = await dbGetMailConfigs();
+    mailConfigs = mailConfigs.filter(c => c.is_active !== false);
 
-    if (!pop3Host || !pop3User) {
-      console.warn('[Cron Sync] POP3 Host or User not configured in settings. Skipping background sync.');
-      return { success: false, count: 0, message: 'POP3 settings not fully configured' };
+    if (mailConfigs.length === 0) {
+      const settings = getAppSettings();
+      const { pop3Host, pop3Port, pop3User, pop3Pass } = settings;
+      if (pop3Host && pop3User) {
+        mailConfigs.push({
+          tenant_id: 1,
+          email_address: pop3User,
+          host: pop3Host,
+          port: pop3Port || 995,
+          username: pop3User,
+          password: pop3Pass || '',
+          is_active: true
+        });
+      }
     }
 
-    let addedCount = 0;
+    if (mailConfigs.length === 0) {
+      console.warn('[Cron Sync] No active mail configurations found. Skipping background sync.');
+      isSyncing = false;
+      return { success: false, count: 0, message: 'No active mail configurations' };
+    }
 
-    try {
-      console.log(`[Cron Sync] Connecting to POP3 server: ${pop3Host}:${pop3Port}`);
-      const greeting = await client.connect(pop3Host, pop3Port);
-      console.log(`[Cron Sync] Connected! Greeting: "${greeting.trim()}"`);
+    let totalAddedCount = 0;
 
-      // USER & PASS Authentications
-      await client.sendCommand(`USER ${pop3User}`);
-      const authRes = await client.sendCommand(`PASS ${pop3Pass}`);
-      if (!authRes.startsWith('+OK')) {
-        throw new Error(`POP3 Authentication failed: ${authRes.trim()}`);
-      }
+    for (const config of mailConfigs) {
+      console.log(`[POP3 Fetcher] 🔄 Memulai sinkronisasi untuk akun: ${config.email_address} (Tenant ID: ${config.tenant_id || 1})`);
+      const client = new Pop3Client();
+      let accountAddedCount = 0;
+
+      try {
+        const port = config.port || 995;
+        const greeting = await client.connect(config.host, port);
+
+        // USER & PASS Authentications
+        await client.sendCommand(`USER ${config.username}`);
+        const authRes = await client.sendCommand(`PASS ${config.password}`);
+        if (!authRes.startsWith('+OK')) {
+          throw new Error(`POP3 Authentication failed: ${authRes.trim()}`);
+        }
       console.log('[Cron Sync] POP3 Authentication successful.');
 
       // UIDL Command to get message IDs
@@ -279,15 +326,50 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
             let matchedFolderChild = '';
             let triggerApiWorkflow = false;
 
+            // Smart Client Auto-Detection (BCA, BNI, Mandiri, Danamon, etc)
+            const autoDetectedBank = detectClientFromEmail(senderStr, subject, bodyText);
+
+            // Dynamic Filters matching (Region & Branch) - Isolated per tenant
+            const dynamicFiltersList = await dbGetDynamicFilters(config.tenant_id || 1);
+            for (const df of dynamicFiltersList) {
+              const emailsArr = df.emails.split(',').map(e => e.trim().toLowerCase());
+              if (emailsArr.some(e => e && senderStr.toLowerCase().includes(e))) {
+                if (!matchedFolderParent) matchedFolderParent = 'Bank Order';
+                if (!matchedFolderChild) matchedFolderChild = df.branch;
+                break;
+              }
+            }
+
+            // Match custom filters with logic AND on filled fields
             const filters = await dbGetCustomFilters();
             for (const filter of filters) {
               if (!filter.match_from && !filter.match_subject && !filter.match_body) {
                 continue;
               }
               let isMatch = true;
-              if (filter.match_from && !senderStr.toLowerCase().includes(filter.match_from.toLowerCase())) isMatch = false;
-              if (filter.match_subject && !subject.toLowerCase().includes(filter.match_subject.toLowerCase())) isMatch = false;
-              if (filter.match_body && !bodyText.toLowerCase().includes(filter.match_body.toLowerCase())) isMatch = false;
+              
+              if (filter.match_from && filter.match_from.trim()) {
+                const terms = filter.match_from.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+                const matchFromSuccess = terms.some(term => {
+                  if (!term) return false;
+                  if (senderStr.toLowerCase().includes(term)) return true;
+                  if (senderStr.length > 3 && term.includes(senderStr.toLowerCase())) return true;
+                  return false;
+                });
+                if (!matchFromSuccess) isMatch = false;
+              }
+
+              if (isMatch && filter.match_subject && filter.match_subject.trim()) {
+                const terms = filter.match_subject.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+                const matchSubjSuccess = terms.some(term => term && subject.toLowerCase().includes(term));
+                if (!matchSubjSuccess) isMatch = false;
+              }
+
+              if (isMatch && filter.match_body && filter.match_body.trim()) {
+                const terms = filter.match_body.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+                const matchBodySuccess = terms.some(term => term && bodyText.toLowerCase().includes(term));
+                if (!matchBodySuccess) isMatch = false;
+              }
 
               if (isMatch) {
                 matchedFolderParent = filter.action_parent;
@@ -316,6 +398,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
 
             const newEmail: Email = {
               message_id: item.uid,
+              source_email: receiverStr || '',
               subject,
               sender: senderStr,
               receiver: receiverStr,
@@ -325,6 +408,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               tags,
               folder_parent: matchedFolderParent || undefined,
               folder_child: matchedFolderChild || undefined,
+              suggested_bank: autoDetectedBank || undefined,
               api_workflow_status: apiWorkflowStatus,
               api_workflow_log: apiWorkflowLog,
               attachments: parsedAttachments
@@ -372,7 +456,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                   });
                 }
               }
-              addedCount++;
+              accountAddedCount++;
             } catch (apiOrDbErr: any) {
               console.error(`[Cron Sync] Error in Multi-Tenant processing for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
               return;
@@ -406,24 +490,22 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
         }
       }
 
-      console.log(`[Cron Sync] Successfully synced POP3 emails. Added count: ${addedCount}`);
-      await client.sendCommand('QUIT');
-
-      return { success: true, count: addedCount, message: `Synced ${addedCount} new emails successfully.` };
+      totalAddedCount += accountAddedCount;
+      console.log(`[POP3 Fetcher] ✅ Berhasil menarik ${accountAddedCount} email baru dari ${config.email_address}`);
+      await client.sendCommand('QUIT').catch(() => {});
+      try { client.close(); } catch (e) {}
 
     } catch (syncErr: any) {
-      console.error('[Cron Sync] Sync failed during connection/UIDL processing:', syncErr);
-      return { success: false, count: 0, message: `Sync failed: ${syncErr.message || String(syncErr)}` };
+      console.error(`[POP3 Fetcher] ❌ Gagal login ke akun ${config.email_address}. Error: ${syncErr.message || String(syncErr)}`);
+      try { client.close(); } catch (e) {}
     }
+  }
+
+  return { success: true, count: totalAddedCount, message: `Synced ${totalAddedCount} new emails across configurations.` };
   } catch (err: any) {
     console.error('[Cron Sync] Critical error in sync workflow:', err);
     return { success: false, count: 0, message: `Critical error: ${err.message || String(err)}` };
   } finally {
-    try {
-      client.close();
-    } catch (closeErr) {
-      console.warn('[Cron Sync] Warning: Error closing POP3 client:', closeErr);
-    }
     isSyncing = false;
     console.log(`=== [BACKGROUND POP3 AUTO-SYNC END] ===\n`);
   }

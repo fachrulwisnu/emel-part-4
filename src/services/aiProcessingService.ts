@@ -1,3 +1,17 @@
+/**
+ * =========================================================================
+ * AI PROCESSING SERVICE & LLM INTEGRATION
+ * =========================================================================
+ * 
+ * FLOW:
+ * 1. Menerima EmailPayload (subject, sender, body, lampiran/attachments).
+ * 2. Memeriksa keberadaan lampiran media (gambar/PDF) untuk memilih model Vision vs Core.
+ * 3. Menyusun System Prompt dengan petunjuk ekstraksi JSON murni (urgensi, tindakan, CIT order ticket count).
+ * 4. Mengirimkan prompt ke AI Completion API (Gemini / Multi-LLM provider).
+ * 5. Jika AI API gagal, menjalankan mekanisme fallback otomatis.
+ * 6. Mem-parsing hasil JSON dari AI dan mengembalikan metadata struktur.
+ */
+
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
@@ -23,6 +37,9 @@ export interface EmailPayload {
   body_text?: string;
   body?: string;
   attachments?: any[];
+  routingPromptContext?: string;
+  action_parent?: string;
+  action_child?: string;
 }
 
 /**
@@ -60,25 +77,27 @@ export async function analyzeEmailContent(emailPayload: EmailPayload): Promise<a
   const hasMediaAttachment = Array.isArray(attachments) && attachments.some(isMediaAttachment);
   const targetModel = hasMediaAttachment ? "Vision" : "Core";
 
-  const systemPrompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email dan lampirannya ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
+  const routingContextStr = emailPayload.routingPromptContext ? `\n${emailPayload.routingPromptContext}\n` : '';
 
+  const systemPrompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email dan lampirannya ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
+${routingContextStr}
 JSON Schema yang HARUS dikembalikan:
 {
   "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
   "currency": "IDR",
   "total_amount": null,
   "denomination_suggestion": null,
-  "suggested_bank": "BCA",
-  "suggested_folder_parent": "Operation",
-  "suggested_folder_child": "General",
+  "suggested_bank": "${emailPayload.action_parent || 'BCA'}",
+  "suggested_folder_parent": "${emailPayload.action_parent || 'Operation'}",
+  "suggested_folder_child": "${emailPayload.action_child || 'General'}",
   "extracted_notes": "Instruksi khusus atau catatan operasional dari email/lampiran",
   "suggested_tag": "Informasi",
   "urgency_level": "Routine",
   "action_required": false,
   "is_cit_order": false,
   "cit_type": "None",
-  "folder": "Operation",
-  "sub_folder": "General",
+  "folder": "${emailPayload.action_parent || 'Operation'}",
+  "sub_folder": "${emailPayload.action_child || 'General'}",
   "tags": ["Informasi"],
   "summary_email": "Ringkasan email",
   "summary_attachments": []
@@ -571,6 +590,9 @@ export async function processEmailIntelligence(email: {
   date: string;
   body_text: string;
   attachments?: any[];
+  routingPromptContext?: string;
+  action_parent?: string;
+  action_child?: string;
 }): Promise<{
   folder: string;
   sub_folder: string;
@@ -627,7 +649,9 @@ export async function processEmailIntelligence(email: {
     }
 
     // 3. Prompt Engineering using Nemo Retriever Skills Adaptation
+    const routingContextStr = email.routingPromptContext ? `\n${email.routingPromptContext}\n` : '';
     const prompt = `[NEMO RETRIEVER CONTEXT]
+${routingContextStr}
 Below is the structured raw email metadata and raw text/OCR content from the email attachments.
 Your task is to "retrieve" and extract specific fields strictly based on the provided context without introducing hallucinations or assumptions.
 
@@ -645,12 +669,12 @@ ${extractedContents.length > 0 ? extractedContents.join('\n\n') : 'Tidak ada lam
 
 --- INSTRUCTIONS ---
 Strictly retrieve and construct the output JSON structure. No explanations, no markdown blocks, no conversational preamble. Valid JSON only.
-If a value is not explicitly findable or retrievable, use standard operational defaults (e.g., "Operation" or "General"). All summaries must be in Bahasa Indonesia.
+If a value is not explicitly findable or retrievable, use standard operational defaults (e.g., "${email.action_parent || 'Operation'}" or "${email.action_child || 'General'}"). All summaries must be in Bahasa Indonesia.
 
 Expected JSON schema to return:
 {
-  "folder": "Major category retrieved from context (e.g., BCA, MANDIRI, BRI, BNI, Maybank, or Operation)",
-  "sub_folder": "Specific child category or transaction type (e.g., CIT, ATM, Collection, General, Uncategorized)",
+  "folder": "${email.action_parent || 'Major category retrieved from context (e.g., BCA, MANDIRI, BRI, BNI, Maybank, or Operation)'}",
+  "sub_folder": "${email.action_child || 'Specific child category or transaction type (e.g., CIT, ATM, Collection, General, Uncategorized)'}",
   "tags": ["Retrieve relevant operational keywords, codes, status tags. E.g., ORDER CIT, URGENT, NEED ACTION, etc."],
   "summary_email": "A deep, concise operational summary of the email text and actions to take in Bahasa Indonesia",
   "summary_attachments": [
@@ -705,8 +729,8 @@ Expected JSON schema to return:
     
     // Validate output structure
     return {
-      folder: parsedResult?.folder || 'Operation',
-      sub_folder: parsedResult?.sub_folder || 'General',
+      folder: email.action_parent || parsedResult?.folder || 'Operation',
+      sub_folder: email.action_child || parsedResult?.sub_folder || 'General',
       tags: Array.isArray(parsedResult?.tags) ? parsedResult.tags : ['General'],
       summary_email: parsedResult?.summary_email || email.subject || 'No summary generated',
       summary_attachments: Array.isArray(parsedResult?.summary_attachments) ? parsedResult.summary_attachments : []
@@ -716,8 +740,8 @@ Expected JSON schema to return:
     console.error(`[Email Intelligence] Error processing email intelligence for ${email.message_id}:`, err);
     // Return standard fallback model on failure
     return {
-      folder: 'Operation',
-      sub_folder: 'General',
+      folder: email.action_parent || 'Operation',
+      sub_folder: email.action_child || 'General',
       tags: ['Error', 'Cascade Fail'],
       summary_email: `Gagal menganalisis email secara cerdas. Error: ${err.message || String(err)}`,
       summary_attachments: rawAttachments.map((att: any) => ({
@@ -749,9 +773,20 @@ export async function generateSummaryAndTagging(email: {
   sender: string;
   date: string;
   attachments?: any[];
+  routingPromptContext?: string;
+  action_parent?: string;
+  action_child?: string;
 }): Promise<any> {
   const primaryResult = await analyzeEmailContent(email);
   if (primaryResult) {
+    if (email.action_parent) {
+      primaryResult.suggested_folder_parent = email.action_parent;
+      primaryResult.folder = email.action_parent;
+    }
+    if (email.action_child) {
+      primaryResult.suggested_folder_child = email.action_child;
+      primaryResult.sub_folder = email.action_child;
+    }
     return primaryResult;
   }
 

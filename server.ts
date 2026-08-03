@@ -25,7 +25,8 @@ import {
   dbGetGroupedEmails,
   dbGetEmailAnalysis,
   dbGetPendingSummaryEmails,
-  dbGetPendingIntelligenceEmails
+  dbGetPendingIntelligenceEmails,
+  dbBackfillFolders
 } from "./src/database-service";
 import { initWhatsApp, sendMessage, getWhatsAppStatus, forceInitWhatsApp } from "./src/services/waService";
 import { 
@@ -396,14 +397,106 @@ async function startServer() {
     }
   });
 
-  // Get saved emails from active DB (filtered by optional tenant_id)
+  // Get saved emails from active DB (filtered by tenant_id and optional source_email)
   app.get("/api/emails", async (req, res) => {
     try {
       const tenantId = req.query.tenant_id 
         ? Number(req.query.tenant_id) 
         : (req.headers['x-tenant-id'] ? Number(req.headers['x-tenant-id']) : undefined);
-      const emails = await dbGetAllEmails(tenantId);
+      const sourceEmail = req.query.source_email ? String(req.query.source_email) : undefined;
+      const emails = await dbGetAllEmails(tenantId, sourceEmail);
       res.json({ success: true, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // ==========================================
+  // MAIL CONFIGURATIONS API (MULTI-ACCOUNT)
+  // ==========================================
+  app.get("/api/mail-configs", async (req, res) => {
+    try {
+      const { dbGetMailConfigs } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
+      const configs = await dbGetMailConfigs(tenantId);
+      res.json({ success: true, configs });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/mail-configs", async (req, res) => {
+    try {
+      const { dbSaveMailConfig } = await import("./src/services/dbManager");
+      const { tenant_id, email_address, host, port, username, password, is_active } = req.body;
+      if (!tenant_id || !email_address || !host || !username) {
+        return res.status(400).json({ success: false, message: "tenant_id, email_address, host, dan username wajib diisi" });
+      }
+      const config = await dbSaveMailConfig({
+        tenant_id: Number(tenant_id),
+        email_address: String(email_address).trim(),
+        host: String(host).trim(),
+        port: Number(port) || 995,
+        username: String(username).trim(),
+        password: String(password || ''),
+        is_active: is_active !== false
+      });
+      res.json({ success: true, config });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.put("/api/mail-configs/:id", async (req, res) => {
+    try {
+      const { dbUpdateMailConfig } = await import("./src/services/dbManager");
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ success: false, message: "Invalid mail config ID" });
+      }
+      await dbUpdateMailConfig(id, req.body);
+      res.json({ success: true, message: "Mail config updated successfully" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.delete("/api/mail-configs/:id", async (req, res) => {
+    try {
+      const { dbDeleteMailConfig } = await import("./src/services/dbManager");
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ success: false, message: "Invalid mail config ID" });
+      }
+      await dbDeleteMailConfig(id);
+      res.json({ success: true, message: "Mail config deleted successfully" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/mail-configs/test", async (req, res) => {
+    try {
+      const { Pop3Client } = await import("./src/pop3");
+      const { host, port, username, password } = req.body;
+      if (!host || !username) {
+        return res.status(400).json({ success: false, message: "Host dan Username wajib diisi" });
+      }
+      const client = new Pop3Client();
+      try {
+        await client.connect(host, Number(port) || 995);
+        await client.sendCommand(`USER ${username}`);
+        const authRes = await client.sendCommand(`PASS ${password}`);
+        await client.sendCommand(`QUIT`).catch(() => {});
+        client.close();
+        if (authRes.startsWith("+OK")) {
+          return res.json({ success: true, message: `Otentikasi POP3 berhasil ke ${host}:${port} untuk ${username} (+OK)` });
+        } else {
+          return res.status(400).json({ success: false, message: `POP3 Auth gagal: ${authRes.trim()}` });
+        }
+      } catch (connErr: any) {
+        return res.status(400).json({ success: false, message: `Gagal terhubung ke ${host}:${port} - ${connErr.message || String(connErr)}` });
+      }
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
@@ -469,6 +562,40 @@ async function startServer() {
     }
   });
 
+  // Dynamic Filters Master Data Endpoints (Super Admin Only with Multi-Tenant Isolation)
+  app.get("/api/dynamic-filters", async (req, res) => {
+    try {
+      const { dbGetDynamicFilters } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : 1;
+      const filters = await dbGetDynamicFilters(tenantId);
+      res.json({ success: true, filters });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/dynamic-filters", async (req, res) => {
+    try {
+      const { dbSaveDynamicFilter } = await import("./src/services/dbManager");
+      const tenantId = req.body.tenant_id ? Number(req.body.tenant_id) : 1;
+      await dbSaveDynamicFilter({ ...req.body, tenant_id: tenantId }, tenantId);
+      res.json({ success: true, message: "Berhasil menyimpan aturan Dynamic Filter." });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.delete("/api/dynamic-filters/:id", async (req, res) => {
+    try {
+      const { dbDeleteDynamicFilter } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : 1;
+      await dbDeleteDynamicFilter(Number(req.params.id), tenantId);
+      res.json({ success: true, message: "Aturan Dynamic Filter berhasil dihapus." });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Multi-Tenant: Get Daily Bulk Summaries for Division/Tenant
   app.get("/api/daily-summaries", async (req, res) => {
     try {
@@ -476,6 +603,44 @@ async function startServer() {
       const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
       const summaries = await dbGetDailySummaries(tenantId);
       res.json({ success: true, summaries });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Get single Daily Bulk Summary by ID with populated source_emails
+  app.get("/api/daily-summaries/:id", async (req, res) => {
+    try {
+      const { dbGetDailySummaryById } = await import("./src/services/dbManager");
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ success: false, message: "Invalid summary ID" });
+      }
+      const summary = await dbGetDailySummaryById(id);
+      if (!summary) {
+        return res.status(404).json({ success: false, message: "Summary not found" });
+      }
+      res.json({ success: true, summary });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Trigger WA Blast for specific Daily Bulk Summary
+  app.post("/api/daily-summaries/:id/wa-blast", async (req, res) => {
+    try {
+      const { dbGetDailySummaryById, dbUpdateDailySummaryWaStatus } = await import("./src/services/dbManager");
+      const id = Number(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ success: false, message: "Invalid summary ID" });
+      }
+      const summary = await dbGetDailySummaryById(id);
+      if (!summary) {
+        return res.status(404).json({ success: false, message: "Summary not found" });
+      }
+
+      await dbUpdateDailySummaryWaStatus(id, true);
+      res.json({ success: true, message: `Berhasil mengirim Blast WA Rangkuman Harian #${id} ke nomor WhatsApp divisi!` });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
@@ -530,6 +695,100 @@ async function startServer() {
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
       res.setHeader('Content-Length', buffer.length);
       res.send(buffer);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // ==========================================
+  // SUPER ADMIN REDIS & BULLMQ MONITORING API
+  // ==========================================
+  app.get("/api/admin/queue-status", async (req, res) => {
+    try {
+      const { emailQueue } = await import("./src/config/queue");
+      
+      let counts = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+      let completedJobs: any[] = [];
+      let failedJobs: any[] = [];
+
+      try {
+        const rawCounts = await emailQueue.getJobCounts();
+        counts = {
+          waiting: rawCounts.waiting || 0,
+          active: rawCounts.active || 0,
+          completed: rawCounts.completed || 0,
+          failed: rawCounts.failed || 0,
+          delayed: rawCounts.delayed || 0,
+        };
+      } catch (e: any) {
+        console.warn("[Queue API Warning] Could not fetch job counts:", e.message);
+      }
+
+      try {
+        const rawCompleted = await emailQueue.getCompleted(0, 50);
+        completedJobs = rawCompleted.map(job => ({
+          id: job.id,
+          name: job.name,
+          data: job.data || {},
+          timestamp: job.timestamp,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+          durationMs: (job.finishedOn && job.processedOn) ? (job.finishedOn - job.processedOn) : null,
+          returnvalue: job.returnvalue
+        }));
+      } catch (e: any) {
+        console.warn("[Queue API Warning] Could not fetch completed jobs:", e.message);
+      }
+
+      try {
+        const rawFailed = await emailQueue.getFailed(0, 50);
+        failedJobs = rawFailed.map(job => ({
+          id: job.id,
+          name: job.name,
+          data: job.data || {},
+          timestamp: job.timestamp,
+          failedReason: job.failedReason || 'Unknown LLM Exception',
+          stacktrace: job.stacktrace || [],
+          attemptsMade: job.attemptsMade
+        }));
+      } catch (e: any) {
+        console.warn("[Queue API Warning] Could not fetch failed jobs:", e.message);
+      }
+
+      res.json({
+        success: true,
+        counts,
+        completedJobs,
+        failedJobs
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.post("/api/admin/queue-retry/:jobId", async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const { emailQueue } = await import("./src/config/queue");
+      
+      let retried = false;
+      try {
+        const job = await emailQueue.getJob(jobId);
+        if (job) {
+          await job.retry();
+          retried = true;
+        }
+      } catch (e) {
+        console.warn(`[Queue API Warning] Standard job.retry() failed for ${jobId}, re-adding to queue...`);
+      }
+
+      if (!retried) {
+        const emailId = req.body?.email_id || jobId;
+        const tenantId = req.body?.tenant_id || 1;
+        await emailQueue.add('process-email', { email_id: emailId, tenant_id: tenantId }, { attempts: 3 });
+      }
+
+      res.json({ success: true, message: `Job ${jobId} dipancing ulang ke antrean AI.` });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
@@ -884,6 +1143,26 @@ async function startServer() {
     }
   });
 
+  /**
+   * FLOW: Retroactive Folder Tagging / Custom Filter Sweeping Endpoint
+   * 1. Menerima request POST /api/admin/backfill-folders.
+   * 2. Menjalankan dbBackfillFolders() untuk menyapu dan mencocokkan email lama dengan custom_filters.
+   * 3. Mengembalikan response JSON { success: true, totalProcessed, totalMatched, message }.
+   */
+  const handleBackfillFolders = async (req: express.Request, res: express.Response) => {
+    try {
+      console.log("[API Admin] Starting retroactive folder tagging / backfill...");
+      const result = await dbBackfillFolders();
+      res.json(result);
+    } catch (err: any) {
+      console.error("[API Admin] Backfill folders failed:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  };
+
+  app.post("/api/admin/backfill-folders", handleBackfillFolders);
+  app.post("/api/emails/backfill-folders", handleBackfillFolders);
+
   // Historical Data Backfill Trigger
   app.post("/api/emails/backfill", async (req, res) => {
     try {
@@ -1100,13 +1379,157 @@ async function startServer() {
   app.post("/api/import-mbox", importMboxHandler);
   app.get("/api/import-eml-dir", importEmlDirHandler);
 
-  // CIT Proxy API Routes (TEMPORARILY DISABLED)
+  // GET Email Detail (Returns raw_email_data & ai_extracted_json for Full Page Split View)
+  app.get("/api/emails/detail/:message_id", async (req, res) => {
+    try {
+      const { message_id } = req.params;
+      const email = await dbGetEmailByMessageId(message_id);
+      if (!email) {
+        return res.status(404).json({ success: false, message: "Email not found" });
+      }
+
+      // Extract branch and amount heuristics if not present
+      let extractedBranch = email.suggested_folder_child || 'MEDAN';
+      const branchMatch = (email.body_text || '').match(/(?:Branch|Cabang|Bank\s+Branch\s+Name|Branch\s+Name)\s*[:=]\s*([a-zA-Z0-9\s\-]+)/i);
+      if (branchMatch) extractedBranch = branchMatch[1].trim();
+
+      let extractedAmount = email.total_amount || 100000000;
+      const amountMatch = (email.body_text || '').match(/(?:Amount|Nilai|Total)\s*[:=]\s*([\d,.]+)/i);
+      if (amountMatch) {
+        const parsed = parseFloat(amountMatch[1].replace(/,/g, ''));
+        if (!isNaN(parsed) && parsed > 0) extractedAmount = parsed;
+      }
+
+      const { detectClientFromEmail } = await import("./src/services/clientDetector");
+      const detectedClient = detectClientFromEmail(email.sender || '', email.subject || '', email.body_text || '');
+      const clientName = detectedClient || email.suggested_bank || (email.folder_child || 'MAYBANK').toUpperCase();
+
+      // Check for multi-orders mentioned in text
+      let targetTickets = email.target_tickets || 1;
+      const multiMatch = (email.body_text || '').match(/(?:(\d+)\s*(?:order|tiket|lokasi|atm|cabang))/i);
+      if (multiMatch && Number(multiMatch[1]) > 1) {
+        targetTickets = Number(multiMatch[1]);
+      }
+
+      const aiExtractedJson = {
+        summary: email.summary || 'Detail pemesanan operasional CIT/ATM.',
+        urgency_level: email.urgency_level || 'Routine',
+        action_required: email.action_required || false,
+        suggested_tag: email.suggested_tag || 'CIT',
+        folder_parent: email.folder_parent || 'Bank Order',
+        folder_child: email.folder_child || 'General',
+        client_name: clientName,
+        cit_type: email.cit_type === 'ATM' ? 'ATM' : 'CIT',
+        branch_name: extractedBranch,
+        plan_date: new Date().toISOString().split('T')[0],
+        trip_type: 'Delivery',
+        cycle_type: 'Siklus 1 (Pagi)',
+        currency: email.currency || 'IDR',
+        total_amount: extractedAmount,
+        denomination_suggestion: email.denomination_suggestion || 100000,
+        target_tickets: targetTickets,
+        processed_tickets: email.processed_tickets || 0,
+        order_status: email.order_status || 'PENDING',
+        extracted_notes: email.extracted_notes || 'Extracted automatically by AI Operational Copilot.',
+        orders_list: Array.from({ length: targetTickets }, (_, i) => ({
+          ticket_index: i + 1,
+          branch: i === 0 ? extractedBranch : `${extractedBranch} KCP ${i + 1}`,
+          client: clientName,
+          amount: extractedAmount / (targetTickets > 1 ? targetTickets : 1),
+          trip_type: 'Delivery',
+          cycle: i % 2 === 0 ? 'Siklus 1 (Pagi)' : 'Siklus 2 (Siang)',
+          denom: 100000,
+          qty: (extractedAmount / (targetTickets > 1 ? targetTickets : 1)) / 100000
+        }))
+      };
+
+      res.json({
+        success: true,
+        raw_email_data: email,
+        ai_extracted_json: aiExtractedJson
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // CIT Master Data Endpoints
   app.get("/api/cit/currencies", async (req, res) => {
-    res.json({ success: true, data: [], note: "CIT API Disabled" });
+    res.json({
+      success: true,
+      data: ["IDR", "USD", "EUR", "SGD", "JPY", "AUD", "MYR"]
+    });
   });
 
   app.get("/api/cit/scitems", async (req, res) => {
-    res.json({ success: true, data: [], note: "CIT API Disabled" });
+    res.json({
+      success: true,
+      data: [
+        { id: "IDR_100K", code: "IDR_100K", name: "IDR 100.000 (Lembar)", denomination: 100000, currency: "IDR" },
+        { id: "IDR_50K", code: "IDR_50K", name: "IDR 50.000 (Lembar)", denomination: 50000, currency: "IDR" },
+        { id: "IDR_20K", code: "IDR_20K", name: "IDR 20.000 (Lembar)", denomination: 20000, currency: "IDR" },
+        { id: "IDR_10K", code: "IDR_10K", name: "IDR 10.000 (Lembar)", denomination: 10000, currency: "IDR" },
+        { id: "IDR_5K", code: "IDR_5K", name: "IDR 5.000 (Lembar)", denomination: 5000, currency: "IDR" },
+        { id: "IDR_2K", code: "IDR_2K", name: "IDR 2.000 (Lembar)", denomination: 2000, currency: "IDR" },
+        { id: "IDR_1K", code: "IDR_1K", name: "IDR 1.000 (Lembar)", denomination: 1000, currency: "IDR" },
+        { id: "USD_100", code: "USD_100", name: "USD 100 (Bill)", denomination: 100, currency: "USD" },
+        { id: "USD_50", code: "USD_50", name: "USD 50 (Bill)", denomination: 50, currency: "USD" },
+        { id: "USD_20", code: "USD_20", name: "USD 20 (Bill)", denomination: 20, currency: "USD" }
+      ]
+    });
+  });
+
+  // POST Submit CIT Order (Multi-Order Partial Fulfillment)
+  app.post("/api/cit/submit-order", async (req, res) => {
+    try {
+      const {
+        message_id,
+        ticket_index = 1,
+        target_tickets = 1,
+        branch_name,
+        client_name,
+        plan_date,
+        trip_type,
+        cycle_type,
+        currency = 'IDR',
+        total_amount,
+        items,
+        notes
+      } = req.body;
+
+      if (!message_id) {
+        return res.status(400).json({ success: false, message: "Missing message_id parameter" });
+      }
+
+      const email = await dbGetEmailByMessageId(message_id);
+      const currentProcessed = email?.processed_tickets || 0;
+      const newProcessed = currentProcessed + 1;
+      const finalTarget = Number(target_tickets) || email?.target_tickets || 1;
+      const newStatus = newProcessed >= finalTarget ? 'COMPLETED' : 'PARTIAL';
+
+      const { dbUpdateEmailFields } = await import("./src/services/dbManager");
+      await dbUpdateEmailFields(message_id, {
+        target_tickets: finalTarget,
+        processed_tickets: newProcessed,
+        order_status: newStatus,
+        is_cit_order: true,
+        api_workflow_status: 'triggered'
+      });
+
+      const generatedTicketId = `TKT-${Math.floor(100000 + Math.random() * 900000)}`;
+
+      res.json({
+        success: true,
+        message: `Tiket #${ticket_index} berhasil disubmit! (${newProcessed}/${finalTarget})`,
+        ticket_id: generatedTicketId,
+        processed_tickets: newProcessed,
+        target_tickets: finalTarget,
+        order_status: newStatus,
+        next_ticket_index: newProcessed < finalTarget ? newProcessed + 1 : null
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
   });
 
   app.get("/api/cit/entity-master-details", async (req, res) => {

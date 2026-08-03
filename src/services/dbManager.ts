@@ -12,6 +12,74 @@ export interface DbServiceInstance {
   config: DatabaseConfig;
 }
 
+export interface TenantPermissions {
+  dashboard: boolean;
+  cit_dispatch: boolean;
+  daily_summary: boolean;
+  mail_wa_setup: boolean;
+  dynamic_filters: boolean;
+}
+
+export interface DynamicFilterRule {
+  id?: number;
+  tenant_id?: number;
+  emails: string;
+  region: string;
+  branch: string;
+  created_at?: string;
+}
+
+export const SEED_DYNAMIC_FILTERS_DATA = [
+  // REGION 1
+  { emails: 'palembang,agus@advantagescm.com,Muzni.Purbajanti@danamon.co.id, yosepha.valentine@hanabank.co.id,leonard.s@cimbniaga.co.id,cpc.palembang@advantagescm.com,tommy.parlindungan@advantagescm.com', region: 'REGION 1', branch: 'PALEMBANG' },
+  { emails: 'hasni@banksinarmas.com,mellisa_can@bca.co.id,hendrawan_sucanto@bca.co.id,maulana.pohan@smbci.com,sihar.sinaga@danamon.co.id,CCM.Medan@permatabank.co.id,APasaribu@maybank.co.id,cpccit.medan@advantagescm.com', region: 'REGION 1', branch: 'MEDAN' },
+  { emails: 'tantin@panin.co.id,hrrfebriansyah@gmail.com,NRomantias@maybank.co.id,WSanti@maybank.co.id,Bambang.Kismoyo@smbci.com,advantage.batam@advantagescm.com,surachman@panin.co.id', region: 'REGION 1', branch: 'BATAM' },
+  { emails: 'dandy.alfianto@advantagescm.com', region: 'REGION 1', branch: 'RAWAMANGUN' },
+  { emails: 'yanto.055@bankmega.com,eko.adrianto@bankmega.com,betty@banksinarmas.com,Fransiskus.ADB@danamon.co.id,cashdelivery@permatabank.co.id,fandy.fandy@panin.co.id,Regina.Pasaribu@danamon.co.id,cpc.jambi@advantagescm.com', region: 'REGION 1', branch: 'JAMBI' },
+  { emails: 'yuli_malisa@bca.co.id, nikaga.k.ceullar@banksinarmas.com, agil.fazrul@advantagescm.com,Dini.Sartika@cimbniaga.co.id,pebrina.djafri@danamon.co.id,anastasya_aurellia@bca.co.id', region: 'REGION 1', branch: 'PADANG' },
+  { emails: 'YAnggraini@maybank.co.id,tella_chantika@bca.co.id,Rezki.DresMili@btpnsyariah.com,muhammad.rezki@danamon.co.id,wahyu.novita@advantagescm.com,cit.pekanbaru@advantagescm.com', region: 'REGION 1', branch: 'PEKANBARU' },
+  // REGION 2
+  { emails: 'yulia.sandra@bankmega.com,j.sisca@maybank.co.id,kabagops_pij@nobubank.com,ALLTL.Pontianak@advantagescm.com,YNovitasari@maybank.co.id,Vivi.Chandra@cimbniaga.co.id,elfrida.pangaribuan@danamon.co.id,Desi.Fransiska@uob.co.id,Stevy.Rompas@danamon.co.id,Fitria@smbci.com', region: 'REGION 2', branch: 'PONTIANAK' },
+  { emails: 'cpc.balikpapan@advantagescm.com,adv.balikpapan@advantagescm.com', region: 'REGION 2', branch: 'BALIKPAPAN' },
+  { emails: 'adv.samarinda@advantagescm.com,fitria_abbas@bca.co.id,mezayu_gustien@bca.co.id,Novida-s@maybank.co.id,artha.sanjaya@ocbc.id,Erikson.Sagala@ocbc.id, nani.januari@smbci.com,Heni.Novitasari2@btpnsyariah.com', region: 'REGION 2', branch: 'SAMARINDA' },
+  { emails: 'ops.banjarmasin@advantagescm.com,carolina_nugroho@bca.co.id,CCM.Banjarmasin@permatabank.co.id,Imelda.Butarbutar@smbci.com', region: 'REGION 2', branch: 'BANJARMASIN' },
+  { emails: 'ops.singkawang@advantagescm.com', region: 'REGION 2', branch: 'SINGKAWANG' },
+  // REGION 3
+  { emails: 'HNovita@maybank.co.id, Regina.Arini@UOB.CO.ID,opscitjkt@advantagescm.com, tb.cashpickup@danamon.co.id, NYunistira@maybank.co.id,Chatarina.Sagala@danamon.co.id, elvira.zefanya@hanabank.co.id, syarip.hidayatulloh@danamon.co.id, Veronika.Alfiyanti@danamon.co.id,nuraeni.nuraeni@hanabank.co.id,kusdi.anto@danamon.co.id,annisa.retno@bankganesha.co.id,dendy.akbar@bankmuamalat.co.id,rospita.maria@hanabank.co.id, lidwina.astrid@hanabank.co.id,windi.eka@hanabank.co.id,inneke.hardiyanti@hanabank.co.id,septia.dahlia@hanabank.co.id,Raden.Sinurat@UOB.CO.ID,kemang.setiaji@advantagescm.com,Tonny.7034@UOB.CO.ID,yosua.chandra@hibank.co.id,nunik@sbiindo.com,gesti@hanabank.co.id,csh@bankmega.com', region: 'REGION 3', branch: 'MERUYA' },
+  { emails: 'Dian.Meivirina@btpnsyariah.com,candini@maybank.co.id,cpc.bengkulu@advantagescm.com', region: 'REGION 3', branch: 'BENGKULU' },
+  { emails: 'indra_putra@bca.co.id,martono_kusen@bca.co.id,Fuadi.Akbar@danamon.co.id,  yuvita_dewi@bca.co.id,antonius.bambang@danamon.co.id,tiffany_marvin@bca.co.id,ilham.akbar@bankmega.com,gabriela.grand@idn.ccb.com', region: 'REGION 3', branch: 'LAMPUNG' },
+  { emails: 'nirawati@BANKBJB.CO.ID', region: 'REGION 3', branch: 'SERANG' },
+  // REGION 4
+  { emails: 'netops.denpasar@permatabank.co.id,IGM.Sutadnyana@cimbniaga.co.id,mike.cahya@bankmega.com', region: 'REGION 4', branch: 'DENPASAR' },
+  { emails: 'Yuliana@btpnsyariah.com, siska.dillak@bankmega.com,Wahyu.Setiawan@danamon.co.id', region: 'REGION 4', branch: 'KUPANG' },
+  { emails: 'CCM.Kliring.Bandung@permatabank.co.id,hendra.hermawan@hanabank.co.id,supri.yatna@advantagescm.com,ela.laelawati@bankmega.com,Mia.Hermina@smbci.com,YNovyanti@maybank.co.id', region: 'REGION 4', branch: 'BANDUNG' },
+  { emails: 'muhamad.sukardi@advantagescm.com,Nimade.Suartini@danamon.co.id,elika.aisa@bankmuamalat.co.id,cpc.mataram@advantagescm.com,cpc.mataram@advantagescm.btpn', region: 'REGION 4', branch: 'MATARAM' },
+  { emails: 'netops.manado@permatabank.co.id,Kevin.Tengor@smbci.com', region: 'REGION 4', branch: 'MANADO' },
+  { emails: 'kabagops_cys@nobubank.com', region: 'REGION 4', branch: 'CIREBON' },
+  // REGION 5
+  { emails: 'smg.opr@bankmayapada.com,DaniaKusuma.Dewi@smbci.com,tiffany_irawan@bca.co.id,fahrizal_nugroho@bca.co.id,donny.fardan@cimbniaga.co.id,DRArumdati@maybank.co.id,ong_rukmanto@bca.co.id, roatut.toyyibah@bankmuamalat.co.id,cdc.semarang@advantagescm.com,admincdc.smg@advantagescm.com,cpc.semarang@advantagescm.com', region: 'REGION 5', branch: 'SEMARANG' },
+  { emails: 'beny.susantyo@danamon.co.id,ncm_slo_sriyadi@cimbniaga.co.id,cdc.solo@advantagescm.com,Agung.Subagio@smbci.com', region: 'REGION 5', branch: 'SOLO' },
+  { emails: 'hc_rosanadewi@yahoo.com,joko.setiyawan@bankmega.com,fitra.kurniawan@bankmega.com,HATresna@maybank.co.id', region: 'REGION 5', branch: 'TEGAL' },
+  { emails: 'febrina.punggawati@bankmas.co.id,cpc.yogya@advantagescm.com,andri.a@advantagescm.com', region: 'REGION 5', branch: 'YOGYAKARTA' },
+  { emails: 'windya@cimbniaga.co.id', region: 'REGION 5', branch: 'PURWOKERTO' },
+  { emails: 'cpc.kudus@advantagescm.com', region: 'REGION 5', branch: 'KUDUS' },
+  // REGION 6
+  { emails: 'Santalia.Sikku@cimbniaga.co.id,Sahrur.Sanusi@cimbniaga.co.id,Lisa.Oktaviani@maybank.co.id,agustinus.dendang@danamon.co.id,harmedi.harmedi@bankmega.com,ST.Mariana@btpnsyariah.com', region: 'REGION 6', branch: 'MAKASSAR' },
+  { emails: 'ekky.budi@advantagescm.com,cit.kediri@advantagescm.com', region: 'REGION 6', branch: 'KEDIRI' },
+  { emails: 'aazas@maybank.co.id,cit.jember@advantagescm.com,Hanafi@smbci.com', region: 'REGION 6', branch: 'JEMBER' },
+  { emails: 'elly.ongkojoyo@hanabank.co.id,andre.fiorntino@bankmas.co.id,Wahyudi.Cahyono@cimbniaga.co.id,fitra.kurniawan@bankmega.com,Vicky.Rubiyanto@maybank.co.id,dicky.hidayat@danamon.co.id', region: 'REGION 6', branch: 'SURABAYA' },
+  { emails: 'Dady.Lumenta@smbci.com,arnold_boksman@bca.co.id', region: 'REGION 6', branch: 'MANADO' },
+  { emails: 'adv.malang@advantagescm.com,cit.malang@advantagescm.com,Adrian.Kusuma@smbci.com,ari.pebriansyah@advantagescm.com', region: 'REGION 6', branch: 'MALANG' }
+];
+
+export const DEFAULT_TENANT_PERMISSIONS: TenantPermissions = {
+  dashboard: true,
+  cit_dispatch: true,
+  daily_summary: true,
+  mail_wa_setup: true,
+  dynamic_filters: true
+};
+
 export interface Tenant {
   id: number;
   name: string;
@@ -27,6 +95,19 @@ export interface Tenant {
   wa_phone?: string;
   admin_email?: string;
   admin_password?: string;
+  permissions?: TenantPermissions;
+  created_at?: Date | string;
+}
+
+export interface MailConfig {
+  id?: number;
+  tenant_id: number;
+  email_address: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  is_active?: boolean;
   created_at?: Date | string;
 }
 
@@ -38,14 +119,17 @@ export interface User {
   role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
   created_at?: Date | string;
   tenant_name?: string;
+  permissions?: TenantPermissions;
 }
 
 export interface DailySummary {
-  id?: number;
+  id?: number | string;
   tenant_id: number;
   summary_date: string;
   content_text: string;
   is_sent_to_wa?: boolean;
+  source_email_ids?: string[];
+  source_emails?: any[];
   created_at?: Date | string;
 }
 
@@ -78,8 +162,8 @@ export async function getDbService(): Promise<DbServiceInstance> {
         pgPool: pool,
         config
       };
-    } catch (err) {
-      console.error('[dbManager] PostgreSQL connection error, returning fallback instance:', err);
+    } catch (err: any) {
+      console.warn(`[dbManager] PostgreSQL connection notice: ${err.message || String(err)}. Using fallback instance.`);
       return {
         type: 'postgres',
         mongoDb: null,
@@ -98,8 +182,8 @@ export async function getDbService(): Promise<DbServiceInstance> {
       pgPool: null,
       config
     };
-  } catch (err) {
-    console.error('[dbManager] MongoDB connection error, returning fallback instance:', err);
+  } catch (err: any) {
+    console.warn(`[dbManager] MongoDB connection notice: ${err.message || String(err)}. Using fallback instance.`);
     return {
       type: 'mongodb',
       mongoDb: null,
@@ -141,14 +225,14 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
           is_read, tag_type, summary, action_required, suggested_tag, is_important,
           urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order,
           cit_type, suggested_bank, extracted_notes, currency, denomination_suggestion,
-          total_amount, ai_status, is_summarized, updated_at
+          total_amount, ai_status, is_summarized, source_email, updated_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14,
           $15, $16, $17, $18, $19, $20,
           $21, $22, $23, $24,
           $25, $26, $27, $28, $29,
-          $30, $31, $32, CURRENT_TIMESTAMP
+          $30, $31, $32, $33, CURRENT_TIMESTAMP
         )
         ON CONFLICT(message_id) DO UPDATE SET
           tenant_id = EXCLUDED.tenant_id,
@@ -182,6 +266,7 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
           total_amount = EXCLUDED.total_amount,
           ai_status = EXCLUDED.ai_status,
           is_summarized = EXCLUDED.is_summarized,
+          source_email = EXCLUDED.source_email,
           updated_at = CURRENT_TIMESTAMP;
       `;
 
@@ -217,7 +302,8 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
         payload.denomination_suggestion || null,
         payload.total_amount || null,
         payload.ai_status || 'PENDING',
-        payload.is_summarized ? 1 : 0
+        payload.is_summarized ? 1 : 0,
+        payload.source_email || ''
       ];
 
       await dbService.pgPool.query(query, values);
@@ -594,11 +680,23 @@ export async function dbGetTenants(): Promise<Tenant[]> {
       const col = dbService.mongoDb.collection('tenants');
       let tenants = await col.find().sort({ id: 1 }).toArray();
       if (!tenants || tenants.length === 0) {
-        // Seed default tenants if empty
+        // Seed default tenant (COS) if empty
         const defaultTenants: Tenant[] = [
-          { id: 1, name: 'COS', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'Nemotron 3 Super 120B', 'Custom AI Vision'], feature_individual_parsing: true, feature_bulk_summary: false, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'cos@corporate.com', pop3_pass: '••••••••', wa_phone: '6281234567890' },
-          { id: 2, name: 'RH', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'Qwen3 Next 80B'], feature_individual_parsing: false, feature_bulk_summary: true, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'rh@corporate.com', pop3_pass: '••••••••', wa_phone: '6289876543210' },
-          { id: 3, name: 'BM', ai_primary_model: 'Custom AI Core', ai_fallback_model: 'Nemotron 3 Super 120B', ai_models: ['Custom AI Core', 'StepFun AI Step 3.7 Flash'], feature_individual_parsing: false, feature_bulk_summary: true, pop3_host: 'pop.secureserver.net', pop3_port: 110, pop3_user: 'bm@corporate.com', pop3_pass: '••••••••', wa_phone: '628555666777' }
+          { 
+            id: 1, 
+            name: 'COS', 
+            ai_primary_model: 'Custom AI Core', 
+            ai_fallback_model: 'Nemotron 3 Super 120B', 
+            ai_models: ['Custom AI Core', 'Nemotron 3 Super 120B', 'Custom AI Vision'], 
+            feature_individual_parsing: true, 
+            feature_bulk_summary: false, 
+            pop3_host: 'pop.secureserver.net', 
+            pop3_port: 110, 
+            pop3_user: 'cos@corporate.com', 
+            pop3_pass: '••••••••', 
+            wa_phone: '6281234567890',
+            permissions: DEFAULT_TENANT_PERMISSIONS
+          }
         ];
         await col.insertMany(defaultTenants as any);
         tenants = defaultTenants as any;
@@ -622,6 +720,7 @@ export async function dbGetTenants(): Promise<Tenant[]> {
           pop3_pass: t.pop3_pass || '',
           wa_phone: t.wa_phone || '',
           admin_email: admin ? admin.email : (t.admin_email || `${t.name.toLowerCase()}@corporate.com`),
+          permissions: t.permissions || DEFAULT_TENANT_PERMISSIONS,
           created_at: t.created_at
         };
       });
@@ -654,6 +753,7 @@ export async function dbGetTenants(): Promise<Tenant[]> {
         pop3_pass: row.pop3_pass || '',
         wa_phone: row.wa_phone || '',
         admin_email: row.admin_email || `${row.name.toLowerCase()}@corporate.com`,
+        permissions: typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || DEFAULT_TENANT_PERMISSIONS),
         created_at: row.created_at
       }));
     } catch (err) {
@@ -728,6 +828,7 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
       await client.query('BEGIN');
 
       const aiModelsJson = JSON.stringify(payload.ai_models || ['Custom AI Core']);
+      const permissionsJson = JSON.stringify(payload.permissions || DEFAULT_TENANT_PERMISSIONS);
       let tenantRow: any;
 
       if (payload.id) {
@@ -743,8 +844,9 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
             pop3_port = COALESCE($8, pop3_port),
             pop3_user = COALESCE($9, pop3_user),
             pop3_pass = COALESCE($10, pop3_pass),
-            wa_phone = COALESCE($11, wa_phone)
-          WHERE id = $12
+            wa_phone = COALESCE($11, wa_phone),
+            permissions = COALESCE($12::jsonb, permissions)
+          WHERE id = $13
           RETURNING *;
         `;
         const res = await client.query(query, [
@@ -752,13 +854,14 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
           aiModelsJson,
           payload.feature_individual_parsing, payload.feature_bulk_summary,
           payload.pop3_host, payload.pop3_port, payload.pop3_user, payload.pop3_pass, payload.wa_phone,
+          permissionsJson,
           payload.id
         ]);
         tenantRow = res.rows[0];
       } else {
         const query = `
-          INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, ai_models, feature_individual_parsing, feature_bulk_summary, pop3_host, pop3_port, pop3_user, pop3_pass, wa_phone)
-          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+          INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, ai_models, feature_individual_parsing, feature_bulk_summary, pop3_host, pop3_port, pop3_user, pop3_pass, wa_phone, permissions)
+          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
           RETURNING *;
         `;
         const res = await client.query(query, [
@@ -772,7 +875,8 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
           payload.pop3_port || 110,
           payload.pop3_user || '',
           payload.pop3_pass || '',
-          payload.wa_phone || ''
+          payload.wa_phone || '',
+          permissionsJson
         ]);
         tenantRow = res.rows[0];
       }
@@ -862,9 +966,13 @@ export async function dbGetUserByEmail(email: string): Promise<User | null> {
       }
       if (user) {
         let tenant_name = 'SUPER ADMIN';
+        let permissions: TenantPermissions = DEFAULT_TENANT_PERMISSIONS;
         if (user.tenant_id) {
           const tenant = await dbGetTenantById(user.tenant_id);
-          if (tenant) tenant_name = tenant.name;
+          if (tenant) {
+            tenant_name = tenant.name;
+            if (tenant.permissions) permissions = tenant.permissions;
+          }
         }
         return {
           id: user.id,
@@ -873,7 +981,8 @@ export async function dbGetUserByEmail(email: string): Promise<User | null> {
           password_hash: user.password_hash,
           role: user.role,
           created_at: user.created_at,
-          tenant_name
+          tenant_name,
+          permissions
         };
       }
     } catch (err) {
@@ -882,7 +991,7 @@ export async function dbGetUserByEmail(email: string): Promise<User | null> {
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = `
-        SELECT u.*, t.name as tenant_name
+        SELECT u.*, t.name as tenant_name, t.permissions as tenant_permissions
         FROM public.users u
         LEFT JOIN public.tenants t ON u.tenant_id = t.id
         WHERE u.email = $1;
@@ -890,6 +999,12 @@ export async function dbGetUserByEmail(email: string): Promise<User | null> {
       const res = await dbService.pgPool.query(query, [email]);
       if (res.rows.length > 0) {
         const row = res.rows[0];
+        let permissions: TenantPermissions = DEFAULT_TENANT_PERMISSIONS;
+        if (row.tenant_permissions) {
+          permissions = typeof row.tenant_permissions === 'string'
+            ? JSON.parse(row.tenant_permissions)
+            : row.tenant_permissions;
+        }
         return {
           id: row.id,
           tenant_id: row.tenant_id || null,
@@ -897,7 +1012,8 @@ export async function dbGetUserByEmail(email: string): Promise<User | null> {
           password_hash: row.password_hash,
           role: row.role,
           created_at: row.created_at,
-          tenant_name: row.role === 'SUPER_ADMIN' ? 'SUPER ADMIN' : (row.tenant_name || 'Division')
+          tenant_name: row.role === 'SUPER_ADMIN' ? 'SUPER ADMIN' : (row.tenant_name || 'Division'),
+          permissions: row.role === 'SUPER_ADMIN' ? DEFAULT_TENANT_PERMISSIONS : permissions
         };
       }
     } catch (err) {
@@ -926,12 +1042,14 @@ export async function dbValidateUserCredentials(email: string, password: string)
  */
 export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
   const dbService = await getDbService();
+  const sourceIds = summary.source_email_ids || [];
 
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('daily_summaries');
       await col.insertOne({
         ...summary,
+        source_email_ids: sourceIds,
         created_at: new Date()
       });
       console.log(`[dbManager] Saved Daily Summary in MongoDB for Tenant ID: ${summary.tenant_id}`);
@@ -941,14 +1059,15 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = `
-        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa)
-        VALUES ($1, $2, $3, $4);
+        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
+        VALUES ($1, $2, $3, $4, $5);
       `;
       await dbService.pgPool.query(query, [
         summary.tenant_id,
         summary.summary_date,
         summary.content_text,
-        !!summary.is_sent_to_wa
+        !!summary.is_sent_to_wa,
+        JSON.stringify(sourceIds)
       ]);
       console.log(`[dbManager] Saved Daily Summary in PostgreSQL for Tenant ID: ${summary.tenant_id}`);
     } catch (err) {
@@ -958,27 +1077,28 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
 }
 
 /**
- * Get Daily Summaries for Tenant
+ * Get Daily Summaries for Tenant (populated with source_emails metadata)
  */
 export async function dbGetDailySummaries(tenantId?: number): Promise<DailySummary[]> {
   const dbService = await getDbService();
+  let rawSummaries: any[] = [];
 
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('daily_summaries');
       const query = tenantId ? { tenant_id: Number(tenantId) } : {};
       const res = await col.find(query).sort({ created_at: -1 }).toArray();
-      return res.map((r: any) => ({
+      rawSummaries = res.map((r: any) => ({
         id: r._id,
         tenant_id: r.tenant_id,
         summary_date: r.summary_date,
         content_text: r.content_text,
         is_sent_to_wa: !!r.is_sent_to_wa,
+        source_email_ids: Array.isArray(r.source_email_ids) ? r.source_email_ids : [],
         created_at: r.created_at
       }));
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summaries from MongoDB:', err);
-      return [];
     }
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
@@ -987,18 +1107,395 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
         : 'SELECT * FROM public.daily_summaries ORDER BY created_at DESC';
       const values = tenantId ? [tenantId] : [];
       const res = await dbService.pgPool.query(query, values);
-      return res.rows.map((row: any) => ({
-        id: row.id,
-        tenant_id: row.tenant_id,
-        summary_date: row.summary_date,
-        content_text: row.content_text,
-        is_sent_to_wa: !!row.is_sent_to_wa,
-        created_at: row.created_at
-      }));
+      rawSummaries = res.rows.map((row: any) => {
+        let sourceIds: string[] = [];
+        if (Array.isArray(row.source_email_ids)) {
+          sourceIds = row.source_email_ids;
+        } else if (typeof row.source_email_ids === 'string') {
+          try { sourceIds = JSON.parse(row.source_email_ids); } catch { sourceIds = []; }
+        }
+        return {
+          id: row.id,
+          tenant_id: row.tenant_id,
+          summary_date: row.summary_date,
+          content_text: row.content_text,
+          is_sent_to_wa: !!row.is_sent_to_wa,
+          source_email_ids: sourceIds,
+          created_at: row.created_at
+        };
+      });
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summaries from PostgreSQL:', err);
-      return [];
     }
   }
-  return [];
+
+  // Populate source_emails for each summary
+  try {
+    const { dbGetAllEmails } = await import('../database-service');
+    for (const summary of rawSummaries) {
+      const allTenantEmails = await dbGetAllEmails(summary.tenant_id);
+      if (summary.source_email_ids && summary.source_email_ids.length > 0) {
+        summary.source_emails = allTenantEmails.filter(e => 
+          summary.source_email_ids.includes(e.message_id) || summary.source_email_ids.includes(String(e.id))
+        );
+      } else {
+        summary.source_emails = allTenantEmails.filter(e => e.is_summarized || !e.is_read || e.is_important).slice(0, 10);
+      }
+    }
+  } catch (popErr) {
+    console.error('[dbManager] Error populating source emails:', popErr);
+  }
+
+  return rawSummaries;
 }
+
+export async function dbGetDailySummaryById(id: number): Promise<DailySummary | null> {
+  const dbService = await getDbService();
+  let summary: DailySummary | null = null;
+
+  if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('daily_summaries');
+      const r = await col.findOne({ _id: id as any });
+      if (r) {
+        summary = {
+          id: r._id as any,
+          tenant_id: r.tenant_id,
+          summary_date: r.summary_date,
+          content_text: r.content_text,
+          is_sent_to_wa: !!r.is_sent_to_wa,
+          source_email_ids: Array.isArray(r.source_email_ids) ? r.source_email_ids : [],
+          created_at: r.created_at
+        };
+      }
+    } catch (err) {
+      console.error('[dbManager] Error finding summary in MongoDB:', err);
+    }
+  } else if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const res = await dbService.pgPool.query('SELECT * FROM public.daily_summaries WHERE id = $1', [id]);
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        let sourceIds: string[] = [];
+        if (Array.isArray(row.source_email_ids)) {
+          sourceIds = row.source_email_ids;
+        } else if (typeof row.source_email_ids === 'string') {
+          try { sourceIds = JSON.parse(row.source_email_ids); } catch { sourceIds = []; }
+        }
+        summary = {
+          id: row.id,
+          tenant_id: row.tenant_id,
+          summary_date: row.summary_date,
+          content_text: row.content_text,
+          is_sent_to_wa: !!row.is_sent_to_wa,
+          source_email_ids: sourceIds,
+          created_at: row.created_at
+        };
+      }
+    } catch (err) {
+      console.error('[dbManager] Error finding summary in PostgreSQL:', err);
+    }
+  }
+
+  if (summary) {
+    try {
+      const { dbGetAllEmails } = await import('../database-service');
+      const allTenantEmails = await dbGetAllEmails(summary.tenant_id);
+      if (summary.source_email_ids && summary.source_email_ids.length > 0) {
+        summary.source_emails = allTenantEmails.filter(e => 
+          summary.source_email_ids!.includes(e.message_id) || summary.source_email_ids!.includes(String(e.id))
+        );
+      } else {
+        summary.source_emails = allTenantEmails.filter(e => e.is_summarized || !e.is_read || e.is_important).slice(0, 10);
+      }
+    } catch (err) {
+      console.error('[dbManager] Error fetching source emails for summary detail:', err);
+    }
+  }
+
+  return summary;
+}
+
+export async function dbUpdateDailySummaryWaStatus(id: number, isSent: boolean): Promise<void> {
+  const dbService = await getDbService();
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    await dbService.pgPool.query('UPDATE public.daily_summaries SET is_sent_to_wa = $1 WHERE id = $2', [isSent, id]);
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('daily_summaries');
+    await col.updateOne({ _id: id as any }, { $set: { is_sent_to_wa: isSent } });
+  }
+}
+
+/**
+ * Mail Config Management Functions (Multi-Account Support)
+ */
+export async function dbGetMailConfigs(tenantId?: number): Promise<MailConfig[]> {
+  const dbService = await getDbService();
+  let configs: MailConfig[] = [];
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = tenantId 
+        ? 'SELECT * FROM public.mail_configs WHERE tenant_id = $1 ORDER BY id ASC' 
+        : 'SELECT * FROM public.mail_configs ORDER BY id ASC';
+      const values = tenantId ? [tenantId] : [];
+      const res = await dbService.pgPool.query(query, values);
+      configs = res.rows.map((r: any) => ({
+        id: r.id,
+        tenant_id: r.tenant_id,
+        email_address: r.email_address,
+        host: r.host,
+        port: r.port,
+        username: r.username,
+        password: r.password,
+        is_active: r.is_active !== false,
+        created_at: r.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching mail_configs from PostgreSQL:', err);
+    }
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('mail_configs');
+      const query = tenantId ? { tenant_id: Number(tenantId) } : {};
+      const res = await col.find(query).toArray();
+      configs = res.map((r: any) => ({
+        id: r._id as any,
+        tenant_id: r.tenant_id,
+        email_address: r.email_address,
+        host: r.host,
+        port: r.port,
+        username: r.username,
+        password: r.password,
+        is_active: r.is_active !== false,
+        created_at: r.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching mail_configs from MongoDB:', err);
+    }
+  }
+
+  // Auto-seed legacy tenant POP3 config if no mail_configs exist yet
+  if (configs.length === 0 && tenantId) {
+    try {
+      const tenant = await dbGetTenantById(tenantId);
+      if (tenant && tenant.pop3_user && tenant.pop3_host) {
+        const legacyConfig: MailConfig = {
+          tenant_id: tenant.id,
+          email_address: tenant.pop3_user,
+          host: tenant.pop3_host,
+          port: tenant.pop3_port || 995,
+          username: tenant.pop3_user,
+          password: tenant.pop3_pass || '',
+          is_active: true
+        };
+        const saved = await dbSaveMailConfig(legacyConfig);
+        configs.push(saved);
+      }
+    } catch (seedErr) {
+      console.error('[dbManager] Error auto-seeding legacy tenant mail config:', seedErr);
+    }
+  }
+
+  return configs;
+}
+
+export async function dbSaveMailConfig(config: MailConfig): Promise<MailConfig> {
+  const dbService = await getDbService();
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    const res = await dbService.pgPool.query(`
+      INSERT INTO public.mail_configs (tenant_id, email_address, host, port, username, password, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *;
+    `, [
+      config.tenant_id,
+      config.email_address,
+      config.host,
+      config.port || 995,
+      config.username,
+      config.password,
+      config.is_active !== false
+    ]);
+    const row = res.rows[0];
+    return {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      email_address: row.email_address,
+      host: row.host,
+      port: row.port,
+      username: row.username,
+      password: row.password,
+      is_active: row.is_active !== false,
+      created_at: row.created_at
+    };
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('mail_configs');
+    const result = await col.insertOne({
+      ...config,
+      is_active: config.is_active !== false,
+      created_at: new Date()
+    });
+    return {
+      ...config,
+      id: result.insertedId as any
+    };
+  }
+  return config;
+}
+
+export async function dbUpdateMailConfig(id: number, config: Partial<MailConfig>): Promise<void> {
+  const dbService = await getDbService();
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    await dbService.pgPool.query(`
+      UPDATE public.mail_configs
+      SET email_address = COALESCE($1, email_address),
+          host = COALESCE($2, host),
+          port = COALESCE($3, port),
+          username = COALESCE($4, username),
+          password = COALESCE($5, password),
+          is_active = COALESCE($6, is_active)
+      WHERE id = $7
+    `, [
+      config.email_address,
+      config.host,
+      config.port,
+      config.username,
+      config.password,
+      config.is_active,
+      id
+    ]);
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('mail_configs');
+    await col.updateOne({ _id: id as any }, { $set: config });
+  }
+}
+
+export async function dbDeleteMailConfig(id: number): Promise<void> {
+  const dbService = await getDbService();
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    await dbService.pgPool.query('DELETE FROM public.mail_configs WHERE id = $1', [id]);
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('mail_configs');
+    await col.deleteOne({ _id: id as any });
+  }
+}
+
+/**
+ * DYNAMIC FILTERS MANAGEMENT (Super Admin Master Data)
+ */
+export async function dbGetDynamicFilters(tenantId?: number): Promise<DynamicFilterRule[]> {
+  const dbService = await getDbService();
+  let filters: DynamicFilterRule[] = [];
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      const query = tenantId 
+        ? 'SELECT * FROM public.dynamic_filters WHERE tenant_id = $1 OR tenant_id IS NULL ORDER BY region ASC, branch ASC'
+        : 'SELECT * FROM public.dynamic_filters ORDER BY region ASC, branch ASC';
+      const values = tenantId ? [tenantId] : [];
+      const res = await dbService.pgPool.query(query, values);
+      filters = res.rows.map((r: any) => ({
+        id: r.id,
+        tenant_id: r.tenant_id,
+        emails: r.emails,
+        region: r.region,
+        branch: r.branch,
+        created_at: r.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching dynamic_filters from PostgreSQL:', err);
+    }
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('dynamic_filters');
+      const query = tenantId ? { $or: [{ tenant_id: Number(tenantId) }, { tenant_id: null }] } : {};
+      const res = await col.find(query).sort({ region: 1, branch: 1 }).toArray();
+      filters = res.map((r: any) => ({
+        id: r._id as any,
+        tenant_id: r.tenant_id,
+        emails: r.emails,
+        region: r.region,
+        branch: r.branch,
+        created_at: r.created_at
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching dynamic_filters from MongoDB:', err);
+    }
+  }
+
+  return filters;
+}
+
+export async function dbSeedDynamicFilters(tenantId?: number): Promise<void> {
+  const dbService = await getDbService();
+  console.log('[dbManager] Seeding Dynamic Filters master data for Regions 1-6...');
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      for (const item of SEED_DYNAMIC_FILTERS_DATA) {
+        await dbService.pgPool.query(`
+          INSERT INTO public.dynamic_filters (tenant_id, emails, region, branch)
+          VALUES ($1, $2, $3, $4)
+        `, [tenantId || 1, item.emails, item.region, item.branch]);
+      }
+      console.log(`[dbManager] Successfully seeded ${SEED_DYNAMIC_FILTERS_DATA.length} Dynamic Filters in PostgreSQL`);
+    } catch (err) {
+      console.error('[dbManager] Error seeding Dynamic Filters in PostgreSQL:', err);
+    }
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('dynamic_filters');
+      const docs = SEED_DYNAMIC_FILTERS_DATA.map(item => ({
+        tenant_id: tenantId || 1,
+        emails: item.emails,
+        region: item.region,
+        branch: item.branch,
+        created_at: new Date()
+      }));
+      await col.insertMany(docs);
+      console.log(`[dbManager] Successfully seeded ${SEED_DYNAMIC_FILTERS_DATA.length} Dynamic Filters in MongoDB`);
+    } catch (err) {
+      console.error('[dbManager] Error seeding Dynamic Filters in MongoDB:', err);
+    }
+  }
+}
+
+export async function dbSaveDynamicFilter(rule: DynamicFilterRule, tenantId?: number): Promise<void> {
+  const dbService = await getDbService();
+  const targetTenantId = rule.tenant_id || tenantId || 1;
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    if (rule.id) {
+      await dbService.pgPool.query(`
+        UPDATE public.dynamic_filters
+        SET emails = $1, region = $2, branch = $3
+        WHERE id = $4 AND (tenant_id = $5 OR tenant_id IS NULL)
+      `, [rule.emails, rule.region, rule.branch, rule.id, targetTenantId]);
+    } else {
+      await dbService.pgPool.query(`
+        INSERT INTO public.dynamic_filters (tenant_id, emails, region, branch)
+        VALUES ($1, $2, $3, $4)
+      `, [targetTenantId, rule.emails, rule.region, rule.branch]);
+    }
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('dynamic_filters');
+    if (rule.id) {
+      await col.updateOne({ _id: rule.id as any }, { $set: { emails: rule.emails, region: rule.region, branch: rule.branch } });
+    } else {
+      await col.insertOne({ ...rule, tenant_id: targetTenantId, created_at: new Date() });
+    }
+  }
+}
+
+export async function dbDeleteDynamicFilter(id: number, tenantId?: number): Promise<void> {
+  const dbService = await getDbService();
+  const targetTenantId = tenantId || 1;
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    await dbService.pgPool.query('DELETE FROM public.dynamic_filters WHERE id = $1 AND (tenant_id = $2 OR tenant_id IS NULL)', [id, targetTenantId]);
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('dynamic_filters');
+    await col.deleteOne({ _id: id as any, tenant_id: targetTenantId });
+  }
+}
+

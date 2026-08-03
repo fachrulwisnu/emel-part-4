@@ -38,6 +38,7 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
       ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_user TEXT DEFAULT '';
       ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS pop3_pass TEXT DEFAULT '';
       ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS wa_phone TEXT DEFAULT '';
+      ALTER TABLE public.tenants ADD COLUMN IF NOT EXISTS permissions JSONB DEFAULT '{"dashboard": true, "cit_dispatch": true, "daily_summary": true, "mail_wa_setup": true, "dynamic_filters": true}'::jsonb;
 
       CREATE TABLE IF NOT EXISTS public.users (
           id SERIAL PRIMARY KEY,
@@ -88,7 +89,39 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS idx_emails_tenant_id ON public.emails(tenant_id);
+      ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS target_tickets INTEGER DEFAULT 1;
+      ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS processed_tickets INTEGER DEFAULT 0;
+      ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS order_status TEXT DEFAULT 'PENDING';
+      ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS source_email TEXT DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS public.mail_configs (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+          email_address TEXT NOT NULL,
+          host TEXT NOT NULL,
+          port INTEGER DEFAULT 995,
+          username TEXT NOT NULL,
+          password TEXT NOT NULL,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS public.cit_orders (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          message_id TEXT NOT NULL,
+          ticket_index INTEGER DEFAULT 1,
+          order_date DATE,
+          branch_name TEXT,
+          client_name TEXT,
+          trip_type TEXT,
+          cycle_type TEXT,
+          currency TEXT DEFAULT 'IDR',
+          total_amount NUMERIC,
+          items JSONB DEFAULT '[]'::jsonb,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
       CREATE INDEX IF NOT EXISTS idx_emails_message_id ON public.emails(message_id);
       CREATE INDEX IF NOT EXISTS idx_emails_date ON public.emails(date DESC);
 
@@ -133,22 +166,42 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           summary_date DATE NOT NULL,
           content_text TEXT NOT NULL,
           is_sent_to_wa BOOLEAN DEFAULT FALSE,
+          source_email_ids JSONB DEFAULT '[]'::jsonb,
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+      ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS source_email_ids JSONB DEFAULT '[]'::jsonb;
+
+      CREATE TABLE IF NOT EXISTS public.dynamic_filters (
+          id SERIAL PRIMARY KEY,
+          tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
+          emails TEXT NOT NULL,
+          region TEXT NOT NULL,
+          branch TEXT NOT NULL,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
-      INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, feature_individual_parsing, feature_bulk_summary) 
-      VALUES 
-          ('COS', 'Core', 'Nemotron 3 Super 120B', TRUE, FALSE),
-          ('RH', 'Core', 'Nemotron 3 Super 120B', FALSE, TRUE),
-          ('BM', 'Core', 'Nemotron 3 Super 120B', FALSE, TRUE)
-      ON CONFLICT (name) DO NOTHING;
-
-      INSERT INTO public.users (tenant_id, email, password_hash, role) 
-      VALUES 
-          (NULL, 'fachrul', crypt('bosskubabi', gen_salt('bf')), 'SUPER_ADMIN'),
-          ((SELECT id FROM public.tenants WHERE name = 'COS'), 'cos', crypt('12345678', gen_salt('bf')), 'TENANT_ADMIN')
-      ON CONFLICT (email) DO NOTHING;
     `);
+
+    // Seed default tenant and users ONLY if tenants table is empty
+    const tenantCountRes = await client.query('SELECT COUNT(*)::int AS count FROM public.tenants;');
+    if (tenantCountRes.rows[0].count === 0) {
+      console.log('[PostgreSQL] Database is empty. Seeding initial default tenant (COS)...');
+      await client.query(`
+        INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, feature_individual_parsing, feature_bulk_summary, permissions) 
+        VALUES ('COS', 'Custom AI Core', 'Nemotron 3 Super 120B', TRUE, FALSE, '{"dashboard": true, "cit_dispatch": true, "daily_summary": true, "mail_wa_setup": true, "dynamic_filters": true}'::jsonb);
+      `);
+    }
+
+    const userCountRes = await client.query('SELECT COUNT(*)::int AS count FROM public.users;');
+    if (userCountRes.rows[0].count === 0) {
+      console.log('[PostgreSQL] Users table is empty. Seeding Super Admin (fachrul) and Tenant Admin (cos)...');
+      await client.query(`
+        INSERT INTO public.users (tenant_id, email, password_hash, role) 
+        VALUES 
+            (NULL, 'fachrul', crypt('bosskubabi', gen_salt('bf')), 'SUPER_ADMIN'),
+            ((SELECT id FROM public.tenants WHERE LOWER(name) = 'cos' LIMIT 1), 'cos', crypt('12345678', gen_salt('bf')), 'TENANT_ADMIN');
+      `);
+    }
   } catch (err) {
     console.error('[PostgreSQL] Error initializing database tables:', err);
     throw err;

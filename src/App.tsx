@@ -37,21 +37,35 @@ import {
   Download,
   MessageSquare,
   FileText,
-  Send
+  Send,
+  Tag
 } from 'lucide-react';
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
+import { CitDispatchFullPage } from './components/CitDispatchFullPage';
 import HtmlEmailViewer from './components/HtmlEmailViewer';
 import PlainTextTree from './components/PlainTextTree';
 import AttachmentGallery from './components/AttachmentGallery';
 import WhatsAppQrModal from './components/WhatsAppQrModal';
 import EmailIntelligenceSection from './components/EmailIntelligenceSection';
 import { AiHealthIndicators } from './components/AiHealthIndicators';
+import { LoginPage } from './components/LoginPage';
 import { LoginModal } from './components/LoginModal';
 import { SuperAdminDashboard, SuperAdminAnalyticsView, SuperAdminTenantsView } from './components/SuperAdminDashboard';
 import { BulkSummaryView } from './components/BulkSummaryView';
 import { TenantIntegrationSettings } from './components/TenantIntegrationSettings';
-import { Shield, Building2, Layers, LogOut, Key, BarChart3 } from 'lucide-react';
+import { DynamicFiltersManager } from './components/DynamicFiltersManager';
+import { HelpDrawer } from './components/HelpDrawer';
+import { RedisQueueDashboard } from './components/RedisQueueDashboard';
+import { Shield, Building2, Layers, LogOut, Key, BarChart3, Building, ShieldCheck, Filter, HelpCircle, Cpu } from 'lucide-react';
+
+interface UserPermissions {
+  dashboard: boolean;
+  cit_dispatch: boolean;
+  daily_summary: boolean;
+  mail_wa_setup: boolean;
+  dynamic_filters: boolean;
+}
 
 interface UserSession {
   id: number;
@@ -59,6 +73,7 @@ interface UserSession {
   email: string;
   role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
   tenant_name?: string;
+  permissions?: UserPermissions;
 }
 
 // Database Driver Type
@@ -98,6 +113,9 @@ interface Email {
   suggested_bank?: string;
   extracted_notes?: string;
   ai_status?: string;
+  target_tickets?: number;
+  processed_tickets?: number;
+  order_status?: string;
 }
 
 interface CustomFilter {
@@ -162,9 +180,14 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'settings' | 'cit-dashboard' | 'intelligence' | 'superadmin' | 'superadmin-analytics' | 'superadmin-tenants' | 'bulk-summary' | 'tenant-settings'>('inbox');
-  const [settingsTab, setSettingsTab] = useState<'filters' | 'api' | 'mail' | 'backfill' | 'ai-health' | 'whatsapp'>('filters');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'intelligence' | 'cit-dashboard' | 'bulk-summary' | 'dynamic-rules' | 'settings' | 'superadmin-analytics' | 'superadmin-tenants' | 'tenant-settings' | 'dynamic-filters' | 'redis-monitor'>('inbox');
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor'>('mail');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
+
+  // Multi-Account Filter States
+  const [mailConfigs, setMailConfigs] = useState<any[]>([]);
+  const [selectedSourceEmail, setSelectedSourceEmail] = useState<string>('');
 
   // Database Switcher state
   const [dbDriver, setDbDriver] = useState<DbDriver>('mongodb');
@@ -355,6 +378,7 @@ export default function App() {
   const [backfillLogs, setBackfillLogs] = useState<string[]>([]);
   const [backfillProgress, setBackfillProgress] = useState<number>(0);
   const [isBackfillStreaming, setIsBackfillStreaming] = useState(false);
+  const [isFolderBackfilling, setIsFolderBackfilling] = useState(false);
 
   // AI Pending Queue Management States
   const [pendingCount, setPendingCount] = useState<number>(0);
@@ -409,6 +433,7 @@ export default function App() {
   });
 
   const [isCitOrderModalOpen, setIsCitOrderModalOpen] = useState(false);
+  const [fullPageCitEmailId, setFullPageCitEmailId] = useState<string | null>(null);
   const [citOrderPrefillEmail, setCitOrderPrefillEmail] = useState<Email | null>(null);
   const [activeContextMenuId, setActiveContextMenuId] = useState<string | null>(null);
 
@@ -610,10 +635,29 @@ export default function App() {
     }
   };
 
-  // Fetch Emails
-  const loadEmails = async () => {
+  // Fetch Mail Configs for multi-account selector
+  const loadMailConfigs = async () => {
     try {
-      const res = await fetch('/api/emails');
+      const tenantId = currentUser?.tenant_id || '';
+      const res = await fetch(`/api/mail-configs?tenant_id=${tenantId}`);
+      const data = await res.json();
+      if (data.success && data.configs) {
+        setMailConfigs(data.configs);
+      }
+    } catch (err) {
+      console.error('Failed to load mail configs:', err);
+    }
+  };
+
+  // Fetch Emails
+  const loadEmails = async (sourceEmailFilter?: string) => {
+    try {
+      const activeSource = sourceEmailFilter !== undefined ? sourceEmailFilter : selectedSourceEmail;
+      let url = `/api/emails?tenant_id=${currentUser?.tenant_id || ''}`;
+      if (activeSource) {
+        url += `&source_email=${encodeURIComponent(activeSource)}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
       if (data.success && data.emails) {
         // Map raw database emails to frontend schema (e.g. fromName, fromAddress)
@@ -749,12 +793,20 @@ export default function App() {
       }
 
       await loadDatabaseConfig();
+      await loadMailConfigs();
       await loadEmails();
       await loadFilterRules();
     };
 
     fetchInitialData();
   }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      loadMailConfigs();
+      loadEmails(selectedSourceEmail);
+    }
+  }, [currentUser?.tenant_id, selectedSourceEmail]);
 
   // Save Config Settings
   const handleSaveSettings = async (e: React.FormEvent) => {
@@ -879,6 +931,31 @@ export default function App() {
       setIsBackfillStreaming(false);
       setIsBackfilling(false);
     };
+  };
+
+  // Run Data Backfill / Retroactive Folder Tagging for custom_filters rules
+  const handleRunFolderBackfill = async () => {
+    try {
+      setIsFolderBackfilling(true);
+      const res = await fetch('/api/admin/backfill-folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (data.success) {
+        addToast('Backfill Tagging Selesai', data.message || `Berhasil men-tagging ${data.totalMatched || 0} email lama.`);
+        // Instantly refresh emails list and Virtual Folder Tree
+        await loadEmails();
+        await loadFolders();
+      } else {
+        addToast('Backfill Error', data.message || 'Gagal melakukan retroactive folder tagging.');
+      }
+    } catch (err: any) {
+      console.error('Error in handleRunFolderBackfill:', err);
+      addToast('Error Network', err.message || 'Gagal mengeksekusi backfill folder.');
+    } finally {
+      setIsFolderBackfilling(false);
+    }
   };
 
   // AI Pending Queue: Fetch and Process
@@ -1017,6 +1094,7 @@ export default function App() {
       if (data.success) {
         addToast('Retroactive Filter Applied', 'Successfully processed retroactive filters on active database.');
         await loadEmails();
+        await loadFolders();
       }
     } catch (localErr) {
       console.error('Failed to sync retroactive updates:', localErr);
@@ -1164,158 +1242,229 @@ export default function App() {
     return clean.slice(0, 2).toUpperCase();
   };
 
+  const handleBypassLogin = (role: 'SUPER_ADMIN' | 'TENANT_ADMIN') => {
+    if (role === 'SUPER_ADMIN') {
+      setCurrentUser({
+        id: 1,
+        tenant_id: null,
+        email: 'fachrul',
+        role: 'SUPER_ADMIN',
+        tenant_name: 'SUPER ADMIN',
+        permissions: {
+          dashboard: true,
+          cit_dispatch: true,
+          daily_summary: true,
+          mail_wa_setup: true,
+          dynamic_filters: true
+        }
+      });
+      setCurrentMenu('inbox');
+    } else {
+      setCurrentUser({
+        id: 2,
+        tenant_id: 1,
+        email: 'cos',
+        role: 'TENANT_ADMIN',
+        tenant_name: 'COS',
+        permissions: {
+          dashboard: true,
+          cit_dispatch: true,
+          daily_summary: true,
+          mail_wa_setup: true,
+          dynamic_filters: true
+        }
+      });
+      setCurrentMenu('inbox');
+    }
+  };
+
+  if (!currentUser) {
+    return (
+      <LoginPage 
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          setCurrentMenu('inbox');
+        }} 
+        onBypassLogin={handleBypassLogin} 
+      />
+    );
+  }
+
   return (
     <div className="flex h-screen w-full bg-[#FAFBFD] font-sans text-slate-800 overflow-hidden" id="applet_canvas">
       
-      {/* 1. LEFT-MOST NAVIGATION RAIL (Inbox vs Settings) */}
-      <aside className="w-[72px] bg-slate-900 flex flex-col items-center py-6 justify-between text-white shrink-0 z-10" id="nav_rail">
-        <div className="flex flex-col items-center space-y-6 w-full">
-          <div className="p-3 bg-blue-600 rounded-2xl shadow-lg shadow-blue-500/20 text-white cursor-pointer hover:scale-105 transition-transform">
-            <Zap className="h-6 w-6 text-white" />
+      {/* 1. LIGHT & MINIMALIST EXPANDED SIDEBAR (Visible Labels Default) */}
+      <aside className="w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between py-5 px-3.5 shrink-0 z-20 text-slate-700 select-none shadow-xs" id="nav_sidebar">
+        <div className="space-y-5">
+          {/* Brand Header */}
+          <div className="flex items-center gap-3 px-2">
+            <div className="p-2.5 bg-blue-600 rounded-xl shadow-xs text-white shrink-0">
+              <Zap className="h-5 w-5" />
+            </div>
+            <div className="overflow-hidden min-w-0">
+              <h2 className="font-bold text-sm text-slate-900 tracking-tight leading-tight truncate">
+                AI Email Intelligence
+              </h2>
+              <span className="text-[10px] font-semibold text-slate-400 block truncate mt-0.5">
+                {currentUser?.role === 'SUPER_ADMIN' ? 'Super Admin Mode' : `Divisi: ${currentUser?.tenant_name || 'Tenant'}`}
+              </span>
+            </div>
           </div>
-          
-          <div className="w-8 border-b border-slate-800 my-1"></div>
 
-          {/* Inbox Nav button */}
-          <button 
-            onClick={() => setCurrentMenu('inbox')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'inbox' 
-                ? 'bg-slate-800 text-blue-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Inbox"
-          >
-            <Inbox className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Tickets Inbox
-            </span>
-          </button>
+          {/* Navigation Items */}
+          <div className="space-y-1">
+            <div className="px-2 pb-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Menu Dashboard
+            </div>
 
-          {/* Email Intelligence button - Visible to all or Super Admin */}
-          {currentUser?.role === 'SUPER_ADMIN' && (
-            <button 
-              onClick={() => setCurrentMenu('intelligence')}
-              className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-                currentMenu === 'intelligence' 
-                  ? 'bg-slate-800 text-blue-400 font-bold' 
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-              }`}
-              title="Email Intelligence"
-            >
-              <Sparkles className="h-5.5 w-5.5" />
-              <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-                Email Intelligence
-              </span>
-            </button>
-          )}
-
-          {/* CIT Dispatch Dashboard button */}
-          {currentUser?.role === 'SUPER_ADMIN' && (
-            <button 
-              onClick={() => setCurrentMenu('cit-dashboard')}
-              className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-                currentMenu === 'cit-dashboard' 
-                  ? 'bg-slate-800 text-blue-400 font-bold' 
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-              }`}
-              title="CIT Dashboard"
-            >
-              <Coins className="h-5.5 w-5.5" />
-              <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-                CIT Dispatch Control
-              </span>
-            </button>
-          )}
-
-          {/* SUPER ADMIN ONLY MENUS */}
-          {currentUser?.role === 'SUPER_ADMIN' && (
-            <>
-              {/* Super Admin Menu 1: Dashboard Analytics */}
+            {/* 1. Workflow Ingestion */}
+            {(currentUser?.role === 'SUPER_ADMIN' || currentUser?.permissions?.dashboard !== false) && (
               <button 
-                onClick={() => setCurrentMenu('superadmin-analytics')}
-                className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-                  currentMenu === 'superadmin-analytics' || currentMenu === 'superadmin'
-                    ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                onClick={() => setCurrentMenu('inbox')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'inbox' 
+                    ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
                 }`}
-                title="Dashboard Analytics"
               >
-                <BarChart3 className="h-5.5 w-5.5" />
-                <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-                  Dashboard Analytics
-                </span>
+                <Inbox className="h-4.5 w-4.5 shrink-0" />
+                <span className="truncate">Workflow Ingestion</span>
               </button>
+            )}
 
-              {/* Super Admin Menu 2: Tenant Management */}
+            {/* 2. Email Intelligence */}
+            {(currentUser?.role === 'SUPER_ADMIN' || currentUser?.permissions?.dashboard !== false) && (
               <button 
-                onClick={() => setCurrentMenu('superadmin-tenants')}
-                className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-                  currentMenu === 'superadmin-tenants'
-                    ? 'bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/30' 
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                onClick={() => setCurrentMenu('intelligence')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'intelligence' 
+                    ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
                 }`}
-                title="Tenant Management"
               >
-                <Building2 className="h-5.5 w-5.5" />
-                <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-                  Tenant & User Management
-                </span>
+                <Sparkles className="h-4.5 w-4.5 shrink-0" />
+                <span className="truncate">Email Intelligence</span>
               </button>
-            </>
-          )}
+            )}
 
-          {/* Daily Bulk Summary button - Available to TENANT_ADMIN & SUPER_ADMIN */}
-          <button 
-            onClick={() => setCurrentMenu('bulk-summary')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'bulk-summary' 
-                ? 'bg-slate-800 text-indigo-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="My Daily Summaries"
-          >
-            <Layers className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              My Daily Summaries
-            </span>
-          </button>
+            {/* 3. CIT Order Dispatch */}
+            {(currentUser?.role === 'SUPER_ADMIN' || currentUser?.permissions?.cit_dispatch !== false) && (
+              <button 
+                onClick={() => setCurrentMenu('cit-dashboard')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'cit-dashboard' 
+                    ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                }`}
+              >
+                <Coins className="h-4.5 w-4.5 shrink-0" />
+                <span className="truncate">CIT Order Dispatch</span>
+              </button>
+            )}
 
-          {/* Tenant Integration Settings button */}
-          <button 
-            onClick={() => setCurrentMenu('tenant-settings')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'tenant-settings' 
-                ? 'bg-slate-800 text-emerald-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Mail & WA Setup"
-          >
-            <Server className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Mail & WA Setup
-            </span>
-          </button>
+            {/* 4. Daily Bulk Summary */}
+            {(currentUser?.role === 'SUPER_ADMIN' || currentUser?.permissions?.daily_summary !== false) && (
+              <button 
+                onClick={() => setCurrentMenu('bulk-summary')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'bulk-summary' 
+                    ? 'bg-indigo-50 text-indigo-700 border-l-4 border-indigo-600 shadow-2xs font-bold' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                }`}
+              >
+                <Layers className="h-4.5 w-4.5 shrink-0" />
+                <span className="truncate">Daily Bulk Summary</span>
+              </button>
+            )}
 
-          {/* Dynamic Filters / Settings Nav button */}
-          <button 
-            onClick={() => setCurrentMenu('settings')}
-            className={`p-3.5 rounded-xl transition-all relative group cursor-pointer ${
-              currentMenu === 'settings' 
-                ? 'bg-slate-800 text-blue-400 font-bold' 
-                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-            }`}
-            title="Dynamic Filters"
-          >
-            <Settings className="h-5.5 w-5.5" />
-            <span className="absolute left-16 bg-slate-950 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl z-20 pointer-events-none">
-              Dynamic Filters
-            </span>
-          </button>
+            {/* 5. Dynamic Rules & Filters (Standalone Feature) */}
+            {(currentUser?.role === 'SUPER_ADMIN' || currentUser?.permissions?.dynamic_filters !== false) && (
+              <button 
+                onClick={() => setCurrentMenu('dynamic-rules')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'dynamic-rules' 
+                    ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                }`}
+              >
+                <Filter className="h-4.5 w-4.5 shrink-0 text-blue-600" />
+                <span className="truncate">Dynamic Rules & Filters</span>
+              </button>
+            )}
+
+            {/* 6. Super Admin Navigation Section */}
+            {currentUser?.role === 'SUPER_ADMIN' && (
+              <div className="pt-2 mt-2 border-t border-slate-100">
+                <div className="px-3 pb-1.5 text-[9px] font-extrabold text-slate-400 uppercase tracking-wider">
+                  SUPER ADMIN
+                </div>
+                <div className="space-y-1">
+                  <button 
+                    onClick={() => setCurrentMenu('superadmin-analytics')}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                      currentMenu === 'superadmin-analytics' 
+                        ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                    }`}
+                  >
+                    <BarChart3 className="h-4.5 w-4.5 shrink-0 text-slate-500" />
+                    <span className="truncate">Global Analytics</span>
+                  </button>
+
+                  <button 
+                    onClick={() => setCurrentMenu('superadmin-tenants')}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                      currentMenu === 'superadmin-tenants' 
+                        ? 'bg-blue-50 text-blue-700 border-l-4 border-blue-600 shadow-2xs font-bold' 
+                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                    }`}
+                  >
+                    <Building2 className="h-4.5 w-4.5 shrink-0 text-slate-500" />
+                    <span className="truncate">Tenant & User Management</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 7. Settings (Central Configuration Hub) */}
+            <div className="pt-2 mt-2 border-t border-slate-100">
+              <button 
+                onClick={() => setCurrentMenu('settings')}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                  currentMenu === 'settings' 
+                    ? 'bg-slate-900 text-white font-bold shadow-xs' 
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                }`}
+              >
+                <Settings className="h-4.5 w-4.5 shrink-0 text-slate-400" />
+                <span className="truncate">⚙️ Settings</span>
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-col items-center space-y-4 w-full text-slate-500 font-mono text-[9px]">
-          <span className="font-bold">v2.0</span>
+        {/* User Profile Footer & Logout */}
+        <div className="pt-3 border-t border-slate-100">
+          <div className="p-2.5 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                {currentUser?.email ? currentUser.email[0].toUpperCase() : 'U'}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-slate-800 truncate">{currentUser?.email}</div>
+                <div className="text-[10px] text-slate-400 font-medium truncate">
+                  {currentUser?.role === 'SUPER_ADMIN' ? 'Super Admin' : `Divisi ${currentUser?.tenant_name || ''}`}
+                </div>
+              </div>
+            </div>
+            <button 
+              onClick={() => setCurrentUser(null)}
+              title="Keluar (Logout)"
+              className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition-colors cursor-pointer shrink-0"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -1333,17 +1482,48 @@ export default function App() {
               {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
               {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
               {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
+              {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
+              {currentMenu === 'redis-monitor' && 'AI Queue & Redis BullMQ Monitor'}
             </h1>
             <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200">
               <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
               {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
             </span>
             <AiHealthIndicators />
+
+            {/* Global Contextual Help Button (INSTRUKSI 1) */}
+            <button
+              onClick={() => setIsHelpOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-xl font-bold text-xs shadow-2xs transition-all cursor-pointer active:scale-95"
+              title="Buka Panduan & Dokumentasi Fitur"
+            >
+              <HelpCircle className="w-4 h-4 text-indigo-600" />
+              <span>Panduan</span>
+            </button>
           </div>
 
           <div className="flex items-center space-x-2.5">
             {currentMenu === 'inbox' && (
               <>
+                {/* Account Switcher / Unified Inbox Selector */}
+                <div className="relative text-xs">
+                  <select
+                    value={selectedSourceEmail}
+                    onChange={(e) => {
+                      setSelectedSourceEmail(e.target.value);
+                      loadEmails(e.target.value);
+                    }}
+                    className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg font-bold text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Semua Akun Email (Unified Inbox)</option>
+                    {mailConfigs.map((cfg) => (
+                      <option key={cfg.id} value={cfg.email_address}>
+                        ✉️ {cfg.email_address}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="relative w-64 text-xs">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
                   <input
@@ -1612,8 +1792,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    setCitOrderPrefillEmail(email);
-                                    setIsCitOrderModalOpen(true);
+                                    setFullPageCitEmailId(email.message_id);
                                     setActiveContextMenuId(null);
                                   }}
                                   className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-slate-700 hover:text-blue-700 font-bold flex items-center gap-2 cursor-pointer transition-colors"
@@ -1662,8 +1841,45 @@ export default function App() {
                           {email.body_text}
                         </p>
 
-                        {/* Folder tags */}
+                        {/* Folder tags & Account Badge */}
                         <div className="flex items-center gap-1.5 flex-wrap">
+                          {email.source_email && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
+                              <Mail className="w-2.5 h-2.5 text-slate-400" />
+                              {email.source_email}
+                            </span>
+                          )}
+
+                          {/* INSTRUKSI 2: ORDER STATUS BADGE */}
+                          {(() => {
+                            const target = email.target_tickets || 1;
+                            const processed = email.processed_tickets || 0;
+
+                            if (processed === 0 && (!email.order_status || email.order_status === 'PENDING')) {
+                              return (
+                                <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-300 flex items-center gap-1 shadow-2xs">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                  Order Status: New / Unprocessed
+                                </span>
+                              );
+                            } else if (processed < target) {
+                              const pendingCount = target - processed;
+                              return (
+                                <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                  Pending {pendingCount} Orders ({processed}/{target})
+                                </span>
+                              );
+                            } else {
+                              return (
+                                <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                  All Orders Completed ({processed}/{target})
+                                </span>
+                              );
+                            }
+                          })()}
+
                           {getBadge(email.suggested_tag)}
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border" style={getTagBadgeStyle(email.folder_parent || 'Lainnya')}>
                             {email.folder_parent || 'Lainnya'}
@@ -2055,8 +2271,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => {
-                              setPrefillEmail(selectedEmail);
-                              setCurrentMenu('cit-dashboard');
+                              setFullPageCitEmailId(selectedEmail.message_id);
                             }}
                             className="flex-1 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl text-center cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-blue-500/10 transition-all text-xs"
                           >
@@ -2105,327 +2320,364 @@ export default function App() {
           />
         )}
 
-        {/* 4. SETTINGS SECTION */}
+        {/* DYNAMIC RULES & FILTERS STANDALONE FEATURE SECTION */}
+        {currentMenu === 'dynamic-rules' && (
+          <div className="flex-1 p-8 overflow-y-auto bg-slate-50/60" id="dynamic_rules_standalone_page">
+            <div className="max-w-5xl mx-auto space-y-6">
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
+                
+                {/* Page Title Header */}
+                <div className="flex items-center gap-3 pb-5 mb-6 border-b border-slate-100">
+                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
+                    <Filter className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h1 className="text-base font-bold text-slate-800">Dynamic Rules & Filters</h1>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Configure logic rules to dynamically tag incoming tickets and trigger automated workflows based on matching criteria.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Rule builder form */}
+                <form onSubmit={handleSaveFilter} className="bg-slate-50/80 rounded-2xl p-5 border border-slate-200/70 text-xs space-y-4 mb-8">
+                  <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                    <Plus className="h-3.5 w-3.5 text-blue-600" />
+                    {editingFilterId !== null ? 'Edit Filter Rule' : 'Create New Filter Rule'}
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Filter Name</label>
+                      <input 
+                        type="text"
+                        value={filterForm.name}
+                        onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
+                        placeholder="e.g. Bank Order Auto Router"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-medium"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Match Sender (From contains)</label>
+                      <input 
+                        type="text"
+                        value={filterForm.match_from}
+                        onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
+                        placeholder="e.g. treasury@bank.com"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Match Subject (contains)</label>
+                      <input 
+                        type="text"
+                        value={filterForm.match_subject}
+                        onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
+                        placeholder="e.g. CIT Delivery Order"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 font-medium"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Match Body Text (contains)</label>
+                      <input 
+                        type="text"
+                        value={filterForm.match_body}
+                        onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
+                        placeholder="e.g. signoff requested"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Action: Assign Folder Parent</label>
+                      <input 
+                        type="text"
+                        value={filterForm.action_parent}
+                        onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
+                        placeholder="e.g. Bank Order"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-600 font-bold mb-1">Action: Assign Folder Child</label>
+                      <input 
+                        type="text"
+                        value={filterForm.action_child}
+                        onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
+                        placeholder="e.g. Purwokerto"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 font-bold text-blue-700"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Trigger API Checkbox */}
+                  <div className="flex items-center space-x-2.5 pt-1 select-none">
+                    <input
+                      type="checkbox"
+                      id="trigger_api_chk_standalone"
+                      checked={!!filterForm.trigger_api}
+                      onChange={(e) => setFilterForm({ ...filterForm, trigger_api: e.target.checked })}
+                      className="h-4 w-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                    />
+                    <label htmlFor="trigger_api_chk_standalone" className="text-slate-700 font-bold flex items-center gap-1.5 cursor-pointer">
+                      <Zap className="h-4 w-4 text-blue-600 fill-blue-100" />
+                      <span>Trigger Sequential CIT API Chaining Workflow for matched tickets</span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-slate-200/60">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl cursor-pointer text-xs transition-colors shadow-2xs"
+                      >
+                        {editingFilterId !== null ? 'Update Rule' : 'Add Rule'}
+                      </button>
+                      {editingFilterId !== null && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingFilterId(null);
+                            setFilterForm({
+                              name: '',
+                              match_from: '',
+                              match_subject: '',
+                              match_body: '',
+                              action_parent: '',
+                              action_child: '',
+                              trigger_api: false
+                            });
+                            setFilterMsg('');
+                          }}
+                          className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl cursor-pointer text-xs transition-colors"
+                        >
+                          Cancel Edit
+                        </button>
+                      )}
+                    </div>
+                    {filterMsg && (
+                      <span className="text-slate-600 italic font-semibold">{filterMsg}</span>
+                    )}
+                  </div>
+                </form>
+
+                {/* Existing Rules CRUD Table */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({configuredRules.length})</p>
+                  </div>
+
+                  {isLoadingRules ? (
+                    <div className="flex items-center space-x-2 py-6 justify-center">
+                      <svg className="animate-spin h-5 w-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span className="text-xs text-slate-500 font-medium">Memuat aturan...</span>
+                    </div>
+                  ) : configuredRules.length === 0 ? (
+                    <div className="p-8 text-center border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                      <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {configuredRules.map(rule => (
+                        <div key={rule.id} className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-2xs hover:shadow-md transition-all relative flex flex-col justify-between">
+                          <div>
+                            <div className="flex justify-between items-start">
+                              <h4 className="font-bold text-slate-800 text-sm">{rule.name || '-'}</h4>
+                              <div className="flex items-center space-x-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (rule.id) {
+                                      setEditingFilterId(rule.id);
+                                      setFilterForm({
+                                        name: rule.name || '',
+                                        match_from: rule.match_from || '',
+                                        match_subject: rule.match_subject || '',
+                                        match_body: rule.match_body || '',
+                                        action_parent: rule.action_parent || '',
+                                        action_child: rule.action_child || '',
+                                        trigger_api: !!rule.trigger_api
+                                      });
+                                      setFilterMsg('');
+                                    }
+                                  }}
+                                  className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                  title="Edit rule"
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => rule.id && handleDeleteFilter(rule.id)}
+                                  className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                  title="Delete rule"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
+                              <p className="flex justify-between gap-2">
+                                <span className="font-semibold text-slate-500">Match Sender (From):</span>
+                                <span className="font-mono text-slate-700 break-all">{rule.match_from || '-'}</span>
+                              </p>
+                              <p className="flex justify-between gap-2">
+                                <span className="font-semibold text-slate-500">Match Subject:</span>
+                                <span className="text-slate-700">{rule.match_subject || '-'}</span>
+                              </p>
+                              <p className="flex justify-between gap-2">
+                                <span className="font-semibold text-slate-500">Match Body Text:</span>
+                                <span className="text-slate-700">{rule.match_body || '-'}</span>
+                              </p>
+                            </div>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-slate-400 font-bold uppercase">Routing:</span>
+                              <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md font-bold font-mono text-[10px] border border-blue-100">
+                                {rule.action_parent || '-'} &gt; {rule.action_child || '-'}
+                              </span>
+                            </div>
+                            {rule.trigger_api ? (
+                              <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase inline-flex items-center gap-1">
+                                <Zap className="h-3 w-3 fill-current" /> Active
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 4. CENTRAL SETTINGS SECTION */}
         {currentMenu === 'settings' && (
           <div className="flex flex-row flex-1 overflow-hidden w-full bg-slate-50" id="settings_workspace">
             
-            {/* SETTINGS MENU TABS SELECTOR (LEFT) */}
-            <aside className="w-56 border-r border-slate-200 bg-white flex flex-col shrink-0" id="pane_settings_tabs">
-              <div className="p-4 space-y-1 text-xs">
-                <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 px-3 mb-2">Configure</p>
+            {/* SETTINGS INNER SIDEBAR (RBAC DIVIDED) */}
+            <aside className="w-64 border-r border-slate-200 bg-white flex flex-col shrink-0 overflow-y-auto p-4 space-y-5" id="pane_settings_tabs">
+              
+              {/* SECTION A: TENANT CONFIGURATIONS */}
+              <div>
+                <div className="px-2 pb-2 text-[10px] font-extrabold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>Tenant Configurations</span>
+                </div>
+                <div className="space-y-1">
+                  <button
+                    onClick={() => setSettingsTab('mail')}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      settingsTab === 'mail' 
+                        ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Server className="h-4 w-4 shrink-0 text-slate-500" />
+                    <span>Mail & DB Config</span>
+                  </button>
 
-                <button
-                  onClick={() => setSettingsTab('filters')}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'filters' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <SlidersHorizontal className="h-4 w-4" />
-                  <span>Dynamic Filters</span>
-                </button>
-
-                <button
-                  onClick={() => setSettingsTab('api')}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'api' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <Link className="h-4 w-4" />
-                  <span>API Integrations</span>
-                </button>
-
-                <button
-                  onClick={() => setSettingsTab('mail')}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'mail' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <Server className="h-4 w-4" />
-                  <span>Mail & DB Config</span>
-                </button>
-
-                <button
-                  onClick={() => setSettingsTab('backfill')}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'backfill' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <History className="h-4 w-4" />
-                  <span>Data Backfill</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setSettingsTab('ai-health');
-                    handleRunHealthCheck(); // Trigger health check on click as well
-                  }}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'ai-health' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <Activity className="h-4 w-4" />
-                  <span>AI Settings & Status</span>
-                </button>
-
-                <button
-                  onClick={() => setSettingsTab('whatsapp')}
-                  className={`w-full flex items-center space-x-2 px-3 py-2.5 rounded-lg transition-all text-left font-semibold cursor-pointer ${
-                    settingsTab === 'whatsapp' 
-                      ? 'bg-blue-50 text-blue-700' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  <MessageSquare className="h-4 w-4" />
-                  <span>WhatsApp & Reports</span>
-                </button>
+                  <button
+                    onClick={() => setSettingsTab('whatsapp')}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      settingsTab === 'whatsapp' 
+                        ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
+                    <span>WhatsApp & Reports</span>
+                  </button>
+                </div>
               </div>
+
+              {/* SECTION B: SUPER ADMIN CONTROLS (RBAC PROTECTED) */}
+              {currentUser?.role === 'SUPER_ADMIN' && (
+                <div className="pt-3 border-t border-slate-100">
+                  <div className="px-2 pb-2 text-[10px] font-extrabold text-blue-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <Shield className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Super Admin Controls</span>
+                  </div>
+                  <div className="space-y-1">
+                    <button
+                      onClick={() => setSettingsTab('api')}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        settingsTab === 'api' 
+                          ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Link className="h-4 w-4 shrink-0 text-slate-500" />
+                      <span>API Integrations</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSettingsTab('backfill')}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        settingsTab === 'backfill' 
+                          ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <History className="h-4 w-4 shrink-0 text-slate-500" />
+                      <span>Data Backfill</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setSettingsTab('ai-health');
+                        handleRunHealthCheck();
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        settingsTab === 'ai-health' 
+                          ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Activity className="h-4 w-4 shrink-0 text-slate-500" />
+                      <span>AI Settings & Status</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSettingsTab('redis-monitor')}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                        settingsTab === 'redis-monitor' 
+                          ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200/80 shadow-2xs' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      <Cpu className="h-4 w-4 shrink-0 text-indigo-500" />
+                      <span>AI Queue & Redis Monitor</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </aside>
 
             {/* SETTINGS PANEL CONTENTS (RIGHT) */}
             <section className="flex-1 p-8 overflow-y-auto" id="settings_main_panel">
-              <div className="max-w-3xl bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+              <div className="max-w-4xl bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
                 
-                {/* TAB 1: DYNAMIC FILTERS CRUD BUILDER */}
-                {settingsTab === 'filters' && (
-                  <div className="space-y-6">
-                    <div>
-                      <h2 className="text-sm font-bold text-slate-800">Dynamic Filter Routing</h2>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Configure logic rules to dynamically tag incoming tickets and trigger automated workflows based on matching criteria.
-                      </p>
-                    </div>
-
-                    {/* Rule builder form */}
-                    <form onSubmit={handleSaveFilter} className="bg-slate-50 rounded-xl p-5 border border-slate-200/60 text-xs space-y-3.5">
-                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1">
-                        <Plus className="h-3.5 w-3.5" />
-                        {editingFilterId !== null ? 'Edit Filter Rule' : 'Create New Filter Rule'}
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Filter Name</label>
-                          <input 
-                            type="text"
-                            value={filterForm.name}
-                            onChange={(e) => setFilterForm({ ...filterForm, name: e.target.value })}
-                            placeholder="e.g. Bank Order Auto Router"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Match Sender (From contains)</label>
-                          <input 
-                            type="text"
-                            value={filterForm.match_from}
-                            onChange={(e) => setFilterForm({ ...filterForm, match_from: e.target.value })}
-                            placeholder="e.g. treasury@bank.com"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Match Subject (contains)</label>
-                          <input 
-                            type="text"
-                            value={filterForm.match_subject}
-                            onChange={(e) => setFilterForm({ ...filterForm, match_subject: e.target.value })}
-                            placeholder="e.g. CIT Delivery Order"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Match Body Text (contains)</label>
-                          <input 
-                            type="text"
-                            value={filterForm.match_body}
-                            onChange={(e) => setFilterForm({ ...filterForm, match_body: e.target.value })}
-                            placeholder="e.g. signoff requested"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Parent</label>
-                          <input 
-                            type="text"
-                            value={filterForm.action_parent}
-                            onChange={(e) => setFilterForm({ ...filterForm, action_parent: e.target.value })}
-                            placeholder="e.g. Bank Order"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-slate-500 font-bold mb-1">Action: Assign Folder Child</label>
-                          <input 
-                            type="text"
-                            value={filterForm.action_child}
-                            onChange={(e) => setFilterForm({ ...filterForm, action_child: e.target.value })}
-                            placeholder="e.g. Purwokerto"
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-bold text-blue-700"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Trigger API Checkbox */}
-                      <div className="flex items-center space-x-2.5 pt-1.5 select-none">
-                        <input
-                          type="checkbox"
-                          id="trigger_api_chk"
-                          checked={!!filterForm.trigger_api}
-                          onChange={(e) => setFilterForm({ ...filterForm, trigger_api: e.target.checked })}
-                          className="h-4.5 w-4.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300"
-                        />
-                        <label htmlFor="trigger_api_chk" className="text-slate-700 font-bold flex items-center gap-1.5 cursor-pointer">
-                          <Zap className="h-4 w-4 text-blue-600 fill-blue-100" />
-                          <span>Trigger Sequential CIT API Chaining Workflow for matched tickets</span>
-                        </label>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="submit"
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer text-xs"
-                          >
-                            {editingFilterId !== null ? 'Update Rule' : 'Add Rule'}
-                          </button>
-                          {editingFilterId !== null && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingFilterId(null);
-                                setFilterForm({
-                                  name: '',
-                                  match_from: '',
-                                  match_subject: '',
-                                  match_body: '',
-                                  action_parent: '',
-                                  action_child: '',
-                                  trigger_api: false
-                                });
-                                setFilterMsg('');
-                              }}
-                              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg cursor-pointer text-xs"
-                            >
-                              Cancel Edit
-                            </button>
-                          )}
-                        </div>
-                        {filterMsg && (
-                          <span className="text-slate-600 italic font-semibold">{filterMsg}</span>
-                        )}
-                      </div>
-                    </form>
-
-                    {/* Existing Rules CRUD Table */}
-                    <div className="space-y-3">
-                      <p className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Configured Filter Rules ({configuredRules.length})</p>
-
-                      {isLoadingRules ? (
-                        <div className="flex items-center space-x-2 py-4">
-                          <svg className="animate-spin h-5 w-5 text-slate-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                          <span className="text-xs text-slate-500 font-medium">Memuat aturan...</span>
-                        </div>
-                      ) : configuredRules.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No custom filter rules defined yet.</p>
-                      ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {configuredRules.map(rule => (
-                            <div key={rule.id} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow relative flex flex-col justify-between">
-                              <div>
-                                <div className="flex justify-between items-start">
-                                  <h4 className="font-bold text-slate-800 text-sm">{rule.name || '-'}</h4>
-                                  <div className="flex items-center space-x-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        if (rule.id) {
-                                          setEditingFilterId(rule.id);
-                                          setFilterForm({
-                                            name: rule.name || '',
-                                            match_from: rule.match_from || '',
-                                            match_subject: rule.match_subject || '',
-                                            match_body: rule.match_body || '',
-                                            action_parent: rule.action_parent || '',
-                                            action_child: rule.action_child || '',
-                                            trigger_api: !!rule.trigger_api
-                                          });
-                                          setFilterMsg('');
-                                        }
-                                      }}
-                                      className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
-                                      title="Edit rule"
-                                    >
-                                      <Pencil className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => rule.id && handleDeleteFilter(rule.id)}
-                                      className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
-                                      title="Delete rule"
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="mt-3 space-y-1.5 text-xs text-slate-600 border-t border-slate-100 pt-3">
-                                  <p className="flex justify-between gap-2">
-                                    <span className="font-semibold text-slate-500">Match Sender (From):</span>
-                                    <span className="font-mono text-slate-700 break-all">{rule.match_from || '-'}</span>
-                                  </p>
-                                  <p className="flex justify-between gap-2">
-                                    <span className="font-semibold text-slate-500">Match Subject:</span>
-                                    <span className="text-slate-700">{rule.match_subject || '-'}</span>
-                                  </p>
-                                  <p className="flex justify-between gap-2">
-                                    <span className="font-semibold text-slate-500">Match Body Text:</span>
-                                    <span className="text-slate-700">{rule.match_body || '-'}</span>
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                                <div className="flex items-center gap-1">
-                                  <span className="text-[10px] text-slate-400 font-bold uppercase">Routing:</span>
-                                  <span className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded font-bold font-mono text-[10px] border border-blue-100">
-                                    {rule.action_parent || '-'} &gt; {rule.action_child || '-'}
-                                  </span>
-                                </div>
-                                {rule.trigger_api ? (
-                                  <span className="text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded text-[10px] font-bold uppercase inline-flex items-center gap-1">
-                                    <Zap className="h-3 w-3 fill-current" /> Active
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-400 font-bold uppercase text-[9px]">Disabled</span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                {settingsTab === 'redis-monitor' && (
+                  <RedisQueueDashboard currentUser={currentUser} />
                 )}
+
 
                 {/* TAB 2: ACTIVE ATM CIT API INTEGRATIONS */}
                 {settingsTab === 'api' && (
@@ -2745,6 +2997,33 @@ export default function App() {
                         <li>If the email is system/technical, <strong>action_required</strong> is set to false unless there are clear repair actions.</li>
                         <li>Emails that are not readable will automatically fallback to <strong>"Data historis tidak terbaca jelas"</strong> and <strong>action_required: false</strong>.</li>
                       </ul>
+
+                      <div className="p-4 bg-emerald-50/50 border border-emerald-100 rounded-lg flex items-center justify-between mt-2">
+                        <div>
+                          <p className="font-bold text-emerald-900">Run Data Backfill (Retroactive Folder Tagging)</p>
+                          <p className="text-[10px] text-emerald-700/80 mt-0.5">
+                            Mengeksekusi ulang pattern matching pada email-email lama di database agar disesuaikan dengan aturan master <code className="bg-emerald-100 px-1 py-0.5 rounded text-emerald-800 font-mono">custom_filters</code> terbaru.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRunFolderBackfill}
+                          disabled={isFolderBackfilling}
+                          className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 disabled:from-slate-400 disabled:to-slate-400 text-white font-bold rounded-lg cursor-pointer transition-all shadow-sm flex items-center gap-1.5 text-xs whitespace-nowrap"
+                        >
+                          {isFolderBackfilling ? (
+                            <>
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                              <span>Sweeping Folders...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Tag className="h-3.5 w-3.5" />
+                              <span>Run Data Backfill</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
 
                       <div className="p-4 bg-blue-50/50 border border-blue-100 rounded-lg flex items-center justify-between mt-2">
                         <div>
@@ -3298,7 +3577,28 @@ export default function App() {
           </div>
         )}
 
+        {/* DYNAMIC FILTERS MASTER DATA SECTION (SUPER ADMIN ONLY) */}
+        {currentMenu === 'dynamic-filters' && (
+          <div className="flex-1 overflow-y-auto">
+            <DynamicFiltersManager currentUser={currentUser} />
+          </div>
+        )}
+
+        {/* AI QUEUE & REDIS BULLMQ MONITOR (SUPER ADMIN ONLY) */}
+        {currentMenu === 'redis-monitor' && (
+          <div className="flex-1 overflow-y-auto">
+            <RedisQueueDashboard currentUser={currentUser} />
+          </div>
+        )}
+
       </main>
+
+      {/* GLOBAL CONTEXTUAL HELP DRAWER (IN-APP DOCUMENTATION) */}
+      <HelpDrawer
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        currentMenuKey={currentMenu}
+      />
 
       {/* LOGIN MODAL */}
       <LoginModal
@@ -3688,6 +3988,17 @@ export default function App() {
         }}
       />
 
+      {/* Full-Page Split View CIT Dispatch Overlay */}
+      {fullPageCitEmailId && (
+        <CitDispatchFullPage
+          emailId={fullPageCitEmailId}
+          onClose={() => setFullPageCitEmailId(null)}
+          onOrderCreated={async () => {
+            await loadEmails();
+          }}
+        />
+      )}
+
       {/* WhatsApp QR Scan Modal Overlay */}
       <WhatsAppQrModal
         isOpen={isWaQrModalOpen}
@@ -3698,19 +4009,19 @@ export default function App() {
         }}
       />
 
-      {/* Floating Toast Notification Area */}
+      {/* Floating Toast Notification Area (Light & Minimalist) */}
       <div className="fixed bottom-6 right-6 z-50 space-y-2 pointer-events-none w-80">
         {toasts.map(t => (
-          <div key={t.id} className="p-4 bg-slate-900 border border-slate-800 text-white rounded-xl shadow-2xl flex items-start space-x-3 pointer-events-auto transition-all animate-fade-in relative overflow-hidden select-text">
-            <div className="absolute top-0 left-0 h-full w-1 bg-gradient-to-b from-blue-500 to-indigo-500"></div>
-            <Zap className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="font-bold text-xs">{t.title}</p>
-              <p className="text-[11px] text-slate-400 mt-1 leading-normal">{t.message}</p>
+          <div key={t.id} className="p-3.5 bg-white border border-slate-200 text-slate-800 rounded-xl shadow-lg shadow-slate-200/50 flex items-start gap-3 pointer-events-auto transition-all animate-fade-in relative overflow-hidden select-text">
+            <div className="absolute top-0 left-0 h-full w-1 bg-blue-600"></div>
+            <CheckCircle2 className="h-4.5 w-4.5 text-blue-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-xs text-slate-900 tracking-tight">{t.title}</p>
+              <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{t.message}</p>
             </div>
             <button 
               onClick={() => setToasts(prev => prev.filter(item => item.id !== t.id))}
-              className="text-slate-500 hover:text-white shrink-0 self-start p-0.5 cursor-pointer rounded"
+              className="text-slate-400 hover:text-slate-600 shrink-0 self-start p-0.5 cursor-pointer rounded transition-colors"
             >
               &times;
             </button>
