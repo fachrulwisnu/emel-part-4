@@ -1,3 +1,22 @@
+/**
+ * =========================================================================
+ * CRON SCHEDULER & POP3 EMAIL FETCHER SERVICE
+ * =========================================================================
+ * 
+ * WORKFLOW 1: POP3 Fetcher Cron Job (Setiap 1 Menit)
+ * 1. Berjalan otomatis setiap 1 menit via node-cron.
+ * 2. Menghubungkan ke server POP3 sesuai kredensial tenant.
+ * 3. Menarik email baru, mem-parsing header/body, dan mencocokkan dengan Custom Filters.
+ * 4. Menyimpan data email mentah ke PostgreSQL dengan status `ai_status = 'PENDING'`.
+ * 5. Mendorong payload { email_id, tenant_id } ke Redis BullMQ Queue (`email-ai-queue`) untuk diproses asinkron oleh Worker AI.
+ * 
+ * WORKFLOW 2: Daily Bulk Summary Cron Job (Setiap Jam 17:00)
+ * 1. Berjalan independen sekali sehari pukul 17:00 WIB / sore.
+ * 2. Mengambil seluruh email masuk milik tenant dengan feature_bulk_summary = TRUE (seperti divisi RH & BM).
+ * 3. Menghasilkan ringkasan eksekutif harian menggunakan LLM Engine.
+ * 4. Menyimpan hasil rangkuman ke tabel `daily_summaries` untuk dikirim via WhatsApp Gateway.
+ */
+
 import cron from 'node-cron';
 import { simpleParser } from 'mailparser';
 import { Pop3Client, parsePop3Message } from './pop3';
@@ -24,7 +43,8 @@ export function registerBroadcaster(fn: (event: string, data: any) => void) {
 let isSyncing = false;
 
 /**
- * Executes Bulk Summary for Tenants with feature_bulk_summary enabled (e.g., RH, BM)
+ * FLOW: Generates executive daily bulk summaries for RH/BM management divisions.
+ * Can be triggered automatically by cron or manually by user button.
  */
 export async function performBulkSummaryForTenants(targetTenantId?: number): Promise<void> {
   try {
@@ -63,7 +83,7 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
         is_sent_to_wa: false
       });
 
-      // Mark emails as summarized
+      // Mark emails as summarized in database
       for (const email of pendingEmails) {
         await dbSaveEmail(email.message_id, {
           ...email,
@@ -80,9 +100,11 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
 }
 
 /**
- * Performs POP3 fetch, dynamic tagging, parsing, CIT API automation triggering, and DB saving.
+ * FLOW: POP3 Email Fetcher
+ * Reads incoming mail via POP3, saves to DB with ai_status='PENDING', and pushes job to BullMQ Queue.
  */
 export async function performBackgroundSync(): Promise<{ success: boolean; count: number; message: string }> {
+
   if (isSyncing) {
     console.log('[Cron Sync] Sync already in progress, skipping...');
     return { success: false, count: 0, message: 'Sync already in progress' };

@@ -1,3 +1,15 @@
+/**
+ * =========================================================================
+ * CIT (CASH-IN-TRANSIT) / ATM ORDER EXTRACTION SERVICE
+ * =========================================================================
+ * 
+ * FLOW:
+ * 1. Menerima teks email order operasional dari divisi COS.
+ * 2. Menggunakan RegEx / parsing pintar untuk mengekstraksi variabel nominal (Amount), mata uang (Currency), dan nama cabang (Branch Name).
+ * 3. Menyimpan hasil ekstraksi ke database PostgreSQL untuk penanganan dispatch tiket CIT/ATM.
+ * 4. (Eksternal HTTP Forwarder disetel ke mode aman lokal DB storage).
+ */
+
 import axios from 'axios';
 import { getAppSettings } from './database-service';
 
@@ -8,13 +20,14 @@ export interface ExtractedOrder {
 }
 
 /**
- * Parses the plain text email body to extract Bank Order variables.
- * Format examples:
+ * Parses plain text email body to extract Cash-In-Transit order variables.
+ * @example
  *   Amount: 250,000,000
  *   Currency: IDR
  *   Branch Name: Purwokerto
  */
 export function parseBankOrderEmail(bodyText: string): ExtractedOrder {
+
   const cleanBody = bodyText || '';
 
   // 1. Parse Amount

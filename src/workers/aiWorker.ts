@@ -1,3 +1,17 @@
+/**
+ * =========================================================================
+ * REDIS / BULLMQ WORKER SERVICE: AI EMAIL PROCESSING
+ * =========================================================================
+ * 
+ * FLOW:
+ * 1. Worker mendengarkan antrean Redis BullMQ (`email-ai-queue`).
+ * 2. Mengambil job payload { email_id, tenant_id }.
+ * 3. Memverifikasi keberadaan email dan konfigurasi model AI milik tenant di PostgreSQL/MongoDB.
+ * 4. Mengirimkan teks email ke Multi-LLM Routing Engine untuk ekstraksi tiket CIT/ATM & tagging.
+ * 5. Mengupdate status email di DB menjadi 'COMPLETED' (jika sukses) atau 'FAILED' (jika gagal).
+ * 6. Jika terjadi error/timeout LLM, BullMQ melakukan auto-retry otomatis dengan exponential backoff (max 3x).
+ */
+
 import { Worker, QueueEvents } from 'bullmq';
 import { redisConnection, QUEUE_NAME, emailQueue } from '../config/queue';
 import { dbGetEmailByMessageId, analyzeEmail, dbUpdateEmailFields } from '../database-service';
@@ -5,6 +19,9 @@ import { dbGetTenantById } from '../services/dbManager';
 
 console.log('[Worker Service] Initializing Email AI Worker...');
 
+/**
+ * BullMQ Worker instance handling asynchronous email processing
+ */
 export const aiWorker = new Worker(
   QUEUE_NAME,
   async (job) => {
@@ -13,7 +30,7 @@ export const aiWorker = new Worker(
       throw new Error('Invalid job payload: missing email_id');
     }
 
-    // b. Query database to verify email text & tenant AI config
+    // Step A: Verifikasi data email di database berdasarkan message_id
     const email = await dbGetEmailByMessageId(email_id);
     if (tenant_id) {
       await dbGetTenantById(Number(tenant_id)).catch(() => null);
@@ -24,23 +41,24 @@ export const aiWorker = new Worker(
       return { success: false, reason: 'Email not found' };
     }
 
-    // c. & d. Send to AI model & update DB status to 'COMPLETED' or 'FAILED'
+    // Step B: Eksekusi LLM Analysis & update status ke 'COMPLETED' / 'FAILED'
     try {
       await analyzeEmail(email_id);
       return { success: true, email_id };
     } catch (err: any) {
       console.error(`[Worker Exception] Error processing Email ID ${email_id}:`, err.message || err);
+      // Tandai status 'FAILED' di database jika gagal
       await dbUpdateEmailFields(email_id, { ai_status: 'FAILED' }).catch(() => {});
-      throw err; // Trigger BullMQ auto-retry with exponential backoff
+      throw err; // Trigger BullMQ auto-retry dengan exponential backoff
     }
   },
   {
     connection: redisConnection,
-    concurrency: 2
+    concurrency: 2 // Jalankan 2 job secara paralel per worker node
   }
 );
 
-// Worker Event Listeners as per Instruction 1
+// Listener Event status pekerjaan di Queue
 aiWorker.on('active', (job) => {
   const { email_id, tenant_id } = job.data || {};
   console.log(`[Queue: Active] Memproses Email ID ${email_id} (Tenant: ${tenant_id || 'Global'})...`);
@@ -62,7 +80,10 @@ aiWorker.on('error', (err) => {
   }
 });
 
-// 15-second interval CLI Queue Monitor
+/**
+ * Real-time CLI Queue Monitor
+ * Menampilkan statistik antrean Redis setiap 15 detik pada console log terminal server.
+ */
 setInterval(async () => {
   try {
     const counts = await emailQueue.getJobCounts();
@@ -73,6 +94,7 @@ setInterval(async () => {
 
     console.log(`[Redis Queue Monitor] 🔄 Pending: ${pending} | ⚡ Active: ${active} | ✅ Completed: ${completed} | ❌ Failed: ${failed}`);
   } catch (err) {
-    // Suppress warning if Redis is temporarily unreachable
+    // Abaikan jika Redis belum siap
   }
 }, 15000);
+
