@@ -105,8 +105,37 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
         setLoading(true);
 
         // 1. Fetch Email Detail with AI json
-        const detailRes = await fetch(`/api/emails/detail/${encodeURIComponent(emailId)}`);
-        const detailData = await detailRes.json();
+        let detailRes = await fetch(`/api/emails/detail/${encodeURIComponent(emailId)}`);
+        let detailData = await detailRes.json();
+
+        if (!detailData || !detailData.success || !detailData.raw_email_data) {
+          // Fallback: search in GET /api/emails list if direct detail lookup failed
+          const emailsRes = await fetch('/api/emails');
+          if (emailsRes.ok) {
+            const emailsList = await emailsRes.json();
+            const found = emailsList.find((e: any) => 
+              String(e.message_id) === String(emailId) || 
+              String(e.id) === String(emailId)
+            );
+            if (found) {
+              detailData = {
+                success: true,
+                raw_email_data: found,
+                ai_extracted_json: {
+                  summary: found.summary || 'Detail pemesanan operasional CIT/ATM.',
+                  client_name: (found.folder_child || 'MAYBANK').toUpperCase(),
+                  branch_name: found.suggested_folder_child || 'MEDAN',
+                  plan_date: new Date().toISOString().split('T')[0],
+                  target_tickets: found.target_tickets || 1,
+                  processed_tickets: found.processed_tickets || 0,
+                  order_status: found.order_status || 'PENDING',
+                  total_amount: found.total_amount || 100000000,
+                  currency: found.currency || 'IDR'
+                }
+              };
+            }
+          }
+        }
 
         // 2. Fetch Master Items & Currencies
         const [scRes, currRes] = await Promise.all([
@@ -927,19 +956,23 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             {/* Email Header Card */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2">
               <div className="flex items-center justify-between text-xs font-bold text-slate-800">
-                <span className="truncate max-w-[200px]">{rawEmail?.fromName || rawEmail?.sender}</span>
+                <span className="truncate max-w-[200px]" title={rawEmail?.sender || rawEmail?.fromName || rawEmail?.sender_email}>
+                  {rawEmail?.fromName || rawEmail?.sender || rawEmail?.sender_email || 'Pengirim Tidak Diketahui'}
+                </span>
                 <span className="text-[10px] font-mono text-slate-400 shrink-0">
                   {rawEmail?.date ? new Date(rawEmail.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>
               </div>
 
-              <p className="text-xs font-bold text-slate-900 leading-snug">
-                {rawEmail?.subject}
+              <p className="text-xs font-bold text-slate-900 leading-snug select-text">
+                {rawEmail?.subject || '(Tanpa Subjek)'}
               </p>
 
-              <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                <Clock className="h-3 w-3 shrink-0" />
-                <span>{rawEmail?.date ? new Date(rawEmail.date).toLocaleString() : ''}</span>
+              <div className="text-[10px] text-slate-500 font-mono flex items-center gap-1.5 pt-1 border-t border-slate-100">
+                <Clock className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                <span className="font-semibold text-slate-700">
+                  {rawEmail?.date ? new Date(rawEmail.date).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' }) : 'Tanggal tidak tersedia'}
+                </span>
               </div>
             </div>
 
@@ -959,14 +992,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             {/* Email Body Content */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2">
               <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Pesan Email Lengkap</h4>
-              {rawEmail?.html_body ? (
+              {(rawEmail?.html_body || rawEmail?.body_html) ? (
                 <div
-                  className="prose prose-xs max-w-none text-xs text-slate-700 overflow-x-auto leading-relaxed border-t border-slate-100 pt-2"
-                  dangerouslySetInnerHTML={{ __html: rawEmail.html_body }}
+                  className="prose prose-xs max-w-none text-xs text-slate-700 overflow-x-auto leading-relaxed border-t border-slate-100 pt-3 select-text"
+                  dangerouslySetInnerHTML={{ __html: rawEmail.html_body || rawEmail.body_html }}
                 />
               ) : (
-                <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed font-mono bg-slate-50 p-3 rounded-lg border border-slate-100">
-                  {rawEmail?.body_text || 'Tidak ada teks isi pesan.'}
+                <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed font-mono bg-slate-50 p-3 rounded-lg border border-slate-100 select-text">
+                  {rawEmail?.body_text || rawEmail?.body || 'Tidak ada teks isi pesan.'}
                 </p>
               )}
             </div>

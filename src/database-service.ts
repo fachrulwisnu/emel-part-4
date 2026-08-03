@@ -1486,7 +1486,7 @@ export async function processEmailQueue(): Promise<void> {
  * Retrieve a single email by its message_id from SQLite with a fallback to Supabase
  */
 export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
-  console.log(`Mencari data dengan message_id: ${messageId}`);
+  console.log(`Mencari data dengan message_id atau id: ${messageId}`);
   
   // 1. Check active database MongoDB
   const { getDbDriver } = await import('./config/dbSwitcher');
@@ -1497,17 +1497,21 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
       const dbService = await getDbService();
       if (dbService.type === 'mongodb' && dbService.mongoDb) {
         const col = dbService.mongoDb.collection('emails');
-        const row = await col.findOne({ message_id: messageId });
+        const numId = Number(messageId);
+        const query = !isNaN(numId) 
+          ? { $or: [{ message_id: messageId }, { id: numId }] } 
+          : { message_id: messageId };
+        const row = await col.findOne(query);
         if (row) {
           return {
             id: row.id,
             message_id: row.message_id,
             subject: row.subject || '',
-            sender: row.sender || '',
+            sender: row.sender || row.sender_email || '',
             receiver: row.receiver || '',
             date: row.date || '',
-            body_text: row.body_text || '',
-            html_body: row.html_body || '',
+            body_text: row.body_text || row.body || '',
+            html_body: row.html_body || row.body_html || '',
             tags: row.tags || [],
             category: row.category || '',
             sub_category: row.sub_category || '',
@@ -1548,18 +1552,21 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
       const { getDbService } = await import('./services/dbManager');
       const dbService = await getDbService();
       if (dbService.type === 'postgres' && dbService.pgPool) {
-        const res = await dbService.pgPool.query('SELECT * FROM public.emails WHERE message_id = $1', [messageId]);
+        const res = await dbService.pgPool.query(
+          'SELECT * FROM public.emails WHERE message_id = $1 OR id::text = $1 LIMIT 1', 
+          [messageId]
+        );
         if (res.rows.length > 0) {
           const row = res.rows[0];
           return {
             id: row.id,
             message_id: row.message_id,
             subject: row.subject || '',
-            sender: row.sender || '',
+            sender: row.sender || row.sender_email || '',
             receiver: row.receiver || '',
             date: row.date || '',
-            body_text: row.body_text || '',
-            html_body: row.html_body || '',
+            body_text: row.body_text || row.body || '',
+            html_body: row.html_body || row.body_html || '',
             tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
             category: row.category || '',
             sub_category: row.sub_category || '',
@@ -1600,7 +1607,7 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
   const db = getSqliteDb();
   
   const localEmail = await new Promise<Email | null>((resolve) => {
-    db.get('SELECT * FROM emails WHERE message_id = ?', [messageId], (err, row: any) => {
+    db.get('SELECT * FROM emails WHERE message_id = ? OR CAST(id AS TEXT) = ?', [messageId, messageId], (err, row: any) => {
       if (row) {
         let parsedTags: string[] = [];
         try {
@@ -1610,6 +1617,9 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
         }
         resolve({
           ...row,
+          sender: row.sender || row.sender_email || '',
+          body_text: row.body_text || row.body || '',
+          html_body: row.html_body || row.body_html || '',
           tags: parsedTags,
           attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
           is_read: row.is_read === 1,

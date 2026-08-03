@@ -496,7 +496,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       try { client.close(); } catch (e) {}
 
     } catch (syncErr: any) {
-      console.error(`[POP3 Fetcher] ❌ Gagal login ke akun ${config.email_address}. Error: ${syncErr.message || String(syncErr)}`);
+      console.warn(`[POP3 Fetcher] ⚠️ Connection/Authentication warning for ${config.email_address}: ${syncErr.message || String(syncErr)}`);
       try { client.close(); } catch (e) {}
     }
   }

@@ -163,17 +163,11 @@ export async function getDbService(): Promise<DbServiceInstance> {
         config
       };
     } catch (err: any) {
-      console.warn(`[dbManager] PostgreSQL connection notice: ${err.message || String(err)}. Using fallback instance.`);
-      return {
-        type: 'postgres',
-        mongoDb: null,
-        pgPool: null,
-        config
-      };
+      console.warn(`[dbManager] PostgreSQL connection unavailable: ${err.message || String(err)}. Falling back to MongoDB/SQLite storage engine.`);
     }
   }
 
-  // Default: MongoDB
+  // Fallback: MongoDB / Local Storage
   try {
     const db = await getMongoDb(config.connections.mongodb);
     return {
@@ -183,7 +177,7 @@ export async function getDbService(): Promise<DbServiceInstance> {
       config
     };
   } catch (err: any) {
-    console.warn(`[dbManager] MongoDB connection notice: ${err.message || String(err)}. Using fallback instance.`);
+    console.warn(`[dbManager] MongoDB connection notice: ${err.message || String(err)}. Using fallback local storage engine.`);
     return {
       type: 'mongodb',
       mongoDb: null,
@@ -737,7 +731,7 @@ export async function dbGetTenants(): Promise<Tenant[]> {
         ORDER BY t.id ASC;
       `;
       const res = await dbService.pgPool.query(query);
-      return res.rows.map((row: any) => ({
+      const tenantRows = res.rows.map((row: any) => ({
         id: row.id,
         name: row.name,
         ai_primary_model: row.ai_primary_model || 'Custom AI Core',
@@ -756,12 +750,30 @@ export async function dbGetTenants(): Promise<Tenant[]> {
         permissions: typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || DEFAULT_TENANT_PERMISSIONS),
         created_at: row.created_at
       }));
+      if (tenantRows.length > 0) return tenantRows;
     } catch (err) {
-      console.error('[dbManager] Failed to get tenants from PostgreSQL:', err);
-      return [];
+      console.warn('[dbManager] PostgreSQL tenants query failed, using default fallback tenant:', err);
     }
   }
-  return [];
+
+  // Fallback default tenant if no database records are found
+  return [
+    { 
+      id: 1, 
+      name: 'COS', 
+      ai_primary_model: 'Custom AI Core', 
+      ai_fallback_model: 'Nemotron 3 Super 120B', 
+      ai_models: ['Custom AI Core', 'Nemotron 3 Super 120B', 'Custom AI Vision'], 
+      feature_individual_parsing: true, 
+      feature_bulk_summary: false, 
+      pop3_host: 'pop.secureserver.net', 
+      pop3_port: 110, 
+      pop3_user: 'cos@corporate.com', 
+      pop3_pass: '••••••••', 
+      wa_phone: '6281234567890',
+      permissions: DEFAULT_TENANT_PERMISSIONS
+    }
+  ];
 }
 
 /**

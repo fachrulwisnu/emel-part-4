@@ -154,17 +154,57 @@ const stringToColor = (str: string) => {
 };
 
 const getBadge = (tag: string | undefined) => {
-  if (tag === 'CIT') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[9px] font-bold shadow-xs badge-cit">CIT 💰</span>;
-  if (tag === 'ATM') return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shadow-xs badge-atm">ATM 💳</span>;
+  if (tag === 'CIT') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-950 border border-amber-300 rounded-md text-[10px] font-extrabold shadow-2xs badge-cit">CIT 💰</span>;
+  if (tag === 'ATM') return <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-100 text-indigo-950 border border-indigo-300 rounded-md text-[10px] font-extrabold shadow-2xs badge-atm">ATM 💳</span>;
   return null;
+};
+
+const getFolderTagClass = (str: string) => {
+  const key = (str || '').toLowerCase().trim();
+  if (key === 'operation' || key === 'operations') {
+    return 'bg-blue-100 text-blue-900 border-blue-300 font-bold';
+  }
+  if (key === 'general' || key === 'uncategorized' || key === 'lainnya') {
+    return 'bg-slate-100 text-slate-900 border-slate-300 font-bold';
+  }
+  if (key.includes('bank') || key.includes('order')) {
+    return 'bg-purple-100 text-purple-900 border-purple-300 font-bold';
+  }
+  if (key.includes('region 1') || key.includes('palembang')) {
+    return 'bg-teal-100 text-teal-900 border-teal-300 font-bold';
+  }
+  if (key.includes('region 2') || key.includes('bandung')) {
+    return 'bg-indigo-100 text-indigo-900 border-indigo-300 font-bold';
+  }
+  if (key.includes('cit') || key.includes('atm')) {
+    return 'bg-amber-100 text-amber-900 border-amber-300 font-bold';
+  }
+
+  const presets = [
+    'bg-blue-100 text-blue-900 border-blue-300 font-bold',
+    'bg-indigo-100 text-indigo-900 border-indigo-300 font-bold',
+    'bg-purple-100 text-purple-900 border-purple-300 font-bold',
+    'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold',
+    'bg-teal-100 text-teal-900 border-teal-300 font-bold',
+    'bg-amber-100 text-amber-900 border-amber-300 font-bold',
+    'bg-rose-100 text-rose-900 border-rose-300 font-bold',
+    'bg-cyan-100 text-cyan-900 border-cyan-300 font-bold',
+  ];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const idx = Math.abs(hash) % presets.length;
+  return presets[idx];
 };
 
 const getTagBadgeStyle = (str: string) => {
   const color = stringToColor(str);
   return {
-    backgroundColor: `${color}15`,
-    color: color,
-    borderColor: `${color}30`
+    backgroundColor: `${color}25`,
+    color: '#0F172A',
+    borderColor: `${color}60`,
+    fontWeight: 700
   };
 };
 
