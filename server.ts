@@ -1361,6 +1361,43 @@ async function startServer() {
     }
   });
 
+  // AI Processing Progress Status Endpoint
+  app.get("/api/emails/ai-progress", async (req, res) => {
+    try {
+      const { getDatabaseConfig } = await import("./src/utils/configManager.js");
+      const { getPostgresPool } = await import("./src/lib/postgres.js");
+      const config = await getDatabaseConfig();
+      const pgConnString = config.connections?.postgres || process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
+      const pool = await getPostgresPool(pgConnString);
+
+      const totalRes = await pool.query("SELECT COUNT(*) as total FROM public.emails;");
+      const total = parseInt(totalRes.rows[0]?.total || "0", 10);
+
+      const unanalyzedRes = await pool.query(`
+        SELECT COUNT(*) as unanalyzed FROM public.emails 
+        WHERE ai_status = 'PENDING' 
+           OR ai_status IS NULL 
+           OR summary IS NULL 
+           OR TRIM(summary) = '';
+      `);
+      const unanalyzed = parseInt(unanalyzedRes.rows[0]?.unanalyzed || "0", 10);
+
+      const completed = Math.max(0, total - unanalyzed);
+      const percentage = total > 0 ? Math.round((completed / total) * 100) : 100;
+
+      res.json({
+        success: true,
+        total,
+        unanalyzed,
+        completed,
+        percentage,
+        is_analyzing: unanalyzed > 0
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // Folder tree counting endpoint
   app.get("/api/folders", foldersHandler);
 

@@ -302,6 +302,21 @@ export default function App() {
   const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   
+  // AI Progress Status
+  const [aiProgress, setAiProgress] = useState<{ total: number; unanalyzed: number; completed: number; percentage: number; is_analyzing: boolean } | null>(null);
+
+  const loadAiProgress = async () => {
+    try {
+      const res = await fetch('/api/emails/ai-progress');
+      const data = await res.json();
+      if (data.success) {
+        setAiProgress(data);
+      }
+    } catch (err) {
+      console.error('Failed to load AI progress:', err);
+    }
+  };
+  
   // Custom Filters State
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
 
@@ -603,16 +618,18 @@ export default function App() {
       try {
         const payload = JSON.parse(event.data);
         if (payload.event === 'email_synced' || payload.event === 'email_added') {
-          addToast('Email Terbaca', payload.data.message || 'Email baru telah masuk.');
           loadEmails();
+          loadAiProgress();
         } else if (payload.event === 'email_analyzing') {
           const targetMsgId = payload.data.message_id;
           setTickets(prev => prev.map(t => t.message_id === targetMsgId ? { ...t, ai_status: 'ANALYZING' } : t));
           if (selectedEmailRef.current && selectedEmailRef.current.message_id === targetMsgId) {
             setSelectedEmail(prev => prev ? { ...prev, ai_status: 'ANALYZING' } : null);
           }
+          loadAiProgress();
         } else if (payload.event === 'email_updated') {
           const updatedEmail = payload.data.email;
+          loadAiProgress();
           if (updatedEmail) {
             let fromName = '';
             let fromAddress = updatedEmail.sender || '';
@@ -634,7 +651,6 @@ export default function App() {
             if (selectedEmailRef.current && selectedEmailRef.current.message_id === mappedEmail.message_id) {
               setSelectedEmail(mappedEmail);
             }
-            addToast('Analisis AI Selesai', `Analisis untuk email "${mappedEmail.subject}" telah selesai.`);
           } else {
             loadEmails();
           }
@@ -837,9 +853,19 @@ export default function App() {
       await loadMailConfigs();
       await loadEmails();
       await loadFilterRules();
+      await loadAiProgress();
     };
 
     fetchInitialData();
+  }, []);
+
+  // Poll AI Progress periodically if there are unanalyzed emails
+  useEffect(() => {
+    loadAiProgress();
+    const interval = setInterval(() => {
+      loadAiProgress();
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -1772,6 +1798,32 @@ export default function App() {
                   </span>
                   <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
                 </div>
+
+                {/* AI Worker Processing Progress Bar */}
+                {aiProgress && aiProgress.unanalyzed > 0 && (
+                  <div className="p-3 bg-gradient-to-r from-indigo-900/90 via-purple-900/90 to-slate-900/90 border border-indigo-500/40 rounded-xl shadow-sm text-white space-y-1.5 transition-all duration-300">
+                    <div className="flex items-center justify-between text-xs font-semibold">
+                      <div className="flex items-center gap-1.5 text-indigo-200">
+                        <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                        <span>Worker AI Active</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800">
+                        {aiProgress.completed} / {aiProgress.total} ({aiProgress.percentage}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-800/80 rounded-full h-1.5 overflow-hidden border border-indigo-950">
+                      <div 
+                        className="bg-gradient-to-r from-indigo-500 via-purple-400 to-emerald-400 h-1.5 rounded-full transition-all duration-500 ease-out"
+                        style={{ width: `${Math.max(4, aiProgress.percentage)}%` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[9.5px] text-slate-300 font-mono">
+                      <span>Proses ekstraksi email...</span>
+                      <span className="font-bold text-amber-300">{aiProgress.unanalyzed} pending</span>
+                    </div>
+                  </div>
+                )}
+
                 {pendingCount > 0 && (
                   <button
                     onClick={() => setIsQueueModalOpen(true)}

@@ -141,16 +141,41 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
   console.log(`\n=== [BACKGROUND POP3 AUTO-SYNC START] ===`);
 
   try {
-    const { dbGetMailConfigs } = await import('./services/dbManager');
+    const { dbGetMailConfigs, dbGetTenants } = await import('./services/dbManager');
     let mailConfigs = await dbGetMailConfigs();
     mailConfigs = mailConfigs.filter(c => c.is_active !== false);
 
-    if (mailConfigs.length === 0) {
-      const settings = getAppSettings();
-      const { pop3Host, pop3Port, pop3User, pop3Pass } = settings;
-      if (pop3Host && pop3User) {
+    // Include POP3 configs from tenants table if configured and not yet in mailConfigs
+    try {
+      const tenants = await dbGetTenants();
+      for (const tenant of tenants) {
+        if (tenant.pop3_host && tenant.pop3_user) {
+          const exists = mailConfigs.some(c => c.username === tenant.pop3_user || c.email_address === tenant.pop3_user);
+          if (!exists) {
+            mailConfigs.push({
+              tenant_id: tenant.id,
+              email_address: tenant.pop3_user,
+              host: tenant.pop3_host,
+              port: tenant.pop3_port || 995,
+              username: tenant.pop3_user,
+              password: tenant.pop3_pass || '',
+              is_active: true
+            });
+          }
+        }
+      }
+    } catch (tenantErr) {
+      console.warn('[Cron Sync] Warning gathering tenant mail configs:', tenantErr);
+    }
+
+    // Always include Super Admin / Global POP3 settings from AppSettings if configured
+    const settings = getAppSettings();
+    const { pop3Host, pop3Port, pop3User, pop3Pass } = settings;
+    if (pop3Host && pop3User) {
+      const exists = mailConfigs.some(c => c.username === pop3User || c.email_address === pop3User);
+      if (!exists) {
         mailConfigs.push({
-          tenant_id: 1,
+          tenant_id: 1, // Default Super Admin / COS Tenant ID
           email_address: pop3User,
           host: pop3Host,
           port: pop3Port || 995,
@@ -414,51 +439,32 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               attachments: parsedAttachments
             };
 
-            // Multi-tenant processing & routing based on feature flags
+            // Multi-tenant processing & routing based on config tenant ID
             try {
-              let tenants = await dbGetTenants();
-              if (!tenants || tenants.length === 0) {
-                tenants = [{ id: 1, name: 'COS', ai_primary_model: 'Core', ai_fallback_model: 'Nemotron 3 Super 120B', feature_individual_parsing: true, feature_bulk_summary: false }];
+              const targetTenantId = config.tenant_id || 1;
+              const tenantEmail: Email = {
+                ...newEmail,
+                tenant_id: targetTenantId
+              };
+
+              await dbSaveEmail(item.uid, {
+                ...tenantEmail,
+                ai_status: 'PENDING'
+              });
+
+              try {
+                await emailQueue.add('process-email', {
+                  email_id: item.uid,
+                  tenant_id: targetTenantId
+                });
+                console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean (Tenant ID: ${targetTenantId}).`);
+              } catch (queueErr: any) {
+                console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
               }
 
-              for (const tenant of tenants) {
-                const tenantEmail: Email = {
-                  ...newEmail,
-                  tenant_id: tenant.id
-                };
-
-                if (tenant.feature_individual_parsing) {
-                  // COS Division: Save raw email with ai_status PENDING, push to Redis Queue
-                  await dbSaveEmail(item.uid, {
-                    ...tenantEmail,
-                    ai_status: 'PENDING'
-                  });
-
-                  try {
-                    await emailQueue.add('process-email', {
-                      email_id: item.uid,
-                      tenant_id: tenant.id
-                    });
-                    console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean. (Menunggu AI)`);
-                  } catch (queueErr: any) {
-                    console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
-                  }
-                } else if (tenant.feature_bulk_summary) {
-                  // RH/BM Division: Skip individual parsing, queue for Bulk Summary
-                  console.log(`[Multi-Tenant Cron] Storing raw email for Bulk Summary for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);
-                  await dbSaveEmail(item.uid, {
-                    ...tenantEmail,
-                    tenant_id: tenant.id,
-                    ai_status: 'SKIPPED_BULK',
-                    summary: 'Dijadwalkan untuk Daily Bulk Summary',
-                    is_read: false,
-                    is_summarized: false
-                  });
-                }
-              }
               accountAddedCount++;
             } catch (apiOrDbErr: any) {
-              console.error(`[Cron Sync] Error in Multi-Tenant processing for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
+              console.error(`[Cron Sync] Error in email processing for message #${item.msgNum} (UID: ${item.uid}):`, apiOrDbErr);
               return;
             }
 
