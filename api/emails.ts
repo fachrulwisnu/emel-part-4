@@ -1,11 +1,8 @@
-import { getAllEmails, initDb } from '../src/sqlite-db';
+import { dbGetAllEmails } from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   try {
-    // Ensure the SQLite database is initialized
-    await initDb();
-    
-    const emails = await getAllEmails();
+    const emails = await dbGetAllEmails();
     return res.status(200).json({
       success: true,
       emails

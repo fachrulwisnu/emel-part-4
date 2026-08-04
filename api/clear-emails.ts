@@ -1,4 +1,4 @@
-import { clearDb } from '../src/sqlite-db';
+import { dbClearEmails } from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -6,10 +6,10 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    await clearDb();
+    await dbClearEmails();
     return res.status(200).json({
       success: true,
-      message: 'Local SQLite database cleared successfully.'
+      message: 'Database cleared successfully.'
     });
   } catch (err: any) {
     console.error('API Error in /api/clear-emails:', err);

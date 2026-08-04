@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { simpleParser } from 'mailparser';
-import { upsertEmail, classifyFolder } from '../src/sqlite-db';
+import { dbSaveEmail } from '../src/database-service';
+import { classifyFolder } from '../src/utils/classifiers';
 
 export default async function handler(req: any, res: any) {
   const customPath = req.query.path || '';
@@ -162,8 +163,8 @@ export default async function handler(req: any, res: any) {
         // Classify folder_parent and folder_child
         const { folder_parent, folder_child } = classifyFolder(sender, subject);
 
-        // Upsert to sqlite-db
-        await upsertEmail({
+        // Save email record
+        await dbSaveEmail(msgId, {
           message_id: msgId,
           subject,
           sender,

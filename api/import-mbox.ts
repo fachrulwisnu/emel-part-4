@@ -2,7 +2,7 @@ import fs from 'fs';
 import mboxParser from 'node-mbox';
 import { simpleParser } from 'mailparser';
 import { getAutoTags } from '../src/tags';
-import { upsertEmail } from '../src/sqlite-db';
+import { dbSaveEmail } from '../src/database-service';
 import { THUNDERBIRD_MBOX_PATH } from '../src/thunderbird-sync';
 
 export default async function handler(req: any, res: any) {
@@ -89,7 +89,7 @@ export default async function handler(req: any, res: any) {
       const tags = getAutoTags(subject, bodyText);
 
       try {
-        await upsertEmail({
+        await dbSaveEmail(msgId, {
           message_id: msgId,
           subject,
           sender: `${sender.name} <${sender.email}>`,
@@ -225,7 +225,7 @@ export default async function handler(req: any, res: any) {
           const tags = getAutoTags(subject, bodyText);
 
           // Fault-tolerant: attempt saving immediately
-          await upsertEmail({
+          await dbSaveEmail(msgId, {
             message_id: msgId,
             subject,
             sender,

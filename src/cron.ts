@@ -25,7 +25,8 @@ import {
   dbGetAllEmails, 
   dbUpsertEmail, 
   Email,
-  dbCheckExistingUids
+  dbCheckExistingUids,
+  analyzeEmail
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant } from './services/dbManager';
