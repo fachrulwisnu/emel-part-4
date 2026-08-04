@@ -1388,7 +1388,73 @@ async function startServer() {
         return res.status(400).json({ success: false, message: "Invalid endpoint parameter" });
       }
 
-      const email = await dbGetEmailByMessageId(id);
+      let email = await dbGetEmailByMessageId(id);
+
+      // Direct PostgreSQL query check if not found by primary helper
+      if (!email) {
+        try {
+          const { getDatabaseConfig } = await import("./src/utils/configManager");
+          const { getPostgresPool } = await import("./src/lib/postgres");
+          const config = await getDatabaseConfig();
+          const pgConnString = config.connections?.postgres || process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
+          const pool = await getPostgresPool(pgConnString);
+
+          const isNumeric = /^\d+$/.test(id);
+          let dbRes;
+          if (isNumeric) {
+            dbRes = await pool.query("SELECT * FROM public.emails WHERE id = $1 LIMIT 1", [parseInt(id, 10)]);
+            if (dbRes.rows.length === 0) {
+              dbRes = await pool.query("SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1", [id]);
+            }
+          } else {
+            // String hash message_id query
+            dbRes = await pool.query("SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1", [id]);
+          }
+
+          if (dbRes.rows.length > 0) {
+            const row = dbRes.rows[0];
+            email = {
+              id: row.id,
+              message_id: row.message_id,
+              subject: row.subject || '',
+              sender: row.sender || row.sender_email || '',
+              receiver: row.receiver || '',
+              date: row.date || '',
+              body_text: row.body_text || row.body || '',
+              html_body: row.html_body || row.body_html || '',
+              tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+              category: row.category || '',
+              sub_category: row.sub_category || '',
+              folder_parent: row.folder_parent || '',
+              folder_child: row.folder_child || '',
+              api_workflow_status: row.api_workflow_status || 'none',
+              api_workflow_log: row.api_workflow_log || '',
+              attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+              is_read: row.is_read === true || row.is_read === 1,
+              tag_type: row.tag_type || '',
+              summary: row.summary || '',
+              action_required: row.action_required === true || row.action_required === 1,
+              suggested_tag: row.suggested_tag || '',
+              is_important: row.is_important === true || row.is_important === 1,
+              urgency_level: row.urgency_level || 'Routine',
+              suggested_folder_parent: row.suggested_folder_parent || '',
+              suggested_folder_child: row.suggested_folder_child || '',
+              is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
+              cit_type: row.cit_type || 'None',
+              suggested_bank: row.suggested_bank || '',
+              extracted_notes: row.extracted_notes || '',
+              currency: row.currency || 'IDR',
+              denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+              total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+              ai_status: row.ai_status || 'PENDING',
+              is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+            } as any;
+          }
+        } catch (dbErr) {
+          console.warn("[GET /api/emails/:id Direct PostgreSQL Query Error]:", dbErr);
+        }
+      }
+
       if (!email) {
         return res.status(404).json({ success: false, message: "Email not found" });
       }

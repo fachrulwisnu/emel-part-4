@@ -56,14 +56,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
 
   // Form Fields State
   const [planDate, setPlanDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [branchName, setBranchName] = useState<string>('MEDAN');
-  const [clientName, setClientName] = useState<string>('MAYBANK');
+  const [branchName, setBranchName] = useState<string>('');
+  const [clientName, setClientName] = useState<string>('');
   const [tripType, setTripType] = useState<string>('Delivery');
   const [cycleType, setCycleType] = useState<string>('Siklus 1 (Pagi)');
   const [citType, setCitType] = useState<string>('CIT');
   const [currency, setCurrency] = useState<string>('IDR');
   const [notes, setNotes] = useState<string>('');
-  const [targetAmount, setTargetAmount] = useState<number>(100000000);
+  const [targetAmount, setTargetAmount] = useState<number>(0);
   const [rows, setRows] = useState<DenominationRow[]>([]);
 
   // AI Field Highlights (Visual Sparkle Flags)
@@ -136,14 +136,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   body_text: found.body_text || found.body || ''
                 },
                 ai_extracted_json: {
-                  summary: found.summary || 'Detail pemesanan operasional CIT/ATM.',
-                  client_name: (found.folder_child || 'MAYBANK').toUpperCase(),
-                  branch_name: found.suggested_folder_child || 'MEDAN',
+                  summary: found.summary || '',
+                  client_name: found.folder_child ? String(found.folder_child).toUpperCase() : '',
+                  branch_name: found.suggested_folder_child || '',
                   plan_date: new Date().toISOString().split('T')[0],
                   target_tickets: found.target_tickets || 1,
                   processed_tickets: found.processed_tickets || 0,
                   order_status: found.order_status || 'PENDING',
-                  total_amount: found.total_amount || 100000000,
+                  total_amount: found.total_amount || 0,
                   currency: found.currency || 'IDR'
                 }
               };
@@ -223,36 +223,40 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       ? ai.orders_list[ticketIdx - 1]
       : null;
 
-    setBranchName(orderObj?.branch || ai.branch_name || 'MEDAN');
-    setClientName(orderObj?.client || ai.client_name || 'MAYBANK');
+    setBranchName(orderObj?.branch || ai.branch_name || '');
+    setClientName(orderObj?.client || ai.client_name || '');
     setTripType(orderObj?.trip_type || ai.trip_type || 'Delivery');
     setCycleType(orderObj?.cycle || ai.cycle_type || 'Siklus 1 (Pagi)');
     setCitType(ai.cit_type || 'CIT');
     setCurrency(ai.currency || 'IDR');
     setNotes(ai.extracted_notes || '');
 
-    const amt = orderObj?.amount || (ai.total_amount ? (ai.total_amount / (ai.target_tickets || 1)) : 100000000);
+    const amt = orderObj?.amount || (ai.total_amount ? (ai.total_amount / (ai.target_tickets || 1)) : 0);
     setTargetAmount(amt);
 
     // Build Denomination Rows
-    const denomVal = orderObj?.denom || ai.denomination_suggestion || 100000;
-    const qty = orderObj?.qty || Math.floor(amt / denomVal);
+    if (orderObj?.denom || ai.denomination_suggestion || amt > 0) {
+      const denomVal = orderObj?.denom || ai.denomination_suggestion || 100000;
+      const qty = orderObj?.qty || (amt > 0 ? Math.floor(amt / denomVal) : 0);
 
-    const matchingMaster = itemsMaster.find(m => m.denomination === denomVal) || itemsMaster[0];
+      const matchingMaster = itemsMaster.find(m => m.denomination === denomVal) || itemsMaster[0];
 
-    const initialRows: DenominationRow[] = [
-      {
-        id: 'row-1',
-        item_id: matchingMaster?.id || 'IDR_100K',
-        item_name: matchingMaster?.name || 'IDR 100.000 (Lembar)',
-        denomination: matchingMaster?.denomination || 100000,
-        quantity: qty > 0 ? qty : 1000,
-        subtotal: (matchingMaster?.denomination || 100000) * (qty > 0 ? qty : 1000),
-        isAiFilled: true
-      }
-    ];
+      const initialRows: DenominationRow[] = [
+        {
+          id: 'row-1',
+          item_id: matchingMaster?.id || 'IDR_100K',
+          item_name: matchingMaster?.name || 'IDR 100.000 (Lembar)',
+          denomination: matchingMaster?.denomination || 100000,
+          quantity: qty > 0 ? qty : 0,
+          subtotal: (matchingMaster?.denomination || 100000) * (qty > 0 ? qty : 0),
+          isAiFilled: true
+        }
+      ];
 
-    setRows(initialRows);
+      setRows(initialRows);
+    } else {
+      setRows([]);
+    }
   };
 
   // Switch ticket tab
