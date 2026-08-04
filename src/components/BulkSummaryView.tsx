@@ -98,6 +98,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
   const handleTriggerBulkSummary = async () => {
     setIsTriggering(true);
+    setIsLoading(true);
     setMessage(null);
     try {
       const res = await fetch('/api/daily-summaries/trigger', {
@@ -108,6 +109,14 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
       const data = await res.json();
       if (data.success) {
         setMessage('Proses pembuatan Daily Bulk Summary berhasil dipicu!');
+        if (data.summaries && data.summaries.length > 0) {
+          setSummaries(data.summaries);
+          if (data.summaries[0].id) {
+            setExpandedSummaryIds(prev => ({ ...prev, [data.summaries[0].id]: true }));
+          }
+        } else if (data.data) {
+          setSummaries(prev => [data.data, ...prev.filter(s => s.id !== data.data.id)]);
+        }
         await loadSummaries();
       } else {
         setMessage('Gagal memicu bulk summary: ' + (data.message || 'Error'));
@@ -116,6 +125,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
       setMessage('Gagal terhubung ke server.');
     } finally {
       setIsTriggering(false);
+      setIsLoading(false);
     }
   };
 
@@ -175,11 +185,11 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
           <button
             onClick={handleTriggerBulkSummary}
-            disabled={isTriggering}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
+            disabled={isTriggering || isLoading}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
-            <Sparkles className="w-4 h-4 text-amber-300" />
-            <span>{isTriggering ? 'Generasi AI...' : 'Generate Summary Sekarang'}</span>
+            <Sparkles className={`w-4 h-4 text-amber-300 ${(isTriggering || isLoading) ? 'animate-spin' : ''}`} />
+            <span>{(isTriggering || isLoading) ? 'Memproses AI Summary...' : 'Generate Summary Sekarang'}</span>
           </button>
         </div>
       </div>
@@ -204,11 +214,11 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
             </p>
             <button
               onClick={handleTriggerBulkSummary}
-              disabled={isTriggering}
-              className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold shadow-xs hover:bg-indigo-700 transition-all cursor-pointer"
+              disabled={isTriggering || isLoading}
+              className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold shadow-xs hover:bg-indigo-700 transition-all cursor-pointer disabled:opacity-50"
             >
-              <Sparkles className="w-4 h-4 text-amber-300" />
-              <span>Jalankan Manual Sekarang</span>
+              <Sparkles className={`w-4 h-4 text-amber-300 ${(isTriggering || isLoading) ? 'animate-spin' : ''}`} />
+              <span>{(isTriggering || isLoading) ? 'Memproses AI Summary...' : 'Jalankan Manual Sekarang'}</span>
             </button>
           </div>
         ) : (

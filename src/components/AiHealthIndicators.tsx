@@ -127,7 +127,7 @@ export function AiHealthIndicators() {
             </div>
 
             <div className="mt-3 pt-2.5 border-t border-slate-100 text-[9px] text-slate-400 leading-normal">
-              Status diperbarui otomatis setiap 60 detik. Memantau integrasi model Custom AI (Core & Vision), Nemotron-3-Nano-Omni, Nemotron-3-Super, Qwen3-Next-80B, dan StepFun-3.7-Flash secara aktif.
+              Status diperbarui otomatis setiap 60 detik. Memantau integrasi 8 model AI: Gemini Flash Latest, Custom AI (Core & Vision), Nemotron-3-Nano-Omni, Nemotron-3-Super, GPT-OSS-120B, Nemotron-3-Ultra-550B, dan StepFun-3.7-Flash.
             </div>
           </div>
         </>

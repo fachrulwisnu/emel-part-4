@@ -48,9 +48,9 @@ export interface EmailPayload {
  * Header: Content-Type: application/json, X-goog-api-key: process.env.GEMINI_API_KEY
  */
 export async function callGeminiFlash(prompt: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY || '';
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY environment variable is not defined");
+    throw new Error("GEMINI_API_KEY belum dikonfigurasi di file .env");
   }
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -403,11 +403,11 @@ async function processWithSuper120(promptText: string): Promise<string> {
 }
 
 /**
- * Qwen3-Next-80B-A3B-Instruct call
+ * OpenAI GPT-OSS 120B call (Cascade Fallback Tier 1)
  */
-async function callQwen3(imageB64: string | null, promptText: string): Promise<string> {
-  const client = new OpenAI({
-    apiKey: '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',
+export async function callGptOss120b(imageB64: string | null, promptText: string): Promise<string> {
+  const chatgpt_NVIDIA = new OpenAI({
+    apiKey: process.env.chatgpt_NVDIA_KEY || process.env.chatgpt_NVIDIA_KEY || process.env.NVIDIA_API_KEY || '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',
     baseURL: 'https://integrate.api.nvidia.com/v1',
   });
 
@@ -421,20 +421,61 @@ async function callQwen3(imageB64: string | null, promptText: string): Promise<s
     }
   ] : promptText;
 
-  const response = await client.chat.completions.create({
-    model: "qwen/qwen3-next-80b-a3b-instruct",
+  const messagesPayload = [
+    {
+      role: "user",
+      content: contentPayload
+    }
+  ];
+
+  try {
+    const completion = await chatgpt_NVIDIA.chat.completions.create({
+      model: "openai/gpt-oss-120b",
+      messages: messagesPayload as any,
+      temperature: 1,
+      top_p: 1,
+      max_tokens: 4096,
+      stream: false
+    });
+
+    const choice = completion.choices[0]?.message as any;
+    const reasoning = choice?.reasoning_content;
+    const content = choice?.content;
+    return content || reasoning || "";
+  } catch (error: any) {
+    const errorDetail = error.response?.data?.detail || error.response?.data || error.message || String(error);
+    console.error("[NVIDIA AI Error]", errorDetail);
+    throw new Error(typeof errorDetail === 'object' ? JSON.stringify(errorDetail) : String(errorDetail));
+  }
+}
+
+/**
+ * NVIDIA Nemotron 3 Ultra 550B call (Ultra Deep Reasoning Engine)
+ */
+export async function callNemotronUltra550b(promptText: string): Promise<string> {
+  const openaiUltra = new OpenAI({
+    apiKey: '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',
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+  });
+
+  const completion = await openaiUltra.chat.completions.create({
+    model: "nvidia/nemotron-3-ultra-550b-a55b",
     messages: [
       {
         role: "user",
-        content: contentPayload
+        content: promptText
       }
-    ] as any,
-    temperature: 0.6,
-    top_p: 0.7,
-    max_tokens: 4096,
+    ],
+    temperature: 1,
+    top_p: 0.95,
+    max_tokens: 16384,
+    reasoning_budget: 16384,
+    chat_template_kwargs: { "enable_thinking": true },
     stream: false
-  });
-  return response.choices[0]?.message?.content || "";
+  } as any);
+
+  const choice = completion.choices[0]?.message as any;
+  return choice?.content || choice?.reasoning_content || "";
 }
 
 /**
@@ -477,7 +518,7 @@ async function callStepFun(imageB64: string | null, promptText: string): Promise
 }
 
 /**
- * Image Rotator (Nano Omni 30B -> Qwen3 -> StepFun)
+ * Image Rotator (Nano Omni 30B -> OpenAI GPT-OSS 120B -> StepFun)
  */
 export async function processImageAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
   const imageB64 = await compressImageForNvidia(filePath);
@@ -485,7 +526,7 @@ export async function processImageAttachmentWithRotator(filePath: string, filena
   
   const models = [
     { name: 'Nemotron-3-Nano-Omni-30B', fn: () => processWithNanoOmni(promptText, imageB64) },
-    { name: 'Qwen3-Next-80B', fn: () => callQwen3(imageB64, promptText) },
+    { name: 'OpenAI-GPT-OSS-120B', fn: () => callGptOss120b(imageB64, promptText) },
     { name: 'StepFun-3.7-Flash', fn: () => callStepFun(imageB64, promptText) }
   ];
 
@@ -512,7 +553,7 @@ export async function processImageAttachmentWithRotator(filePath: string, filena
 }
 
 /**
- * Document Rotator (Super 120B -> Nano Omni 30B -> Qwen3 -> StepFun)
+ * Document Rotator (Nemotron 3 Ultra 550B -> Super 120B -> Nano Omni 30B -> OpenAI GPT-OSS 120B -> StepFun)
  */
 export async function processDocumentAttachmentWithRotator(filePath: string, filename: string): Promise<string> {
   const rawText = extractAttachmentContent(filePath, filename);
@@ -524,9 +565,10 @@ ${rawText}
 Harap ringkas dan analisis semua data penting, angka, transaksi, tabel, instruksi, atau informasi penting dari dokumen ini dalam Bahasa Indonesia secara mendalam, terstruktur, dan rapi.`;
 
   const models = [
+    { name: 'Nemotron-3-Ultra-550B', fn: () => callNemotronUltra550b(promptText) },
     { name: 'Nemotron-3-Super-120B', fn: () => processWithSuper120(promptText) },
     { name: 'Nemotron-3-Nano-Omni-30B', fn: () => processWithNanoOmni(promptText) },
-    { name: 'Qwen3-Next-80B', fn: () => callQwen3(null, promptText) },
+    { name: 'OpenAI-GPT-OSS-120B', fn: () => callGptOss120b(null, promptText) },
     { name: 'StepFun-3.7-Flash', fn: () => callStepFun(null, promptText) }
   ];
 
@@ -795,14 +837,14 @@ Expected JSON schema to return:
         });
         console.log(`[Email Intelligence] Success with Nemotron-3-Nano-Omni-30B fallback!`);
       } catch (nanoErr: any) {
-        console.warn(`[Email Intelligence] Nemotron-3-Nano-Omni-30B failed: ${nanoErr.message || nanoErr}. Falling back to Qwen3-Next-80B...`);
+        console.warn(`[Email Intelligence] Nemotron-3-Nano-Omni-30B failed: ${nanoErr.message || nanoErr}. Falling back to OpenAI GPT-OSS 120B...`);
         try {
           aiResponse = await executeWithBackoff(async () => {
-            return await callQwen3(null, prompt);
+            return await callGptOss120b(null, prompt);
           });
-          console.log(`[Email Intelligence] Success with Qwen3 fallback!`);
-        } catch (qwenErr: any) {
-          console.warn(`[Email Intelligence] Qwen3 failed: ${qwenErr.message || qwenErr}. Falling back to StepFun-AI Step-3.7-Flash...`);
+          console.log(`[Email Intelligence] Success with OpenAI GPT-OSS 120B fallback!`);
+        } catch (gptErr: any) {
+          console.warn(`[Email Intelligence] OpenAI GPT-OSS 120B failed: ${gptErr.message || gptErr}. Falling back to StepFun-AI Step-3.7-Flash...`);
           try {
             aiResponse = await executeWithBackoff(async () => {
               return await callStepFun(null, prompt);
@@ -810,7 +852,7 @@ Expected JSON schema to return:
             console.log(`[Email Intelligence] Success with StepFun fallback!`);
           } catch (stepErr: any) {
             console.error(`[Email Intelligence] All models in cascade failed!`);
-            throw new Error(`Cascade Failure: Super120, NanoOmni, Qwen3, and StepFun all failed. Last error: ${stepErr.message}`);
+            throw new Error(`Cascade Failure: Super120, NanoOmni, GPT-OSS-120B, and StepFun all failed. Last error: ${stepErr.message}`);
           }
         }
       }
@@ -1042,12 +1084,13 @@ Tanggal: ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'nume
 
 /**
  * Superadmin Single AI Model Tester
- * Tests an individual AI model with a dummy prompt and calculates latency.
+ * Tests an individual AI model with prompt 'hello world' and calculates latency.
  */
 export async function testSingleAiModel(modelName: string): Promise<{
   success: boolean;
   latency: number;
   modelName: string;
+  responseText: string;
   output?: string;
   error?: string;
 }> {
@@ -1055,24 +1098,30 @@ export async function testSingleAiModel(modelName: string): Promise<{
   const normalized = (modelName || '').toLowerCase().trim();
 
   try {
-    let output = '';
-    if (normalized.includes('gemini') || normalized.includes('flash')) {
-      output = await callGeminiFlash('Tes koneksi sistem ticketing. Berikan respon "OK".');
-    } else if (normalized.includes('core')) {
-      output = await callCustomAiModel('Core', [{ role: 'user', content: 'Tes koneksi sistem ticketing. Berikan respon "OK".' }]);
+    let responseText = '';
+    const testPrompt = 'hello world';
+
+    if (normalized.includes('gemini')) {
+      responseText = await callGeminiFlash(testPrompt);
     } else if (normalized.includes('vision')) {
-      output = await callCustomAiModel('Vision', [{ role: 'user', content: 'Tes koneksi sistem ticketing. Berikan respon "OK".' }]);
+      responseText = await callCustomAiModel('Vision', [{ role: 'user', content: testPrompt }]);
+    } else if (normalized.includes('core')) {
+      responseText = await callCustomAiModel('Core', [{ role: 'user', content: testPrompt }]);
+    } else if (normalized.includes('ultra') || normalized.includes('550b')) {
+      responseText = await callNemotronUltra550b(testPrompt);
     } else if (normalized.includes('nano') || normalized.includes('omni')) {
-      output = await processWithNanoOmni('Tes koneksi sistem ticketing.');
-    } else if (normalized.includes('super') || normalized.includes('120b')) {
-      output = await processWithSuper120('Tes koneksi sistem ticketing.');
-    } else if (normalized.includes('qwen')) {
-      output = await callQwen3(null, 'Tes koneksi sistem ticketing.');
+      responseText = await processWithNanoOmni(testPrompt);
+    } else if (normalized.includes('super') || (normalized.includes('120b') && !normalized.includes('gpt') && !normalized.includes('oss'))) {
+      responseText = await processWithSuper120(testPrompt);
+    } else if (normalized.includes('gpt') || normalized.includes('oss') || normalized.includes('qwen') || normalized.includes('gpt-oss')) {
+      responseText = await callGptOss120b(null, testPrompt);
     } else if (normalized.includes('stepfun') || normalized.includes('step')) {
-      output = await callStepFun(null, 'Tes koneksi sistem ticketing.');
+      responseText = await callStepFun(null, testPrompt);
+    } else if (normalized.includes('flash')) {
+      responseText = await callGeminiFlash(testPrompt);
     } else {
       // Default fallback
-      output = await callCustomAiModel('Core', [{ role: 'user', content: 'Tes koneksi sistem ticketing.' }]);
+      responseText = await callGptOss120b(null, testPrompt);
     }
 
     const latency = Date.now() - startTime;
@@ -1080,15 +1129,19 @@ export async function testSingleAiModel(modelName: string): Promise<{
       success: true,
       latency,
       modelName,
-      output: (output || '').slice(0, 300)
+      responseText,
+      output: (responseText || '').slice(0, 300)
     };
   } catch (err: any) {
     const latency = Date.now() - startTime;
+    const errorDetail = err.response?.data?.detail || err.response?.data || err.message || String(err);
+    console.error("[NVIDIA AI Error]", errorDetail);
     return {
       success: false,
       latency,
       modelName,
-      error: err.response?.data?.message || err.message || String(err)
+      responseText: '',
+      error: typeof errorDetail === 'object' ? JSON.stringify(errorDetail) : String(errorDetail)
     };
   }
 }

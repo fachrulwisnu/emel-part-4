@@ -28,7 +28,7 @@ import {
   dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
-import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant } from './services/dbManager';
+import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant, DailySummary } from './services/dbManager';
 import { generateBulkSummary } from './services/aiProcessingService';
 import { emailQueue } from './config/queue';
 import { detectClientFromEmail } from './services/clientDetector';
@@ -46,18 +46,26 @@ let isSyncing = false;
  * FLOW: Generates executive daily bulk summaries for RH/BM management divisions.
  * Can be triggered automatically by cron or manually by user button.
  */
-export async function performBulkSummaryForTenants(targetTenantId?: number): Promise<void> {
+export async function performBulkSummaryForTenants(targetTenantId?: number): Promise<DailySummary[]> {
+  const createdSummaries: DailySummary[] = [];
   try {
     const tenants = await dbGetTenants();
-    const bulkTenants = tenants.filter(t => {
+    let bulkTenants = tenants.filter(t => {
       if (targetTenantId) {
         return t.id === targetTenantId;
       }
       return t.feature_bulk_summary;
     });
 
+    if (targetTenantId && bulkTenants.length === 0) {
+      const specificTenant = tenants.find(t => t.id === targetTenantId);
+      if (specificTenant) {
+        bulkTenants = [specificTenant];
+      }
+    }
+
     if (bulkTenants.length === 0) {
-      return;
+      return [];
     }
 
     console.log(`[Bulk Summary Cron] Processing daily bulk summary for ${bulkTenants.length} tenants (Target ID: ${targetTenantId || 'ALL'})...`);
@@ -65,33 +73,28 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
     for (const tenant of bulkTenants) {
       const emails = await dbGetAllEmails(tenant.id);
       
-      // INSTRUKSI 1: TIME CUT-OFF & FILTER
-      // 1. Cut-off time: 05:00:00 to 23:59:59
-      // 2. Status filter: Unread (!is_read) OR Important (is_important / High urgency)
       const targetDate = new Date();
       const targetDateStr = targetDate.toISOString().split('T')[0];
 
       let filteredEmails = emails.filter(e => {
-        const isStatusMatch = !e.is_read || e.is_important || e.urgency_level === 'High';
-        if (!isStatusMatch) return false;
-
-        if (!e.date) return true;
-        const eDate = new Date(e.date);
-        const eDateStr = eDate.toISOString().split('T')[0];
-        const hours = eDate.getUTCHours(); // or local hours
-        
-        // Strict Cut-off: Target day between 05:00 and 23:59
-        const isWithinCutoff = (eDateStr === targetDateStr) && (hours >= 5 && hours <= 23);
-        return isWithinCutoff;
+        const eDateRaw = (e as any).received_at || e.date;
+        if (!eDateRaw) return false;
+        const eDateStr = new Date(eDateRaw).toISOString().split('T')[0];
+        return eDateStr === targetDateStr;
       });
 
-      // Fallback if strict cut-off date has no emails (e.g., test environment with mock data)
+      // Fallback 1: unsummarized or unread or important emails
       if (filteredEmails.length === 0) {
         filteredEmails = emails.filter(e => (!e.is_summarized || !e.is_read || e.is_important));
       }
 
+      // Fallback 2: if still no emails, take any available emails for this tenant
+      if (filteredEmails.length === 0 && emails.length > 0) {
+        filteredEmails = emails.slice(0, 20);
+      }
+
       if (filteredEmails.length === 0) {
-        console.log(`[Bulk Summary Cron] Tenant "${tenant.name}" (ID: ${tenant.id}) has no pending emails for bulk summary.`);
+        console.log(`[Bulk Summary Cron] Tenant "${tenant.name}" (ID: ${tenant.id}) has no source emails for bulk summary.`);
         continue;
       }
 
@@ -102,13 +105,20 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
       const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
 
       const summaryDate = targetDateStr;
-      await dbSaveDailySummary({
+      const saved = await dbSaveDailySummary({
         tenant_id: tenant.id,
         summary_date: summaryDate,
         content_text: summaryContent,
         is_sent_to_wa: false,
         source_email_ids: sourceEmailIds
       });
+
+      const fullSummaryObj = {
+        ...saved,
+        source_emails: filteredEmails
+      };
+
+      createdSummaries.push(fullSummaryObj);
 
       // Mark emails as summarized in database
       for (const email of filteredEmails) {
@@ -124,6 +134,8 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
   } catch (err) {
     console.error('[Bulk Summary Cron] Error running bulk summary generator:', err);
   }
+
+  return createdSummaries;
 }
 
 /**
@@ -459,13 +471,14 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                   email_id: item.uid,
                   tenant_id: targetTenantId
                 }, {
-                  attempts: 5,
+                  delay: 1500, // Berikan jeda 1.5 detik agar PostgreSQL selesai commit
+                  attempts: 5,  // Coba ulang sampai 5 kali jika gagal
                   backoff: {
                     type: 'fixed',
-                    delay: 2000
+                    delay: 2000 // Jeda retry 2 detik
                   }
                 });
-                console.log(`[Queue: Added] Email messageId ${item.uid} masuk antrean (Tenant ID: ${targetTenantId}).`);
+                console.log(`[Queue: Added] Email messageId ${item.uid} masuk antrean dengan delay 1.5s (Tenant ID: ${targetTenantId}).`);
               } catch (queueErr: any) {
                 console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
               }

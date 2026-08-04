@@ -1049,21 +1049,35 @@ export async function dbValidateUserCredentials(email: string, password: string)
   return null;
 }
 
+// In-memory fallback store for daily summaries
+const inMemoryDailySummaries: DailySummary[] = [];
+
 /**
  * Save / Get Daily Summaries
  */
-export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
+export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySummary> {
   const dbService = await getDbService();
   const sourceIds = summary.source_email_ids || [];
+  let savedSummary: DailySummary = {
+    ...summary,
+    id: Date.now(),
+    created_at: new Date().toISOString()
+  };
 
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('daily_summaries');
-      await col.insertOne({
+      const now = new Date();
+      const res = await col.insertOne({
         ...summary,
         source_email_ids: sourceIds,
-        created_at: new Date()
+        created_at: now
       });
+      savedSummary = {
+        id: res.insertedId as any,
+        ...summary,
+        created_at: now.toISOString()
+      };
       console.log(`[dbManager] Saved Daily Summary in MongoDB for Tenant ID: ${summary.tenant_id}`);
     } catch (err) {
       console.error('[dbManager] Failed to save Daily Summary in MongoDB:', err);
@@ -1072,20 +1086,37 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<void> {
     try {
       const query = `
         INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
-        VALUES ($1, $2, $3, $4, $5);
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *;
       `;
-      await dbService.pgPool.query(query, [
+      const res = await dbService.pgPool.query(query, [
         summary.tenant_id,
         summary.summary_date,
         summary.content_text,
         !!summary.is_sent_to_wa,
         JSON.stringify(sourceIds)
       ]);
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        savedSummary = {
+          id: row.id,
+          tenant_id: row.tenant_id,
+          summary_date: row.summary_date,
+          content_text: row.content_text,
+          is_sent_to_wa: !!row.is_sent_to_wa,
+          source_email_ids: sourceIds,
+          created_at: row.created_at
+        };
+      }
       console.log(`[dbManager] Saved Daily Summary in PostgreSQL for Tenant ID: ${summary.tenant_id}`);
     } catch (err) {
       console.error('[dbManager] Failed to save Daily Summary in PostgreSQL:', err);
     }
   }
+
+  // Keep in memory fallback store
+  inMemoryDailySummaries.unshift(savedSummary);
+  return savedSummary;
 }
 
 /**
@@ -1138,6 +1169,14 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
       });
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summaries from PostgreSQL:', err);
+    }
+  }
+
+  // Fallback / merge inMemoryDailySummaries
+  const memFiltered = tenantId ? inMemoryDailySummaries.filter(s => s.tenant_id === Number(tenantId)) : inMemoryDailySummaries;
+  for (const m of memFiltered) {
+    if (!rawSummaries.some(r => r.id === m.id)) {
+      rawSummaries.push(m);
     }
   }
 

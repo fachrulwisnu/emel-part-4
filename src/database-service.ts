@@ -1218,8 +1218,8 @@ export async function analyzeEmail(messageId: string): Promise<void> {
     // Check if email exists
     const email = await dbGetEmailByMessageId(messageId);
     if (!email) {
-      console.warn(`[Async AI] Email with message_id ${messageId} not found in database.`);
-      return;
+      console.warn(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
+      throw new Error(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
     }
 
     // Check dynamic filters first for auto-tagging & folder creation
@@ -1417,6 +1417,7 @@ export async function analyzeEmail(messageId: string): Promise<void> {
   } catch (err) {
     console.error(`[Async AI] Fatal error running analyzeEmail for ${messageId}:`, err);
     await dbUpdateEmailFields(messageId, { ai_status: 'FAILED' }).catch(() => {});
+    throw err;
   }
 }
 
@@ -3059,7 +3060,7 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
   const atm_count = emails.filter(e => e.cit_type === 'ATM' || e.suggested_tag === 'ATM').length;
 
   // AI Healthcheck calculation
-  const ai_status = (process.env.GEMINI_API_KEY || process.env.NVIDIA_API_KEY) ? 'Operational' : 'Degraded';
+  const ai_status = (process.env.GEMINI_API_KEY || process.env.chatgpt_NVDIA_KEY || process.env.chatgpt_NVIDIA_KEY || process.env.NVIDIA_API_KEY) ? 'Operational' : 'Degraded';
   const pending_sync = emails.filter(e => !e.is_summarized).length;
 
   // AI Executive Conclusion

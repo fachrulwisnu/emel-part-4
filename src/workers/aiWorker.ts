@@ -96,8 +96,8 @@ export const aiWorker = new Worker(
     }
 
     if (!email) {
-      console.warn(`[Worker Warning] Email with message_id ${messageId} not found in database yet. Triggering retry...`);
-      throw new Error(`Email with message_id ${messageId} not found in database yet. Triggering retry...`);
+      console.warn(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
+      throw new Error(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
     }
 
     // Step B: Eksekusi LLM Analysis & update status ke 'COMPLETED' / 'FAILED'

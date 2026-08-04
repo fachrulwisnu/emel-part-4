@@ -13,11 +13,13 @@ import {
 } from 'lucide-react';
 
 export const AVAILABLE_AI_MODELS = [
+  { id: 'Gemini Flash Latest', name: 'Gemini Flash Latest', desc: 'Model Google Gemini Flash terbaru via REST API resmi', provider: 'Google Cloud' },
   { id: 'Custom AI Core', name: 'Custom AI Core', desc: 'Engine utama klasifikasi email & penarikan entitas', provider: 'Internal Core' },
   { id: 'Custom AI Vision', name: 'Custom AI Vision', desc: 'Engine multimodal OCR untuk parsing lampiran PDF/Gambar', provider: 'Internal Vision' },
   { id: 'Nemotron 3 Nano Omni 30B', name: 'Nemotron 3 Nano Omni 30B', desc: 'Model 30B parameter super cepat ultra-low latency', provider: 'NVIDIA' },
   { id: 'Nemotron 3 Super 120B', name: 'Nemotron 3 Super 120B', desc: 'Model 120B parameter reasoning & ROTATOR kompleks', provider: 'NVIDIA' },
-  { id: 'Qwen3 Next 80B', name: 'Qwen3 Next 80B', desc: 'Model 80B multilingual presisi tinggi', provider: 'Alibaba Cloud' },
+  { id: 'OpenAI GPT-OSS 120B', name: 'OpenAI GPT-OSS 120B', desc: 'Model Cascade Fallback Tier 1 OSS 120B', provider: 'OpenAI / NVIDIA' },
+  { id: 'Nemotron 3 Ultra 550B', name: 'Nemotron 3 Ultra 550B', desc: 'Model Ultra Deep Reasoning Engine 550B', provider: 'NVIDIA' },
   { id: 'StepFun AI Step 3.7 Flash', name: 'StepFun AI Step 3.7 Flash', desc: 'Model real-time flash untuk rangkuman harian', provider: 'StepFun' }
 ];
 

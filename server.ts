@@ -173,7 +173,30 @@ async function startServer() {
   async function pingModel(modelName: string, apiKey: string) {
     const start = Date.now();
     try {
-      if (modelName.startsWith("Custom AI")) {
+      if (modelName === "Gemini Flash Latest" || modelName.toLowerCase().includes("gemini")) {
+        const key = apiKey || process.env.GEMINI_API_KEY || '';
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(key)}`;
+        const response = await axios.post(
+          url,
+          { contents: [{ parts: [{ text: "ping" }] }] },
+          { headers: { 'Content-Type': 'application/json', 'X-goog-api-key': key }, timeout: 10000 }
+        );
+        const latency = Date.now() - start;
+        if (response.status === 200) {
+          return {
+            model: modelName,
+            status: "Active" as const,
+            latency: `${latency}ms`
+          };
+        } else {
+          return {
+            model: modelName,
+            status: "Error" as const,
+            message: `HTTP Status ${response.status}`,
+            latency: `${latency}ms`
+          };
+        }
+      } else if (modelName.startsWith("Custom AI")) {
         const response = await axios.get(
           "https://aim.adv.my.id/v1/models",
           {
@@ -261,6 +284,7 @@ async function startServer() {
   app.get("/api/settings/ai-health", async (req, res) => {
     try {
       const results = await Promise.all([
+        pingModel("Gemini Flash Latest", process.env.GEMINI_API_KEY || ""),
         pingModel("Custom AI - Core", "sk-WYKkPR_QQ6LTbnGWyIxPZA"),
         pingModel("Custom AI - Vision", "sk-WYKkPR_QQ6LTbnGWyIxPZA"),
         pingModel(
@@ -272,8 +296,12 @@ async function startServer() {
           "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"
         ),
         pingModel(
-          "qwen/qwen3-next-80b-a3b-instruct",
-          "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"
+          "openai/gpt-oss-120b",
+          process.env.chatgpt_NVDIA_KEY || process.env.chatgpt_NVIDIA_KEY || process.env.NVIDIA_API_KEY || ""
+        ),
+        pingModel(
+          "nvidia/nemotron-3-ultra-550b-a55b",
+          "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"
         ),
         pingModel(
           "stepfun-ai/step-3.7-flash",
@@ -290,6 +318,11 @@ async function startServer() {
   app.get("/api/system/ai-health", async (req, res) => {
     try {
       const modelsToPing = [
+        {
+          name: "Gemini-Flash-Latest",
+          type: "gemini",
+          key: process.env.GEMINI_API_KEY || ""
+        },
         {
           name: "Custom AI - Core",
           type: "custom",
@@ -315,10 +348,16 @@ async function startServer() {
           key: "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"
         },
         {
-          name: "Qwen3-Next-80B",
+          name: "OpenAI-GPT-OSS-120B",
           type: "nvidia",
-          id: "qwen/qwen3-next-80b-a3b-instruct",
-          key: "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"
+          id: "openai/gpt-oss-120b",
+          key: process.env.chatgpt_NVDIA_KEY || process.env.chatgpt_NVIDIA_KEY || process.env.NVIDIA_API_KEY || ""
+        },
+        {
+          name: "Nemotron-3-Ultra-550B",
+          type: "nvidia",
+          id: "nvidia/nemotron-3-ultra-550b-a55b",
+          key: "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"
         },
         {
           name: "StepFun-AI-Step-3.7-Flash",
@@ -332,7 +371,21 @@ async function startServer() {
         modelsToPing.map(async (m) => {
           const start = Date.now();
           try {
-            if (m.type === "custom") {
+            if (m.type === "gemini") {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(m.key)}`;
+              const response = await axios.post(
+                url,
+                { contents: [{ parts: [{ text: "ping" }] }] },
+                { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
+              );
+              const latency = Date.now() - start;
+              return {
+                name: m.name,
+                status: response.status === 200 ? ("Online" as const) : ("Offline" as const),
+                statusCode: response.status,
+                latency: `${latency}ms`
+              };
+            } else if (m.type === "custom") {
               const response = await axios.get(m.url, {
                 headers: {
                   "Authorization": `Bearer ${m.key}`,
@@ -647,16 +700,31 @@ async function startServer() {
   });
 
   // Multi-Tenant: Trigger Daily Bulk Summary manually
-  app.post("/api/daily-summaries/trigger", async (req, res) => {
+  const handleBulkSummaryTrigger = async (req: any, res: any) => {
     try {
       const { performBulkSummaryForTenants } = await import("./src/cron");
+      const { dbGetDailySummaries } = await import("./src/services/dbManager");
       const tenantId = req.body?.tenant_id ? Number(req.body.tenant_id) : undefined;
-      await performBulkSummaryForTenants(tenantId);
-      res.json({ success: true, message: tenantId ? `Bulk summary generated for Tenant ID ${tenantId}.` : "Bulk summaries generated successfully for all enabled divisions." });
+      const createdSummaries = await performBulkSummaryForTenants(tenantId);
+      
+      const latestSummaries = await dbGetDailySummaries(tenantId);
+      const summaryData = (createdSummaries && createdSummaries.length > 0)
+        ? createdSummaries[0]
+        : (latestSummaries && latestSummaries.length > 0 ? latestSummaries[0] : null);
+
+      res.json({
+        success: true,
+        message: tenantId ? `Bulk summary generated for Tenant ID ${tenantId}.` : "Bulk summaries generated successfully for all enabled divisions.",
+        data: summaryData,
+        summaries: latestSummaries
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
-  });
+  };
+
+  app.post("/api/daily-summaries/trigger", handleBulkSummaryTrigger);
+  app.post("/api/bulk-summary/generate", handleBulkSummaryTrigger);
 
   // Get grouped emails based on AI-categorized folder -> sub_folder -> list of emails
   app.get("/api/emails/grouped", async (req, res) => {
@@ -1401,29 +1469,33 @@ async function startServer() {
   // Single AI Model Tester Endpoint for Superadmin
   app.post("/api/admin/ai/test-model", async (req, res) => {
     try {
-      const { modelName } = req.body || {};
-      if (!modelName) {
-        return res.status(400).json({ success: false, message: "Parameter modelName wajib diisi." });
+      const { modelName, modelKey } = req.body || {};
+      const targetModel = modelKey || modelName;
+      if (!targetModel) {
+        return res.status(400).json({ success: false, message: "Parameter modelKey / modelName wajib diisi." });
       }
 
       const { testSingleAiModel } = await import("./src/services/aiProcessingService.js");
-      const result = await testSingleAiModel(modelName);
+      const result = await testSingleAiModel(targetModel);
 
       if (result.success) {
         res.json({
           success: true,
-          modelName: result.modelName,
+          model: targetModel,
+          modelName: result.modelName || targetModel,
           latency: result.latency,
+          responseText: result.responseText,
           output: result.output,
-          message: `Model ${result.modelName} berhasil diuji (${result.latency} ms)`
+          message: `Model ${result.modelName || targetModel} berhasil diuji (${result.latency} ms)`
         });
       } else {
         res.status(500).json({
           success: false,
-          modelName: result.modelName,
+          model: targetModel,
+          modelName: result.modelName || targetModel,
           latency: result.latency,
           error: result.error,
-          message: `Gagal menguji model ${result.modelName}: ${result.error}`
+          message: `Gagal menguji model ${targetModel}: ${result.error}`
         });
       }
     } catch (err: any) {

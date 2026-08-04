@@ -16,6 +16,27 @@ export interface ModelConfig {
 
 const MODELS: ModelConfig[] = [
   {
+    name: 'Nemotron-3-Ultra-550B',
+    id: 'nvidia/nemotron-3-ultra-550b-a55b',
+    fn: async (messages: any[]) => {
+      const openaiUltra = new OpenAI({
+        apiKey: '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',
+        baseURL: 'https://integrate.api.nvidia.com/v1',
+      });
+      const completion = await openaiUltra.chat.completions.create({
+        model: "nvidia/nemotron-3-ultra-550b-a55b",
+        messages,
+        temperature: 1,
+        top_p: 0.95,
+        max_tokens: 16384,
+        reasoning_budget: 16384,
+        chat_template_kwargs: { "enable_thinking": true },
+        stream: false
+      } as any);
+      return completion.choices[0]?.message?.content || (completion.choices[0]?.message as any)?.reasoning_content || "";
+    }
+  },
+  {
     name: 'Nemotron-3-Nano-Omni-30B',
     id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
     fn: async (messages: any[]) => {
@@ -59,22 +80,31 @@ const MODELS: ModelConfig[] = [
     }
   },
   {
-    name: 'Qwen3-Next-80B',
-    id: 'qwen/qwen3-next-80b-a3b-instruct',
+    name: 'OpenAI-GPT-OSS-120B',
+    id: 'openai/gpt-oss-120b',
     fn: async (messages: any[]) => {
-      const openai = new OpenAI({
-        apiKey: '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',
+      const chatgpt_NVIDIA = new OpenAI({
+        apiKey: process.env.chatgpt_NVDIA_KEY || process.env.chatgpt_NVIDIA_KEY || process.env.NVIDIA_API_KEY || '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',
         baseURL: 'https://integrate.api.nvidia.com/v1'
       });
-      const completion = await openai.chat.completions.create({
-        model: "qwen/qwen3-next-80b-a3b-instruct",
-        messages,
-        temperature: 0.6,
-        top_p: 0.7,
-        max_tokens: 4096,
-        stream: false
-      });
-      return completion.choices[0]?.message?.content || "";
+      try {
+        const completion = await chatgpt_NVIDIA.chat.completions.create({
+          model: "openai/gpt-oss-120b",
+          messages,
+          temperature: 1,
+          top_p: 1,
+          max_tokens: 4096,
+          stream: false
+        });
+        const choice = completion.choices[0]?.message as any;
+        const reasoning = choice?.reasoning_content;
+        const content = choice?.content;
+        return content || reasoning || "";
+      } catch (error: any) {
+        const errorDetail = error.response?.data?.detail || error.response?.data || error.message || String(error);
+        console.error("[NVIDIA AI Error]", errorDetail);
+        throw new Error(typeof errorDetail === 'object' ? JSON.stringify(errorDetail) : String(errorDetail));
+      }
     }
   },
   {

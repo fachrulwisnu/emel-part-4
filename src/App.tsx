@@ -456,6 +456,7 @@ export default function App() {
   const [healthData, setHealthData] = useState<AiModelHealth[]>([]);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [testingModelMap, setTestingModelMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (logsEndRef.current) {
@@ -947,6 +948,66 @@ export default function App() {
       addToast('Health Check Error', 'Could not establish connection to the health diagnostic server.');
     } finally {
       setIsCheckingHealth(false);
+    }
+  };
+
+  const handleTestSingleModelRow = async (modelName: string) => {
+    setTestingModelMap(prev => ({ ...prev, [modelName]: true }));
+    try {
+      const res = await fetch('/api/admin/ai/test-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelName, modelKey: modelName })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setHealthData(prev => prev.map(item => {
+          if (item.model === modelName) {
+            return {
+              ...item,
+              status: 'Active',
+              latency: `${data.latency}ms`,
+              message: undefined
+            };
+          }
+          return item;
+        }));
+        const responseSnippet = (data.responseText || data.output || '').trim();
+        addToast(
+          `Koneksi ${data.modelName || modelName} Berhasil`, 
+          `Response dari [${data.modelName || modelName}]: ${responseSnippet ? `"${responseSnippet.slice(0, 120)}..."` : 'Generasi teks sukses'} (${data.latency}ms)`
+        );
+      } else {
+        const errorMsg = data.error || data.message || 'Gagal menguji model';
+        setHealthData(prev => prev.map(item => {
+          if (item.model === modelName) {
+            return {
+              ...item,
+              status: 'Error',
+              latency: `${data.latency || 0}ms`,
+              message: errorMsg
+            };
+          }
+          return item;
+        }));
+        addToast(`Test Model [${modelName}] Gagal`, errorMsg);
+      }
+    } catch (err: any) {
+      const errorMsg = err.message || String(err);
+      setHealthData(prev => prev.map(item => {
+        if (item.model === modelName) {
+          return {
+            ...item,
+            status: 'Error',
+            latency: '0ms',
+            message: errorMsg
+          };
+        }
+        return item;
+      }));
+      addToast(`Test Model [${modelName}] Error`, errorMsg);
+    } finally {
+      setTestingModelMap(prev => ({ ...prev, [modelName]: false }));
     }
   };
 
@@ -3267,6 +3328,7 @@ export default function App() {
                                 <th className="p-3">Role / Task</th>
                                 <th className="p-3">Status</th>
                                 <th className="p-3 text-right">Latency</th>
+                                <th className="p-3 text-center">Action</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
@@ -3299,12 +3361,14 @@ export default function App() {
                                       <span className="font-mono font-bold text-slate-700">{item.model}</span>
                                     </td>
                                     <td className="p-3 text-slate-500 font-medium">
+                                      {(item.model === 'Gemini Flash Latest' || item.model.includes('Gemini')) && 'Primary REST API Text Engine'}
                                       {item.model === 'Custom AI - Core' && 'Primary Core Text Engine'}
                                       {item.model === 'Custom AI - Vision' && 'Primary Multimodal & Image OCR Engine'}
-                                      {item.model === 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning' && 'Secondary Rotator Vision Engine'}
-                                      {item.model === 'nvidia/nemotron-3-super-120b-a12b' && 'Secondary Rotator Core Engine'}
-                                      {item.model === 'qwen/qwen3-next-80b-a3b-instruct' && 'Cascade Fallback Tier 1'}
-                                      {item.model === 'stepfun-ai/step-3.7-flash' && 'Cascade Fallback Tier 2'}
+                                      {(item.model === 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning' || item.model.includes('nano')) && 'Secondary Rotator Vision Engine'}
+                                      {(item.model === 'nvidia/nemotron-3-super-120b-a12b' || (item.model.includes('super') && !item.model.includes('ultra'))) && 'Secondary Rotator Core Engine'}
+                                      {(item.model === 'openai/gpt-oss-120b' || item.model.includes('gpt-oss') || item.model.includes('qwen')) && 'Cascade Fallback Tier 1'}
+                                      {(item.model === 'nvidia/nemotron-3-ultra-550b-a55b' || item.model.includes('ultra')) && 'Ultra Deep Reasoning Engine'}
+                                      {(item.model === 'stepfun-ai/step-3.7-flash' || item.model.includes('stepfun')) && 'Cascade Fallback Tier 2'}
                                     </td>
                                     <td className="p-3">
                                       {isHealthy && (
@@ -3345,6 +3409,26 @@ export default function App() {
                                       ) : (
                                         <span className="text-slate-400 font-mono">-</span>
                                       )}
+                                    </td>
+                                    <td className="p-3 text-center">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTestSingleModelRow(item.model)}
+                                        disabled={Boolean(testingModelMap[item.model])}
+                                        className="px-2.5 py-1 text-[10px] font-bold bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg transition-all inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                      >
+                                        {testingModelMap[item.model] ? (
+                                          <>
+                                            <RefreshCw className="h-3 w-3 animate-spin text-purple-600" />
+                                            <span>Testing...</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Activity className="h-3 w-3 text-purple-600" />
+                                            <span>Test Model</span>
+                                          </>
+                                        )}
+                                      </button>
                                     </td>
                                   </tr>
                                 );
@@ -3952,7 +4036,7 @@ export default function App() {
                   AI Pending Queue Management
                 </h3>
                 <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 2 per batch, jeda 15s) dan AI Rotator (Nemotron-3-Super &rarr; Nemotron-3-Nano-Omni &rarr; Qwen3 &rarr; StepFun).
+                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 2 per batch, jeda 15s) dan AI Rotator (Nemotron-3-Super &rarr; Nemotron-3-Nano-Omni &rarr; GPT-OSS-120B &rarr; StepFun).
                 </p>
               </div>
               <button

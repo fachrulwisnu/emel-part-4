@@ -85,20 +85,21 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
       const res = await fetch('/api/admin/ai/test-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelName: selectedTestModel })
+        body: JSON.stringify({ modelName: selectedTestModel, modelKey: selectedTestModel })
       });
       const data = await res.json();
       if (data.success) {
+        const textResp = data.responseText || data.output || '';
         const resultObj = {
           success: true,
           latency: data.latency,
           modelName: data.modelName || selectedTestModel,
-          output: data.output
+          output: textResp
         };
         setTestResult(resultObj);
         setStatusMsg({ type: 'success', text: `Tes Model ${selectedTestModel} Berhasil (${data.latency} ms)` });
         if (onAddToast) {
-          onAddToast('Tes Model AI Berhasil', `${selectedTestModel} merespon dalam ${data.latency} ms.`);
+          onAddToast('Tes Model AI Berhasil', `Response dari [${selectedTestModel}]: "${textResp.slice(0, 100)}..." (${data.latency}ms)`);
         }
       } else {
         const resultObj = {
@@ -518,7 +519,8 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
               <option value="Custom AI Vision">Custom AI Vision (aim.adv.my.id)</option>
               <option value="Nemotron 3 Nano Omni 30B">Nemotron 3 Nano Omni 30B (NVIDIA)</option>
               <option value="Nemotron 3 Super 120B">Nemotron 3 Super 120B (NVIDIA)</option>
-              <option value="Qwen3 Next 80B">Qwen3 Next 80B (Alibaba Cloud)</option>
+              <option value="OpenAI GPT-OSS 120B">OpenAI GPT-OSS 120B (OpenAI / NVIDIA)</option>
+              <option value="Nemotron 3 Ultra 550B">Nemotron 3 Ultra 550B (NVIDIA Ultra Reasoning)</option>
               <option value="StepFun AI Step 3.7 Flash">StepFun AI Step 3.7 Flash (StepFun)</option>
             </select>
           </div>
