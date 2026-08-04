@@ -184,7 +184,7 @@ export async function checkIfExists(emailUid: string): Promise<boolean> {
   }
 }
 
-// Bulk check existing email UIDs/message_ids from Supabase and SQLite.
+// Bulk check existing email UIDs/message_ids from active database.
 // Uses .in() query for extremely high-performance bulk lookup in a single request.
 export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> {
   const existingSet = new Set<string>();
@@ -249,7 +249,7 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
   return existingSet;
 }
 
-// Get all emails (merges PostgreSQL/MongoDB and SQLite)
+// Get all emails (merges PostgreSQL/MongoDB and remote sources)
 export async function dbGetAllEmails(tenantId?: number, sourceEmail?: string): Promise<Email[]> {
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
@@ -1016,7 +1016,7 @@ export function registerDbBroadcaster(fn: (event: string, data: any) => void) {
 }
 
 /**
- * Synchronizes and analyzes emails using NVIDIA API and saves/upserts to Supabase + SQLite
+ * Synchronizes and analyzes emails using AI API and saves/upserts to active database
  * In the new event-driven / asynchronous flow, this function immediately upserts the email
  * as PENDING, and then asynchronously triggers analyzeEmail(emailId).
  */
@@ -1035,7 +1035,7 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     currency: email.currency || 'IDR'
   };
 
-  // 1. Immediately insert/upsert the email to SQLite & Supabase
+  // 1. Immediately insert/upsert the email to active database
   await dbUpsertEmail(initialEmail);
 
   // Trigger frontend to show loading/pending status
