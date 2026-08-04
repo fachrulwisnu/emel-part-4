@@ -1,3 +1,4 @@
+import sqlite3 from 'sqlite3';
 import path from 'path';
 import fs from 'fs';
 import axios from 'axios';
@@ -5,11 +6,12 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
 import { getDbDriver } from './config/dbSwitcher';
-import { classifyEmail, classifyFolder } from './utils/classifiers';
+import { classifyEmail, classifyFolder } from './sqlite-db';
 import { getAiCompletion } from './services/aiService';
 import { executeWithBackoff } from './services/aiProcessingService';
 
 const SETTINGS_FILE_PATH = path.join(process.cwd(), 'app_settings.json');
+const SQLITE_DB_PATH = path.join(process.cwd(), 'emails.db');
 
 export interface Email {
   id?: number;
@@ -141,17 +143,107 @@ export function isSupabaseActive(): boolean {
 }
 
 // Unified Database CRUD Operations
-export async function initDatabaseService(): Promise<void> {
-  // Initialize real-time listener in a non-blocking way if Supabase is active
-  setTimeout(() => {
-    try {
-      initSupabaseRealtime();
-    } catch (rtErr) {
-      console.error('[Database Service] Failed to initialize Supabase Realtime channel:', rtErr);
-    }
-  }, 1000);
+let sqliteDb: sqlite3.Database | null = null;
 
-  return Promise.resolve();
+function getSqliteDb(): sqlite3.Database {
+  if (!sqliteDb) {
+    sqliteDb = new sqlite3.Database(SQLITE_DB_PATH);
+  }
+  return sqliteDb;
+}
+
+export async function initDatabaseService(): Promise<void> {
+  const db = getSqliteDb();
+
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      // Create local SQLite emails table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS emails (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT UNIQUE,
+          subject TEXT,
+          sender TEXT,
+          receiver TEXT,
+          date TEXT,
+          body_text TEXT,
+          html_body TEXT,
+          tags TEXT,
+          category TEXT,
+          sub_category TEXT,
+          folder_parent TEXT,
+          folder_child TEXT,
+          api_workflow_status TEXT,
+          api_workflow_log TEXT
+        )
+      `);
+
+      // Create custom_filters table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS custom_filters (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT,
+          match_from TEXT,
+          match_subject TEXT,
+          match_body TEXT,
+          action_parent TEXT,
+          action_child TEXT,
+          trigger_api INTEGER DEFAULT 0
+        )
+      `);
+
+      // Create email_analysis table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS email_analysis (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT UNIQUE,
+          folder TEXT,
+          sub_folder TEXT,
+          tags TEXT,
+          summary_email TEXT,
+          summary_attachments TEXT,
+          created_at TEXT
+        )
+      `, () => {});
+
+      // Ensure api_workflow columns exist in SQLite schema
+      db.run('ALTER TABLE emails ADD COLUMN api_workflow_status TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN api_workflow_log TEXT', () => {});
+      db.run('ALTER TABLE custom_filters ADD COLUMN trigger_api INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN attachments TEXT', () => {});
+
+      // Operational & AI Assistant Columns
+      db.run('ALTER TABLE emails ADD COLUMN is_read INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN tag_type TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN summary TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN action_required INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_tag TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_important INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN urgency_level TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_folder_parent TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_folder_child TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_cit_order INTEGER DEFAULT 0', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN cit_type TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN suggested_bank TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN extracted_notes TEXT', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN currency TEXT DEFAULT "IDR"', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN denomination_suggestion INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN total_amount INTEGER', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN ai_status TEXT DEFAULT "PENDING"', () => {});
+      db.run('ALTER TABLE emails ADD COLUMN is_summarized INTEGER DEFAULT 0', () => {});
+
+      // Initialize real-time listener in a non-blocking way
+      setTimeout(() => {
+        try {
+          initSupabaseRealtime();
+        } catch (rtErr) {
+          console.error('[Database Service] Failed to initialize Supabase Realtime channel:', rtErr);
+        }
+      }, 1000);
+
+      resolve();
+    });
+  });
 }
 
 // Check if a single email exists by UID (Supabase 'uid' or 'message_id')
@@ -184,34 +276,47 @@ export async function checkIfExists(emailUid: string): Promise<boolean> {
   }
 }
 
-// Bulk check existing email UIDs/message_ids from active database.
+// Bulk check existing email UIDs/message_ids from Supabase and SQLite.
 // Uses .in() query for extremely high-performance bulk lookup in a single request.
 export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> {
   const existingSet = new Set<string>();
   if (!uids || uids.length === 0) return existingSet;
 
+  // 1. Check active database first
+  const { getDbDriver } = await import('./config/dbSwitcher');
+  const driver = getDbDriver();
+  if (driver === 'mongodb') {
+    try {
+      const { getDbService } = await import('./services/dbManager');
+      const dbService = await getDbService();
+      if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const col = dbService.mongoDb.collection('emails');
+        const rows = await col.find({ message_id: { $in: uids } }).project({ message_id: 1 }).toArray();
+        for (const r of rows) {
+          if (r.message_id) existingSet.add(r.message_id);
+        }
+        return existingSet; // Avoid querying SQLite or Supabase
+      }
+    } catch (err) {
+      console.error('[dbCheckExistingUids] MongoDB check exception:', err);
+    }
+  }
+
+  // 2. Check local SQLite
   try {
-    const { getDbService } = await import('./services/dbManager');
-    const dbService = await getDbService();
-    if (dbService.type === 'mongodb' && dbService.mongoDb) {
-      const col = dbService.mongoDb.collection('emails');
-      const rows = await col.find({ message_id: { $in: uids } }).project({ message_id: 1 }).toArray();
-      for (const r of rows) {
-        if (r.message_id) existingSet.add(r.message_id);
-      }
-      return existingSet;
-    } else if (dbService.type === 'postgres' && dbService.pgPool) {
-      const res = await dbService.pgPool.query(
-        'SELECT message_id FROM public.emails WHERE message_id = ANY($1)',
-        [uids]
-      );
-      for (const r of res.rows) {
-        if (r.message_id) existingSet.add(r.message_id);
-      }
-      return existingSet;
+    const db = getSqliteDb();
+    const placeholders = uids.map(() => '?').join(',');
+    const sqliteRows = await new Promise<any[]>((resolve, reject) => {
+      db.all(`SELECT message_id FROM emails WHERE message_id IN (${placeholders})`, uids, (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+    for (const r of sqliteRows) {
+      if (r.message_id) existingSet.add(r.message_id);
     }
   } catch (err) {
-    console.error('[dbCheckExistingUids] Database check exception:', err);
+    console.error('[dbCheckExistingUids] SQLite error:', err);
   }
 
   // 3. Check Supabase
@@ -249,7 +354,7 @@ export async function dbCheckExistingUids(uids: string[]): Promise<Set<string>> 
   return existingSet;
 }
 
-// Get all emails (merges PostgreSQL/MongoDB and remote sources)
+// Get all emails (merges PostgreSQL/MongoDB and SQLite)
 export async function dbGetAllEmails(tenantId?: number, sourceEmail?: string): Promise<Email[]> {
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
@@ -429,7 +534,61 @@ export async function dbGetAllEmails(tenantId?: number, sourceEmail?: string): P
     }
   }
 
-  return [];
+  // Fallback to SQLite
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.all('SELECT * FROM emails ORDER BY date DESC', (err, rows: any[]) => {
+      if (err || !rows) {
+        return resolve([]);
+      }
+      const mapped = rows.map((row) => {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = JSON.parse(row.tags || '[]');
+        } catch {
+          parsedTags = row.tags ? row.tags.split(',') : [];
+        }
+        return {
+          id: row.id,
+          message_id: row.message_id,
+          subject: row.subject || '',
+          sender: row.sender || '',
+          receiver: row.receiver || '',
+          date: row.date || '',
+          body_text: row.body_text || '',
+          html_body: row.html_body || '',
+          tags: parsedTags,
+          category: row.category || '',
+          sub_category: row.sub_category || '',
+          folder_parent: row.folder_parent || '',
+          folder_child: row.folder_child || '',
+          api_workflow_status: row.api_workflow_status || 'none',
+          api_workflow_log: row.api_workflow_log || '',
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          // AI and operational fields
+          is_read: row.is_read === 1,
+          tag_type: row.tag_type || '',
+          summary: row.summary || '',
+          action_required: row.action_required === 1,
+          suggested_tag: row.suggested_tag || '',
+          is_important: row.is_important === 1,
+          urgency_level: row.urgency_level || 'Routine',
+          suggested_folder_parent: row.suggested_folder_parent || '',
+          suggested_folder_child: row.suggested_folder_child || '',
+          is_cit_order: row.is_cit_order === 1,
+          cit_type: row.cit_type || 'None',
+          suggested_bank: row.suggested_bank || '',
+          extracted_notes: row.extracted_notes || '',
+          currency: row.currency || 'IDR',
+          denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
+          total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
+          ai_status: row.ai_status || 'PENDING',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        };
+      });
+      resolve(mapped);
+    });
+  });
 }
 
 // AI Processing with @google/genai SDK
@@ -458,11 +617,10 @@ export async function processEmailWithAI(subject: string, bodyText: string): Pro
 
     const systemInstruction = `Anda adalah asisten operasional cerdas untuk memproses email masuk milik Fachrul.
 Setiap email harus dianalisis untuk menghasilkan:
-1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. WAJIB membaca teks kutipan/balasan (Quoted Text) yang diawali dengan simbol '>'.
-2. Jika email berisi insiden mesin/ATM/MDM/masalah jaringan: AI WAJIB mengekstrak Nomor Tiket, Lokasi/ID Mesin, dan Detail Masalah (misal: NETWORK_ISSUE). Paksa 'action_required' menjadi true dan 'is_important' menjadi true.
-3. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
-4. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
-5. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, insiden mesin/jaringan, atau peringatan kegagalan harus dianggap penting.`;
+1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. Jika ada instruksi atau penugasan, sebutkan secara spesifik siapa yang harus melakukan apa.
+2. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
+3. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
+4. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, penugasan penting, atau peringatan kegagalan/error kritis harus dianggap penting.`;
 
     const prompt = `Subject: ${subject}\n\nBody:\n${bodyText}`;
 
@@ -1016,7 +1174,7 @@ export function registerDbBroadcaster(fn: (event: string, data: any) => void) {
 }
 
 /**
- * Synchronizes and analyzes emails using AI API and saves/upserts to active database
+ * Synchronizes and analyzes emails using NVIDIA API and saves/upserts to Supabase + SQLite
  * In the new event-driven / asynchronous flow, this function immediately upserts the email
  * as PENDING, and then asynchronously triggers analyzeEmail(emailId).
  */
@@ -1035,7 +1193,7 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
     currency: email.currency || 'IDR'
   };
 
-  // 1. Immediately insert/upsert the email to active database
+  // 1. Immediately insert/upsert the email to SQLite & Supabase
   await dbUpsertEmail(initialEmail);
 
   // Trigger frontend to show loading/pending status
@@ -1285,7 +1443,20 @@ export async function processEmailQueue(): Promise<void> {
     }
   }
 
-  // Supabase fallback complete
+  // Fallback to SQLite if Supabase returns nothing or is inactive
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    pendingEmails = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' LIMIT 10",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
 
   if (pendingEmails.length === 0) {
     return;
@@ -1433,6 +1604,40 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
     }
   }
 
+  const db = getSqliteDb();
+  
+  const localEmail = await new Promise<Email | null>((resolve) => {
+    db.get('SELECT * FROM emails WHERE message_id = ? OR CAST(id AS TEXT) = ?', [messageId, messageId], (err, row: any) => {
+      if (row) {
+        let parsedTags: string[] = [];
+        try {
+          parsedTags = JSON.parse(row.tags || '[]');
+        } catch {
+          parsedTags = row.tags ? row.tags.split(',') : [];
+        }
+        resolve({
+          ...row,
+          sender: row.sender || row.sender_email || '',
+          body_text: row.body_text || row.body || '',
+          html_body: row.html_body || row.body_html || '',
+          tags: parsedTags,
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          is_read: row.is_read === 1,
+          action_required: row.action_required === 1,
+          is_important: row.is_important === 1,
+          is_cit_order: row.is_cit_order === 1,
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        });
+      } else {
+        resolve(null);
+      }
+    });
+  });
+
+  if (localEmail) {
+    return localEmail;
+  }
+
   // Fallback to Supabase
   const supabase = getSupabaseClient();
   if (supabase) {
@@ -1472,7 +1677,7 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
   return null;
 }
 
-// Upsert Email in PostgreSQL and Supabase with AI-driven tagging and summary analysis
+// Upsert Email in SQLite and Supabase with AI-driven tagging and summary analysis
 export async function dbUpsertEmail(email: Email): Promise<void> {
   // Classify dynamically if not provided
   let emailCategory = email.category;
@@ -1524,24 +1729,57 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   let denominationSuggestion = email.denomination_suggestion;
   let totalAmount = email.total_amount;
 
-  if (!summary) {
-    try {
-      console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
-      const aiResult = await processEmailWithAI(email.subject, email.body_text);
-      summary = aiResult.summary;
-      actionRequired = aiResult.action_required;
-      suggestedTag = aiResult.suggested_tag;
-      tagType = aiResult.suggested_tag;
-      isImportant = aiResult.is_important;
-      urgencyLevel = aiResult.suggested_tag === 'Penugasan' ? 'High' : (aiResult.is_important ? 'Medium' : 'Routine');
+  const db = getSqliteDb();
+  const existing: any = await new Promise((resolve) => {
+    db.get('SELECT is_read, tag_type, summary, action_required, suggested_tag, is_important, tags, urgency_level, suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes, currency, denomination_suggestion, total_amount FROM emails WHERE message_id = ?', [email.message_id], (err, row) => {
+      resolve(row || null);
+    });
+  });
 
-      if (isImportant || suggestedTag === 'Penugasan') {
-        if (!tags.includes('Urgent/Task')) {
-          tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
-        }
+  if (existing) {
+    isRead = email.is_read !== undefined ? email.is_read : (existing.is_read === 1);
+    if (!tagType) tagType = existing.tag_type;
+    if (!summary) summary = existing.summary;
+    if (actionRequired === undefined) actionRequired = existing.action_required === 1;
+    if (!suggestedTag) suggestedTag = existing.suggested_tag;
+    if (isImportant === undefined) isImportant = existing.is_important === 1;
+    if (!urgencyLevel || urgencyLevel === 'Routine') urgencyLevel = existing.urgency_level || 'Routine';
+    if (!suggestedFolderParent) suggestedFolderParent = existing.suggested_folder_parent;
+    if (!suggestedFolderChild) suggestedFolderChild = existing.suggested_folder_child;
+    if (isCitOrder === undefined) isCitOrder = existing.is_cit_order === 1;
+    if (email.cit_type === undefined) citType = existing.cit_type || 'None';
+    if (email.suggested_bank === undefined) suggestedBank = existing.suggested_bank !== undefined ? existing.suggested_bank : '';
+    if (email.extracted_notes === undefined) extractedNotes = existing.extracted_notes !== undefined ? existing.extracted_notes : '';
+    if (email.currency === undefined || email.currency === 'IDR') currency = existing.currency || 'IDR';
+    if (email.denomination_suggestion === undefined) denominationSuggestion = existing.denomination_suggestion;
+    if (email.total_amount === undefined) totalAmount = existing.total_amount;
+    try {
+      if (tags.length === 0 && existing.tags) {
+        tags = JSON.parse(existing.tags);
       }
-    } catch (aiErr) {
-      console.error('[AI Copilot] Error analyzing new email:', aiErr);
+    } catch (e) {}
+  } else {
+    // New email: Run AI Assistant if not already supplied
+    if (!summary) {
+      try {
+        console.log(`[AI Copilot] Processing new email with Gemini: "${email.subject}"`);
+        const aiResult = await processEmailWithAI(email.subject, email.body_text);
+        summary = aiResult.summary;
+        actionRequired = aiResult.action_required;
+        suggestedTag = aiResult.suggested_tag;
+        tagType = aiResult.suggested_tag;
+        isImportant = aiResult.is_important;
+        urgencyLevel = aiResult.suggested_tag === 'Penugasan' ? 'High' : (aiResult.is_important ? 'Medium' : 'Routine');
+
+        // Tag backfilling: Jika mengandung instruksi mendesak atau penugasan, berikan label khusus 'Urgent/Task' pada tags
+        if (isImportant || suggestedTag === 'Penugasan') {
+          if (!tags.includes('Urgent/Task')) {
+            tags = [...tags.filter(t => t !== 'Other'), 'Urgent/Task'];
+          }
+        }
+      } catch (aiErr) {
+        console.error('[AI Copilot] Error analyzing new email:', aiErr);
+      }
     }
   }
 
@@ -1556,7 +1794,93 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
     ai_status: email.ai_status || 'PENDING'
   };
 
-  // Save to active database (PostgreSQL, MongoDB, or Supabase)
+  // Upsert to SQLite
+  await new Promise<void>((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO emails (
+        message_id, subject, sender, receiver, date, body_text, html_body, tags, 
+        category, sub_category, folder_parent, folder_child, api_workflow_status, api_workflow_log,
+        is_read, tag_type, summary, action_required, suggested_tag, is_important, urgency_level,
+        suggested_folder_parent, suggested_folder_child, is_cit_order, cit_type, suggested_bank, extracted_notes,
+        attachments, currency, denomination_suggestion, total_amount, ai_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        subject = excluded.subject,
+        sender = excluded.sender,
+        receiver = excluded.receiver,
+        date = excluded.date,
+        body_text = excluded.body_text,
+        html_body = excluded.html_body,
+        tags = excluded.tags,
+        category = excluded.category,
+        sub_category = excluded.sub_category,
+        folder_parent = excluded.folder_parent,
+        folder_child = excluded.folder_child,
+        api_workflow_status = excluded.api_workflow_status,
+        api_workflow_log = excluded.api_workflow_log,
+        is_read = excluded.is_read,
+        tag_type = excluded.tag_type,
+        summary = excluded.summary,
+        action_required = excluded.action_required,
+        suggested_tag = excluded.suggested_tag,
+        is_important = excluded.is_important,
+        urgency_level = excluded.urgency_level,
+        suggested_folder_parent = excluded.suggested_folder_parent,
+        suggested_folder_child = excluded.suggested_folder_child,
+        is_cit_order = excluded.is_cit_order,
+        cit_type = excluded.cit_type,
+        suggested_bank = excluded.suggested_bank,
+        extracted_notes = excluded.extracted_notes,
+        attachments = excluded.attachments,
+        currency = excluded.currency,
+        denomination_suggestion = excluded.denomination_suggestion,
+        total_amount = excluded.total_amount,
+        ai_status = excluded.ai_status
+      `,
+      [
+        normalizedEmail.message_id,
+        normalizedEmail.subject,
+        normalizedEmail.sender,
+        normalizedEmail.receiver,
+        normalizedEmail.date,
+        normalizedEmail.body_text,
+        normalizedEmail.html_body,
+        JSON.stringify(tags),
+        normalizedEmail.category,
+        normalizedEmail.sub_category,
+        normalizedEmail.folder_parent,
+        normalizedEmail.folder_child,
+        normalizedEmail.api_workflow_status,
+        normalizedEmail.api_workflow_log,
+        isRead ? 1 : 0,
+        tagType || null,
+        summary || null,
+        actionRequired ? 1 : 0,
+        suggestedTag || null,
+        isImportant ? 1 : 0,
+        urgencyLevel || null,
+        suggestedFolderParent || null,
+        suggestedFolderChild || null,
+        isCitOrder ? 1 : 0,
+        citType || 'None',
+        suggestedBank || '',
+        extractedNotes || '',
+        JSON.stringify(normalizedEmail.attachments || []),
+        currency || 'IDR',
+        denominationSuggestion !== undefined ? denominationSuggestion : null,
+        totalAmount !== undefined ? totalAmount : null,
+        normalizedEmail.ai_status || 'PENDING'
+      ],
+      (err) => {
+        if (err) return reject(err);
+        resolve();
+      }
+    );
+  });
+
+  // Save to active remote database (Supabase or MongoDB)
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
 
@@ -1628,15 +1952,20 @@ export async function dbUpsertEmail(email: Email): Promise<void> {
   }
 }
 
-export async function dbSaveEmail(msgIdOrEmail: any, emailData?: any): Promise<void> {
-  if (typeof msgIdOrEmail === 'string' && emailData) {
-    return dbUpsertEmail({ ...emailData, message_id: msgIdOrEmail });
-  }
-  return dbUpsertEmail(msgIdOrEmail);
-}
-
-// Mark email as read or unread on PostgreSQL, MongoDB and Supabase databases
+// Mark email as read or unread on SQLite and Supabase databases
 export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): Promise<void> {
+  const isReadInt = is_read ? 1 : 0;
+  
+  // SQLite
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('UPDATE emails SET is_read = ? WHERE message_id = ?', [isReadInt, message_id], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  // Hybrid Switcher
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -1647,6 +1976,7 @@ export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): P
       console.error('[MongoDB Update is_read Exception]:', err);
     }
   } else {
+    // Supabase
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -1664,7 +1994,7 @@ export async function dbMarkEmailAsRead(message_id: string, is_read: boolean): P
   }
 }
 
-// Get all custom filters (from Supabase/MongoDB if configured)
+// Get all custom filters (from Supabase/MongoDB if configured, fallback to SQLite)
 export async function dbGetCustomFilters(): Promise<CustomFilter[]> {
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
@@ -1702,11 +2032,60 @@ export async function dbGetCustomFilters(): Promise<CustomFilter[]> {
     }
   }
 
-  return [];
+  // Fallback to SQLite
+  const db = getSqliteDb();
+  return new Promise((resolve) => {
+    db.all('SELECT * FROM custom_filters ORDER BY id ASC', (err, rows: any[]) => {
+      if (err || !rows) {
+        return resolve([]);
+      }
+      const mapped = rows.map((row) => ({
+        id: row.id,
+        name: row.name || '',
+        match_from: row.match_from || '',
+        match_subject: row.match_subject || '',
+        match_body: row.match_body || '',
+        action_parent: row.action_parent || '',
+        action_child: row.action_child || '',
+        trigger_api: row.trigger_api === 1
+      }));
+      resolve(mapped);
+    });
+  });
 }
 
 // Add/Save Custom Filter
 export async function dbSaveCustomFilter(filter: CustomFilter): Promise<void> {
+  const isTriggerApiInt = filter.trigger_api ? 1 : 0;
+
+  // Save to SQLite
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    if (filter.id) {
+      db.run(
+        `UPDATE custom_filters SET 
+          name = ?, match_from = ?, match_subject = ?, match_body = ?, action_parent = ?, action_child = ?, trigger_api = ?
+         WHERE id = ?`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child, isTriggerApiInt, filter.id],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    } else {
+      db.run(
+        `INSERT INTO custom_filters (name, match_from, match_subject, match_body, action_parent, action_child, trigger_api)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [filter.name, filter.match_from, filter.match_subject, filter.match_body, filter.action_parent, filter.action_child, isTriggerApiInt],
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        }
+      );
+    }
+  });
+
+  // Save to Remote (Supabase or MongoDB)
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -1745,6 +2124,14 @@ export async function dbSaveCustomFilter(filter: CustomFilter): Promise<void> {
 
 // Delete Custom Filter
 export async function dbDeleteCustomFilter(id: number): Promise<void> {
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('DELETE FROM custom_filters WHERE id = ?', [id], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -1771,6 +2158,14 @@ export async function dbDeleteCustomFilter(id: number): Promise<void> {
 
 // Clear Database Cache
 export async function dbClearEmails(): Promise<void> {
+  const db = getSqliteDb();
+  await new Promise<void>((resolve, reject) => {
+    db.run('DELETE FROM emails', (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -1784,7 +2179,7 @@ export async function dbClearEmails(): Promise<void> {
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
-        const { error } = await supabase.from('emails').delete().neq('id', 0);
+        const { error } = await supabase.from('emails').delete().neq('id', 0); // deletes all rows
         if (error) {
           console.error('[Supabase Clear Emails Error]:', error);
         }
@@ -1797,7 +2192,39 @@ export async function dbClearEmails(): Promise<void> {
 
 // Apply retroactive filter to local SQLite database
 export async function dbApplyRetroactiveFilter(filter: CustomFilter): Promise<number> {
-  return 0;
+  const db = getSqliteDb();
+  return new Promise<number>((resolve, reject) => {
+    db.all("SELECT * FROM emails WHERE folder_parent = 'Lainnya'", (err, rows: any[]) => {
+      if (err) return reject(err);
+      if (!rows || rows.length === 0) return resolve(0);
+
+      let matchedCount = 0;
+      const stmt = db.prepare("UPDATE emails SET folder_parent = ?, folder_child = ? WHERE message_id = ?");
+
+      for (const row of rows) {
+        let isMatch = true;
+        const senderLower = (row.sender || '').toLowerCase();
+        const subjectLower = (row.subject || '').toLowerCase();
+        const bodyLower = (row.body_text || '').toLowerCase();
+
+        if (!filter.match_from && !filter.match_subject && !filter.match_body) {
+          continue;
+        }
+
+        if (filter.match_from && !senderLower.includes(filter.match_from.toLowerCase())) isMatch = false;
+        if (filter.match_subject && !subjectLower.includes(filter.match_subject.toLowerCase())) isMatch = false;
+        if (filter.match_body && !bodyLower.includes(filter.match_body.toLowerCase())) isMatch = false;
+
+        if (isMatch) {
+          matchedCount++;
+          stmt.run(filter.action_parent, filter.action_child, row.message_id);
+        }
+      }
+
+      stmt.finalize();
+      resolve(matchedCount);
+    });
+  });
 }
 
 export function matchCustomFilterRule(
@@ -1920,6 +2347,42 @@ export async function dbUpdateEmailFields(
     is_summarized?: boolean;
   }
 ): Promise<void> {
+  // SQLite update
+  const db = getSqliteDb();
+  const sets: string[] = [];
+  const params: any[] = [];
+  
+  if (fields.folder_parent !== undefined) { sets.push('folder_parent = ?'); params.push(fields.folder_parent); }
+  if (fields.folder_child !== undefined) { sets.push('folder_child = ?'); params.push(fields.folder_child); }
+  if (fields.suggested_folder_parent !== undefined) { sets.push('suggested_folder_parent = ?'); params.push(fields.suggested_folder_parent); }
+  if (fields.suggested_folder_child !== undefined) { sets.push('suggested_folder_child = ?'); params.push(fields.suggested_folder_child); }
+  if (fields.tags !== undefined) { sets.push('tags = ?'); params.push(JSON.stringify(fields.tags)); }
+  if (fields.is_important !== undefined) { sets.push('is_important = ?'); params.push(fields.is_important ? 1 : 0); }
+  if (fields.urgency_level !== undefined) { sets.push('urgency_level = ?'); params.push(fields.urgency_level); }
+  if (fields.suggested_tag !== undefined) { sets.push('suggested_tag = ?'); params.push(fields.suggested_tag); sets.push('tag_type = ?'); params.push(fields.suggested_tag); }
+  if (fields.summary !== undefined) { sets.push('summary = ?'); params.push(fields.summary); }
+  if (fields.action_required !== undefined) { sets.push('action_required = ?'); params.push(fields.action_required ? 1 : 0); }
+  if (fields.is_cit_order !== undefined) { sets.push('is_cit_order = ?'); params.push(fields.is_cit_order ? 1 : 0); }
+  if (fields.cit_type !== undefined) { sets.push('cit_type = ?'); params.push(fields.cit_type); }
+  if (fields.suggested_bank !== undefined) { sets.push('suggested_bank = ?'); params.push(fields.suggested_bank); }
+  if (fields.extracted_notes !== undefined) { sets.push('extracted_notes = ?'); params.push(fields.extracted_notes); }
+  if (fields.ai_status !== undefined) { sets.push('ai_status = ?'); params.push(fields.ai_status); }
+  if (fields.currency !== undefined) { sets.push('currency = ?'); params.push(fields.currency); }
+  if (fields.denomination_suggestion !== undefined) { sets.push('denomination_suggestion = ?'); params.push(fields.denomination_suggestion); }
+  if (fields.total_amount !== undefined) { sets.push('total_amount = ?'); params.push(fields.total_amount); }
+  if (fields.is_summarized !== undefined) { sets.push('is_summarized = ?'); params.push(fields.is_summarized ? 1 : 0); }
+  
+  if (sets.length > 0) {
+    params.push(message_id);
+    await new Promise<void>((resolve, reject) => {
+      db.run(`UPDATE emails SET ${sets.join(', ')} WHERE message_id = ?`, params, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+  }
+  
+  // 2. Remote update (MongoDB or Supabase)
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
 
@@ -2102,7 +2565,21 @@ async function _runHistoricalBackfillAsync(): Promise<void> {
     }
   }
   
-  // Supabase fetch check complete
+  // If Supabase fetch was empty or not active, try SQLite
+  if (oldEmails.length === 0) {
+    console.log("[Backfill Background] Fetching from SQLite database...");
+    const db = getSqliteDb();
+    oldEmails = await new Promise((resolve, reject) => {
+      db.all(
+        "SELECT message_id, subject, body_text, attachments FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR ai_status = 'PENDING'",
+        [],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(rows || []);
+        }
+      );
+    });
+  }
 
   console.log(`[Backfill Background] Found ${oldEmails.length} unsummarized/pending historical emails to process.`);
   if (oldEmails.length === 0) {
@@ -2309,7 +2786,37 @@ export async function dbGetUnsummarizedEmails(): Promise<any[]> {
     }
   }
 
-  return emails;
+  // Fallback/merge with SQLite
+  const db = getSqliteDb();
+  const localEmails: any[] = await new Promise((resolve, reject) => {
+    db.all(
+      "SELECT * FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated' OR summary = 'Data historis tidak terbaca jelas'",
+      [],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+
+  // Merge them by message_id
+  const mergedMap = new Map<string, any>();
+  for (const e of emails) {
+    if (e.message_id) {
+      mergedMap.set(e.message_id, e);
+    }
+  }
+  for (const e of localEmails) {
+    if (e.message_id && !mergedMap.has(e.message_id)) {
+      mergedMap.set(e.message_id, {
+        ...e,
+        tags: typeof e.tags === 'string' ? JSON.parse(e.tags || '[]') : (e.tags || []),
+        attachments: typeof e.attachments === 'string' ? JSON.parse(e.attachments || '[]') : (e.attachments || [])
+      });
+    }
+  }
+
+  return Array.from(mergedMap.values());
 }
 
 /**
@@ -2357,6 +2864,27 @@ export async function dbGetAllPendingEmails(): Promise<Email[]> {
     } catch (e) {
       console.error('[dbGetAllPendingEmails] Error fetching from Supabase:', e);
     }
+  }
+
+  // Fallback to SQLite
+  if (pendingEmails.length === 0) {
+    const db = getSqliteDb();
+    const rows: any[] = await new Promise((resolve) => {
+      db.all(
+        "SELECT * FROM emails WHERE ai_status = 'PENDING' ORDER BY date DESC",
+        [],
+        (err, rows: any[]) => {
+          if (err) resolve([]);
+          resolve(rows || []);
+        }
+      );
+    });
+
+    pendingEmails = rows.map((row: any) => ({
+      ...row,
+      tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+      attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+    }));
   }
 
   return pendingEmails;
@@ -2489,7 +3017,26 @@ export async function dbGetDailyReportData(): Promise<DailyReportData> {
     }
   }
 
-  // Daily report data check complete
+  // Fallback to SQLite or if no data returned from Supabase
+  if (emails.length === 0) {
+    const db = getSqliteDb();
+    emails = await new Promise<Email[]>((resolve) => {
+      db.all('SELECT * FROM emails', [], (err, rows) => {
+        if (err || !rows) return resolve([]);
+        const mapped = rows.map((row: any) => ({
+          ...row,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
+          action_required: row.action_required === true || row.action_required === 1 || String(row.action_required) === 'true',
+          is_read: row.is_read === true || row.is_read === 1 || String(row.is_read) === 'true',
+          is_important: row.is_important === true || row.is_important === 1 || String(row.is_important) === 'true',
+          is_cit_order: row.is_cit_order === true || row.is_cit_order === 1 || String(row.is_cit_order) === 'true',
+          is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
+        }));
+        resolve(mapped);
+      });
+    });
+  }
 
   // Sort emails by date desc to get newest 5-10 for AI Executive Conclusion
   const sortedEmails = [...emails].sort((a, b) => {
@@ -2600,11 +3147,38 @@ export async function dbSaveEmailAnalysis(
     summary_attachments: any[] 
   }
 ): Promise<void> {
+  const db = getSqliteDb();
   const tagsStr = JSON.stringify(analysis.tags || []);
   const attachmentsStr = JSON.stringify(analysis.summary_attachments || []);
   const createdAt = new Date().toISOString();
 
-  // 1. Sync to emails table to keep folders/tags aligned
+  // 1. Save to SQLite
+  await new Promise<void>((resolve, reject) => {
+    db.run(`
+      INSERT INTO email_analysis (message_id, folder, sub_folder, tags, summary_email, summary_attachments, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        folder = excluded.folder,
+        sub_folder = excluded.sub_folder,
+        tags = excluded.tags,
+        summary_email = excluded.summary_email,
+        summary_attachments = excluded.summary_attachments,
+        created_at = excluded.created_at
+    `, [
+      messageId,
+      analysis.folder,
+      analysis.sub_folder,
+      tagsStr,
+      analysis.summary_email,
+      attachmentsStr,
+      createdAt
+    ], (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+
+  // 2. Sync to emails table to keep folders/tags aligned
   await dbUpdateEmailFields(messageId, {
     folder_parent: analysis.folder,
     folder_child: analysis.sub_folder,
@@ -2616,7 +3190,7 @@ export async function dbSaveEmailAnalysis(
     console.error(`[Database Service] Failed to sync fields to emails table:`, err);
   });
 
-  // 2. Save to Remote (Supabase or MongoDB)
+  // 3. Save to Remote (Supabase or MongoDB)
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -2686,6 +3260,26 @@ export async function dbSaveEmailAnalysis(
 }
 
 export async function dbGetEmailAnalysis(messageId: string): Promise<any | null> {
+  const db = getSqliteDb();
+
+  const sqliteRow = await new Promise<any>((resolve) => {
+    db.get('SELECT * FROM email_analysis WHERE message_id = ?', [messageId], (err, row) => {
+      if (err || !row) resolve(null);
+      else resolve(row);
+    });
+  });
+
+  if (sqliteRow) {
+    return {
+      message_id: sqliteRow.message_id,
+      folder: sqliteRow.folder,
+      sub_folder: sqliteRow.sub_folder,
+      tags: typeof sqliteRow.tags === 'string' ? JSON.parse(sqliteRow.tags || '[]') : (sqliteRow.tags || []),
+      summary_email: sqliteRow.summary_email,
+      summary_attachments: typeof sqliteRow.summary_attachments === 'string' ? JSON.parse(sqliteRow.summary_attachments || '[]') : (sqliteRow.summary_attachments || [])
+    };
+  }
+
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -2758,7 +3352,24 @@ export async function dbGetAllEmailAnalysis(): Promise<any[]> {
     }
   }
 
-  return [];
+  const db = getSqliteDb();
+  return new Promise<any[]>((resolve) => {
+    db.all('SELECT * FROM email_analysis', (err, rows: any[]) => {
+      if (err || !rows) {
+        resolve([]);
+      } else {
+        const mapped = rows.map(row => ({
+          message_id: row.message_id,
+          folder: row.folder,
+          sub_folder: row.sub_folder,
+          tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+          summary_email: row.summary_email,
+          summary_attachments: typeof row.summary_attachments === 'string' ? JSON.parse(row.summary_attachments || '[]') : (row.summary_attachments || [])
+        }));
+        resolve(mapped);
+      }
+    });
+  });
 }
 
 export async function dbGetGroupedEmails(): Promise<any> {
@@ -2887,6 +3498,13 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
             await dbService.mongoDb.collection('emails').updateMany(
               { $or: [{ message_id: email.message_id }, { id: email.id }] },
               { $set: { folder_parent: parent, folder_child: child, suggested_folder_parent: parent, suggested_folder_child: child, suggested_bank: parent } }
+            );
+          } else {
+            const db = getSqliteDb();
+            db.run(
+              "UPDATE email_analysis SET folder = ?, sub_folder = ? WHERE message_id = ?",
+              [parent, child, email.message_id],
+              () => {}
             );
           }
         } catch (e) {

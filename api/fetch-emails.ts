@@ -1,7 +1,7 @@
 import PostalMime from 'postal-mime';
 import { Pop3Client, parsePop3Message } from '../src/pop3';
 import { getAutoTags } from '../src/tags';
-import { dbGetAllEmails, dbSaveEmail } from '../src/database-service';
+import { getExistingEmailsMetadata, upsertEmail } from '../src/sqlite-db';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -17,7 +17,7 @@ export default async function handler(req: any, res: any) {
   const client = new Pop3Client();
   let existingEmails: any[] = [];
   try {
-    existingEmails = await dbGetAllEmails();
+    existingEmails = await getExistingEmailsMetadata();
   } catch (dbErr) {
     console.error('Failed to query existing emails metadata:', dbErr);
   }
@@ -128,8 +128,8 @@ export default async function handler(req: any, res: any) {
         const tags = getAutoTags(subject, body);
         const senderStr = fromName ? `${fromName} <${fromAddress}>` : fromAddress;
 
-        // Save email record
-        await dbSaveEmail(item.uid, {
+        // Upsert directly into SQLite
+        await upsertEmail({
           message_id: item.uid,
           subject,
           sender: senderStr,

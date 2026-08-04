@@ -3,7 +3,7 @@ import path from 'path';
 import mboxParser from 'node-mbox';
 import { simpleParser } from 'mailparser';
 import { getAutoTags } from './tags';
-import { dbSaveEmail } from './database-service';
+import { upsertEmail } from './sqlite-db';
 
 // The exact path requested by the user
 export const THUNDERBIRD_MBOX_PATH = `C:\\Users\\HP\\AppData\\Roaming\\Thunderbird\\Profiles\\xr2b9r9p.default-release\\Mail\\mail.advantagescm.com\\Inbox`;
@@ -109,8 +109,8 @@ export async function syncThunderbirdInbox(customPath?: string): Promise<SyncRes
             // Apply Business Rules tagging logic
             const tags = getAutoTags(subject, bodyText);
 
-            // Save email record
-            await dbSaveEmail(msgId, {
+            // Upsert into SQLite
+            await upsertEmail({
               message_id: msgId,
               subject,
               sender,
@@ -224,7 +224,7 @@ async function generateSimulatedToSqlite(): Promise<number> {
     const tags = getAutoTags(subject, bodyText);
 
     try {
-      await dbSaveEmail(msgId, {
+      await upsertEmail({
         message_id: msgId,
         subject,
         sender: `${sender.name} <${sender.email}>`,

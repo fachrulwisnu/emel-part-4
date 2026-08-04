@@ -833,50 +833,6 @@ async function startServer() {
     }
   });
 
-  // Force individual re-analysis endpoint (POST /api/emails/:id/re-analyze & POST /api/emails/re-analyze)
-  const handleReAnalyzeEmail = async (req: any, res: any) => {
-    try {
-      const emailIdentifier = req.params.id || req.body.id || req.body.message_id;
-      if (!emailIdentifier) {
-        return res.status(400).json({ success: false, message: "Missing email ID or message_id parameter" });
-      }
-
-      let email = await dbGetEmailByMessageId(emailIdentifier);
-      if (!email) {
-        const allEmails = await dbGetAllEmails();
-        email = allEmails.find(e => String(e.id) === String(emailIdentifier) || String(e.message_id) === String(emailIdentifier)) || null;
-      }
-
-      if (!email) {
-        return res.status(404).json({ success: false, message: "Email record not found" });
-      }
-
-      const targetMsgId = email.message_id || String(email.id);
-
-      // Force fresh individual LLM extraction and update database
-      await analyzeEmail(targetMsgId);
-
-      // Retrieve updated email data
-      let updatedEmail = await dbGetEmailByMessageId(targetMsgId);
-      if (!updatedEmail) {
-        const allEmails = await dbGetAllEmails();
-        updatedEmail = allEmails.find(e => String(e.id) === String(emailIdentifier) || String(e.message_id) === String(targetMsgId)) || email;
-      }
-
-      res.json({
-        success: true,
-        message: "Email re-analyzed successfully",
-        email: updatedEmail
-      });
-    } catch (err: any) {
-      console.error("[Re-Analyze API] Error processing email:", err);
-      res.status(500).json({ success: false, message: err.message || String(err) });
-    }
-  };
-
-  app.post("/api/emails/:id/re-analyze", handleReAnalyzeEmail);
-  app.post("/api/emails/re-analyze", handleReAnalyzeEmail);
-
   // GET pending summary count & list for general inbox
   app.get("/api/emails/pending-summary", async (req, res) => {
     try {

@@ -81,13 +81,6 @@ export async function analyzeEmailContent(emailPayload: EmailPayload): Promise<a
 
   const systemPrompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email dan lampirannya ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
 ${routingContextStr}
-PETUNJUK EKSTRAKSI UTAMA & BINDING DATA:
-1. WAJIB membaca dan menganalisis teks kutipan/balasan (Quoted Text) yang diawali dengan simbol \`>\`.
-2. Jika email berisi insiden mesin atau masalah teknis (contoh: MDM/ATM problem ticket, error mesin, kegagalan transaksi, masalah jaringan/offline):
-   - AI WAJIB mengekstrak: Nomor Tiket, Lokasi/ID Mesin, dan Detail Masalah (misal: NETWORK_ISSUE, CASH_OUT, HARDWARE_OFFLINE) ke dalam 'summary' dan 'extracted_notes'.
-   - AI WAJIB memaksa 'action_required' menjadi true.
-   - AI WAJIB memaksa 'urgency_level' menjadi 'High' atau 'Urgent'.
-
 JSON Schema yang HARUS dikembalikan:
 {
   "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
@@ -97,7 +90,7 @@ JSON Schema yang HARUS dikembalikan:
   "suggested_bank": "${emailPayload.action_parent || 'BCA'}",
   "suggested_folder_parent": "${emailPayload.action_parent || 'Operation'}",
   "suggested_folder_child": "${emailPayload.action_child || 'General'}",
-  "extracted_notes": "Instruksi khusus, Nomor Tiket, ID Mesin, atau catatan operasional dari email/lampiran",
+  "extracted_notes": "Instruksi khusus atau catatan operasional dari email/lampiran",
   "suggested_tag": "Informasi",
   "urgency_level": "Routine",
   "action_required": false,
@@ -798,12 +791,6 @@ export async function generateSummaryAndTagging(email: {
   }
 
   const prompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
-
-PETUNJUK EKSTRAKSI:
-1. WAJIB membaca dan menganalisis teks kutipan/balasan (Quoted Text) yang diawali dengan simbol \`>\`.
-2. Jika email berisi insiden mesin atau masalah teknis (MDM/ATM problem ticket, error/offline):
-   - AI WAJIB mengekstrak: Nomor Tiket, Lokasi/ID Mesin, dan Detail Masalah (misal: NETWORK_ISSUE).
-   - AI WAJIB memaksa 'action_required' menjadi true dan 'urgency_level' menjadi 'High'/'Urgent'.
 
 JSON schema yang harus dikembalikan:
 {

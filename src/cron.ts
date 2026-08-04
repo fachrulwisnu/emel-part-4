@@ -25,8 +25,7 @@ import {
   dbGetAllEmails, 
   dbUpsertEmail, 
   Email,
-  dbCheckExistingUids,
-  analyzeEmail
+  dbCheckExistingUids
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant } from './services/dbManager';
@@ -425,23 +424,36 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
               for (const tenant of tenants) {
                 const tenantEmail: Email = {
                   ...newEmail,
-                  tenant_id: tenant.id,
-                  ai_status: 'PENDING'
+                  tenant_id: tenant.id
                 };
 
-                // Save raw email and trigger individual LLM parsing for all incoming emails
-                await dbSaveEmail(item.uid, tenantEmail);
-
-                try {
-                  await emailQueue.add('process-email', {
-                    email_id: item.uid,
-                    tenant_id: tenant.id
+                if (tenant.feature_individual_parsing) {
+                  // COS Division: Save raw email with ai_status PENDING, push to Redis Queue
+                  await dbSaveEmail(item.uid, {
+                    ...tenantEmail,
+                    ai_status: 'PENDING'
                   });
-                  console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean. (Menunggu AI)`);
-                } catch (queueErr: any) {
-                  console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
-                  // Direct async fallback analyzeEmail
-                  analyzeEmail(item.uid).catch(err => console.error('[Cron] Direct analyzeEmail failed:', err));
+
+                  try {
+                    await emailQueue.add('process-email', {
+                      email_id: item.uid,
+                      tenant_id: tenant.id
+                    });
+                    console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean. (Menunggu AI)`);
+                  } catch (queueErr: any) {
+                    console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
+                  }
+                } else if (tenant.feature_bulk_summary) {
+                  // RH/BM Division: Skip individual parsing, queue for Bulk Summary
+                  console.log(`[Multi-Tenant Cron] Storing raw email for Bulk Summary for Tenant "${tenant.name}" (${tenant.id}): [${subject}]`);
+                  await dbSaveEmail(item.uid, {
+                    ...tenantEmail,
+                    tenant_id: tenant.id,
+                    ai_status: 'SKIPPED_BULK',
+                    summary: 'Dijadwalkan untuk Daily Bulk Summary',
+                    is_read: false,
+                    is_summarized: false
+                  });
                 }
               }
               accountAddedCount++;

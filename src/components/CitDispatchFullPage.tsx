@@ -17,8 +17,7 @@ import {
   Search,
   Check,
   ChevronDown,
-  Info,
-  RefreshCw
+  Info
 } from 'lucide-react';
 
 interface CitDispatchFullPageProps {
@@ -80,38 +79,6 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
 
   // Success Toast state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isReAnalyzing, setIsReAnalyzing] = useState(false);
-
-  const handleReAnalyzeInFullPage = async () => {
-    if (!emailId || isReAnalyzing) return;
-    try {
-      setIsReAnalyzing(true);
-      const res = await fetch(`/api/emails/${encodeURIComponent(emailId)}/re-analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: emailId, message_id: emailId })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToastMessage('AI Re-Analyze Selesai! Data berhasil diperbarui.');
-        setTimeout(() => setToastMessage(null), 3000);
-        // Reload details
-        const detailRes = await fetch(`/api/emails/detail/${encodeURIComponent(emailId)}`);
-        const detailData = await detailRes.json();
-        if (detailData?.success && detailData?.ai_extracted_json) {
-          setAiData(detailData.ai_extracted_json);
-        }
-      } else {
-        setToastMessage('Re-Analyze Gagal: ' + (data.message || 'Error'));
-        setTimeout(() => setToastMessage(null), 3000);
-      }
-    } catch (err: any) {
-      setToastMessage('Error: ' + (err.message || 'Error network'));
-      setTimeout(() => setToastMessage(null), 3000);
-    } finally {
-      setIsReAnalyzing(false);
-    }
-  };
 
   // Search dropdown states
   const [branchSearch, setBranchSearch] = useState('');
@@ -1012,29 +979,10 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             {/* AI Copilot Summary Card */}
             {aiData?.summary && (
               <div className="bg-blue-50/60 border border-blue-200/80 rounded-xl p-4 text-xs">
-                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                  <h4 className="text-[10px] font-bold text-blue-900 uppercase tracking-wider flex items-center gap-1">
-                    <Sparkles className="h-3.5 w-3.5 text-blue-600" />
-                    <span>AI Operational Summary</span>
-                  </h4>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-[9px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full border border-blue-200 uppercase">
-                      {aiData.summary !== 'Dijadwalkan untuk Daily Bulk Summary' ? 'AI Analyzed' : 'Not Analyzed'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleReAnalyzeInFullPage}
-                      disabled={isReAnalyzing}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-50 text-indigo-600 hover:text-indigo-700 border border-indigo-200 hover:border-indigo-300 rounded-lg text-[11px] font-bold shadow-2xs transition-all disabled:opacity-50 cursor-pointer"
-                      title="Force Re-Summarize AI Individual Extraction"
-                    >
-                      <RefreshCw className={`h-3 w-3 ${isReAnalyzing ? 'animate-spin' : ''}`} />
-                      <span>{isReAnalyzing ? 'Analyzing...' : '🔄 Re-Analyze AI'}</span>
-                    </button>
-                  </div>
-                </div>
-
+                <h4 className="text-[10px] font-bold text-blue-900 uppercase tracking-wider mb-1 flex items-center gap-1">
+                  <Sparkles className="h-3 w-3 text-blue-600" />
+                  <span>AI Operational Summary</span>
+                </h4>
                 <p className="text-slate-700 leading-relaxed font-medium">
                   {aiData.summary}
                 </p>
