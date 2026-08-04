@@ -978,13 +978,13 @@ export default function App() {
   const handleRunFolderBackfill = async () => {
     try {
       setIsFolderBackfilling(true);
-      const res = await fetch('/api/admin/backfill-folders', {
+      const res = await fetch('/api/emails/backfill-and-resummarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
       const data = await res.json();
       if (data.success) {
-        addToast('Backfill Tagging Selesai', data.message || `Berhasil men-tagging ${data.totalMatched || 0} email lama.`);
+        addToast('Backfill Folder Selesai', data.message || `Backfill folder berhasil memperbarui ${data.totalProcessed || 0} email.`);
         // Instantly refresh emails list and Virtual Folder Tree
         await loadEmails();
         await loadFolders();
@@ -1084,8 +1084,9 @@ export default function App() {
       const res = await fetch('/api/fetch-emails', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
-        setSyncStatus(`Sync successful! Imported ${data.count} new emails.`);
-        addToast('POP3 Sync Finished', `Found and cataloged ${data.count} new items.`);
+        const newEmailsCount = data.count || 0;
+        setSyncStatus(`Sync successful! Imported ${newEmailsCount} new emails.`);
+        addToast('Sync Selesai', `Berhasil mensinkronisasi ${newEmailsCount} email baru.`);
         await loadEmails();
       } else {
         setSyncStatus('Sync Alert: ' + data.message);

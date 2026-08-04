@@ -105,8 +105,13 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
         setLoading(true);
 
         // 1. Fetch Email Detail with AI json
-        let detailRes = await fetch(`/api/emails/detail/${encodeURIComponent(emailId)}`);
-        let detailData = await detailRes.json();
+        let detailRes = await fetch(`/api/emails/${encodeURIComponent(emailId)}`);
+        let detailData = await detailRes.json().catch(() => null);
+
+        if (!detailData || !detailData.success || !detailData.raw_email_data) {
+          detailRes = await fetch(`/api/emails/detail/${encodeURIComponent(emailId)}`);
+          detailData = await detailRes.json().catch(() => null);
+        }
 
         if (!detailData || !detailData.success || !detailData.raw_email_data) {
           // Fallback: search in GET /api/emails list if direct detail lookup failed
@@ -120,7 +125,16 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             if (found) {
               detailData = {
                 success: true,
-                raw_email_data: found,
+                raw_email_data: {
+                  ...found,
+                  sender_email: found.sender || found.sender_email || found.from || '',
+                  from: found.sender || found.sender_email || found.from || '',
+                  subject: found.subject || '',
+                  received_at: found.date || found.received_at || '',
+                  date: found.date || found.received_at || '',
+                  body_html: found.html_body || found.body_html || '',
+                  body_text: found.body_text || found.body || ''
+                },
                 ai_extracted_json: {
                   summary: found.summary || 'Detail pemesanan operasional CIT/ATM.',
                   client_name: (found.folder_child || 'MAYBANK').toUpperCase(),
@@ -956,11 +970,11 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             {/* Email Header Card */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-2xs space-y-2">
               <div className="flex items-center justify-between text-xs font-bold text-slate-800">
-                <span className="truncate max-w-[200px]" title={rawEmail?.sender || rawEmail?.fromName || rawEmail?.sender_email}>
-                  {rawEmail?.fromName || rawEmail?.sender || rawEmail?.sender_email || 'Pengirim Tidak Diketahui'}
+                <span className="truncate max-w-[200px]" title={rawEmail?.sender_email || rawEmail?.from || rawEmail?.sender || rawEmail?.fromName}>
+                  {rawEmail?.sender_email || rawEmail?.from || rawEmail?.sender || rawEmail?.fromName || 'Pengirim Tidak Diketahui'}
                 </span>
                 <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                  {rawEmail?.date ? new Date(rawEmail.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                  {(rawEmail?.received_at || rawEmail?.date) ? new Date(rawEmail?.received_at || rawEmail?.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>
               </div>
 
@@ -971,7 +985,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
               <div className="text-[10px] text-slate-500 font-mono flex items-center gap-1.5 pt-1 border-t border-slate-100">
                 <Clock className="h-3.5 w-3.5 text-blue-600 shrink-0" />
                 <span className="font-semibold text-slate-700">
-                  {rawEmail?.date ? new Date(rawEmail.date).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' }) : 'Tanggal tidak tersedia'}
+                  {(rawEmail?.received_at || rawEmail?.date) ? new Date(rawEmail?.received_at || rawEmail?.date).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' }) : 'Tanggal tidak tersedia'}
                 </span>
               </div>
             </div>

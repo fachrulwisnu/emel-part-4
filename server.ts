@@ -1379,6 +1379,172 @@ async function startServer() {
   app.post("/api/import-mbox", importMboxHandler);
   app.get("/api/import-eml-dir", importEmlDirHandler);
 
+  // GET Email Detail by ID or message_id with mapped property names
+  app.get("/api/emails/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const reserved = ['grouped', 'mark-read', 'analyze', 'pending-summary', 'pending-intelligence', 'bulk-summary', 'bulk-intelligence', 'update-fields', 'smart-apply', 'backfill', 'backfill-and-resummarize'];
+      if (reserved.includes(id)) {
+        return res.status(400).json({ success: false, message: "Invalid endpoint parameter" });
+      }
+
+      const email = await dbGetEmailByMessageId(id);
+      if (!email) {
+        return res.status(404).json({ success: false, message: "Email not found" });
+      }
+
+      const mappedEmail = {
+        ...email,
+        sender_email: email.sender || (email as any).sender_email || '',
+        from: email.sender || (email as any).sender_email || '',
+        subject: email.subject || '',
+        received_at: email.date || (email as any).received_at || '',
+        date: email.date || (email as any).received_at || '',
+        body_html: email.html_body || (email as any).body_html || '',
+        body_text: email.body_text || (email as any).body || ''
+      };
+
+      res.json({
+        success: true,
+        email: mappedEmail,
+        raw_email_data: mappedEmail
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Combo Backfill Folder Tagging & Re-summarize (Pure PostgreSQL)
+  app.post("/api/emails/backfill-and-resummarize", async (req, res) => {
+    try {
+      const { getDatabaseConfig } = await import("./src/utils/configManager");
+      const { getPostgresPool } = await import("./src/lib/postgres");
+      const { analyzeEmailContent } = await import("./src/services/aiProcessingService");
+
+      const config = await getDatabaseConfig();
+      const pgConnString = config.connections?.postgres || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
+
+      const pool = await getPostgresPool(pgConnString);
+      const client = await pool.connect();
+
+      try {
+        await client.query('BEGIN');
+
+        // 1. Target Query
+        const targetQuery = `
+          SELECT * FROM public.emails 
+          WHERE folder_parent IS NULL 
+             OR folder_child IS NULL 
+             OR folder_parent = 'Lainnya' 
+             OR summary IS NULL 
+             OR TRIM(summary) = '' 
+             OR summary LIKE 'Ringkasan email dari pengirim%' 
+             OR summary LIKE 'Email dari pengirim mengenai%' 
+             OR summary LIKE 'Data historis tidak terbaca jelas%'
+          ORDER BY id ASC;
+        `;
+        const targetRes = await client.query(targetQuery);
+        const emailsToProcess = targetRes.rows;
+
+        // 2. Custom Filters Query
+        const filtersRes = await client.query("SELECT * FROM public.custom_filters ORDER BY id ASC;");
+        const filters = filtersRes.rows;
+
+        let totalProcessed = 0;
+
+        for (const email of emailsToProcess) {
+          let folderParent = email.folder_parent || 'Operation';
+          let folderChild = email.folder_child || 'General';
+
+          // Match custom_filters
+          const emailSender = (email.sender || email.sender_email || '').toLowerCase();
+          const emailSubject = (email.subject || '').toLowerCase();
+          const emailBody = (email.body_text || email.body || '').toLowerCase();
+
+          for (const f of filters) {
+            const matchFrom = f.match_from ? emailSender.includes(f.match_from.toLowerCase()) : true;
+            const matchSubj = f.match_subject ? emailSubject.includes(f.match_subject.toLowerCase()) : true;
+            const matchBody = f.match_body ? emailBody.includes(f.match_body.toLowerCase()) : true;
+
+            if (f.match_from || f.match_subject || f.match_body) {
+              if (matchFrom && matchSubj && matchBody) {
+                if (f.action_parent) folderParent = f.action_parent;
+                if (f.action_child) folderChild = f.action_child;
+                break;
+              }
+            }
+          }
+
+          // Re-summarize via AI Service
+          let summary = 'Email mengenai penanganan operasional.';
+          let actionRequired = false;
+          let suggestedTag = 'Informasi';
+          let isImportant = false;
+          let urgencyLevel = 'Routine';
+
+          try {
+            const aiRes = await analyzeEmailContent({
+              message_id: email.message_id,
+              subject: email.subject,
+              sender: email.sender,
+              body_text: email.body_text,
+              action_parent: folderParent,
+              action_child: folderChild
+            });
+
+            if (aiRes) {
+              if (aiRes.summary && aiRes.summary.trim().length > 0) {
+                summary = aiRes.summary.trim();
+              }
+              actionRequired = !!aiRes.action_required;
+              suggestedTag = aiRes.suggested_tag || aiRes.tag_type || 'Informasi';
+              isImportant = !!aiRes.is_important || aiRes.urgency_level === 'High' || actionRequired;
+              urgencyLevel = aiRes.urgency_level || (isImportant ? 'High' : 'Routine');
+              if (aiRes.suggested_folder_parent) folderParent = aiRes.suggested_folder_parent;
+              if (aiRes.suggested_folder_child) folderChild = aiRes.suggested_folder_child;
+            }
+          } catch (aiErr) {
+            console.warn(`[Backfill & Re-summarize AI Warning for email ${email.id}]:`, aiErr);
+          }
+
+          // Update record in PostgreSQL
+          await client.query(`
+            UPDATE public.emails 
+            SET folder_parent = $1,
+                folder_child = $2,
+                summary = $3,
+                tag_type = $4,
+                action_required = $5,
+                is_important = $6,
+                urgency_level = $7,
+                ai_status = 'COMPLETED',
+                is_summarized = TRUE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $8;
+          `, [folderParent, folderChild, summary, suggestedTag, actionRequired, isImportant, urgencyLevel, email.id]);
+
+          totalProcessed++;
+        }
+
+        await client.query('COMMIT');
+
+        res.json({
+          success: true,
+          totalProcessed,
+          message: `Berhasil melakukan backfill folder dan re-summarize pada ${totalProcessed} email.`
+        });
+      } catch (err: any) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      console.error("[POST /api/emails/backfill-and-resummarize Error]:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
   // GET Email Detail (Returns raw_email_data & ai_extracted_json for Full Page Split View)
   app.get("/api/emails/detail/:message_id", async (req, res) => {
     try {
