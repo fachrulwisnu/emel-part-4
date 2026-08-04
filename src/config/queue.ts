@@ -50,7 +50,7 @@ export const QUEUE_NAME = 'email-ai-queue';
 export const emailQueue = new Queue(QUEUE_NAME, {
   connection: redisConnection,
   defaultJobOptions: {
-    attempts: 3, // Maksimal 3x percobaan ulang jika terjadi kegagalan/email belum tercommit
+    attempts: 5, // Maksimal 5x percobaan ulang jika terjadi kegagalan/email belum tercommit
     backoff: {
       type: 'fixed',
       delay: 2000

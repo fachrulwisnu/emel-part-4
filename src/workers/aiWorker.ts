@@ -31,7 +31,6 @@ export const aiWorker = new Worker(
     }
 
     const emailStr = String(email_id).trim();
-    const isNumericId = /^\d+$/.test(emailStr);
 
     let email = await dbGetEmailByMessageId(emailStr);
 
@@ -44,16 +43,8 @@ export const aiWorker = new Worker(
         const pgConnString = config.connections?.postgres || process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
         const pool = await getPostgresPool(pgConnString);
 
-        let res;
-        if (isNumericId) {
-          res = await pool.query('SELECT * FROM public.emails WHERE id = $1 LIMIT 1', [parseInt(emailStr, 10)]);
-          if (res.rows.length === 0) {
-            res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [emailStr]);
-          }
-        } else {
-          // String hash message_id query strictly using message_id column
-          res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [emailStr]);
-        }
+        // Strict query searching ONLY using message_id parameter specifically
+        const res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [emailStr]);
 
         if (res.rows.length > 0) {
           const row = res.rows[0];
@@ -104,9 +95,8 @@ export const aiWorker = new Worker(
     }
 
     if (!email) {
-      console.warn(`[Worker Warning] Email with ID ${email_id} not found in database. Retrying queue...`);
-      // Throw error so BullMQ auto-retries in 2 seconds (anti-race condition)
-      throw new Error(`Email with ID ${email_id} not found in database (pending DB commit).`);
+      console.warn(`[Worker Warning] Email with message_id ${email_id} not found in database yet. Triggering retry...`);
+      throw new Error(`Email with message_id ${email_id} not found in database yet. Triggering retry...`);
     }
 
     // Step B: Eksekusi LLM Analysis & update status ke 'COMPLETED' / 'FAILED'

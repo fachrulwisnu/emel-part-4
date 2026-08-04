@@ -1553,7 +1553,7 @@ export async function dbGetEmailByMessageId(messageId: string): Promise<Email | 
       const dbService = await getDbService();
       if (dbService.type === 'postgres' && dbService.pgPool) {
         const res = await dbService.pgPool.query(
-          'SELECT * FROM public.emails WHERE message_id = $1 OR id::text = $1 LIMIT 1', 
+          'SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', 
           [messageId]
         );
         if (res.rows.length > 0) {

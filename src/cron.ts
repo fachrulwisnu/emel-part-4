@@ -456,6 +456,12 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                 await emailQueue.add('process-email', {
                   email_id: item.uid,
                   tenant_id: targetTenantId
+                }, {
+                  attempts: 5,
+                  backoff: {
+                    type: 'fixed',
+                    delay: 2000
+                  }
                 });
                 console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean (Tenant ID: ${targetTenantId}).`);
               } catch (queueErr: any) {
