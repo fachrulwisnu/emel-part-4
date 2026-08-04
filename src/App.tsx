@@ -38,7 +38,8 @@ import {
   MessageSquare,
   FileText,
   Send,
-  Tag
+  Tag,
+  FolderSync
 } from 'lucide-react';
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
@@ -203,7 +204,7 @@ const getTagBadgeStyle = (str: string) => {
   return {
     backgroundColor: `${color}25`,
     color: '#0F172A',
-    borderColor: `${color}60`,
+    borderColor: `${color}80`,
     fontWeight: 700
   };
 };
@@ -998,6 +999,35 @@ export default function App() {
     }
   };
 
+  // Re-Analyze Email Individual LLM Extraction
+  const [isReAnalyzing, setIsReAnalyzing] = useState(false);
+
+  const handleReAnalyzeEmail = async (emailId?: string) => {
+    const targetId = emailId || selectedEmail?.message_id || selectedEmail?.id;
+    if (!targetId || isReAnalyzing) return;
+    try {
+      setIsReAnalyzing(true);
+      const res = await fetch(`/api/emails/${encodeURIComponent(targetId)}/re-analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: targetId, message_id: targetId })
+      });
+      const data = await res.json();
+      if (data.success && data.email) {
+        addToast('Re-Analyze Selesai', 'AI berhasil mengekstrak ulang data email secara individual.');
+        setSelectedEmail(data.email);
+        await loadEmails();
+      } else {
+        addToast('Re-Analyze Gagal', data.message || 'Gagal mengeksekusi re-analyze AI.');
+      }
+    } catch (err: any) {
+      console.error('Error re-analyzing email:', err);
+      addToast('Error Network', err.message || 'Gagal terhubung ke server untuk Re-Analyze.');
+    } finally {
+      setIsReAnalyzing(false);
+    }
+  };
+
   // AI Pending Queue: Fetch and Process
   const fetchPendingQueue = async () => {
     try {
@@ -1585,6 +1615,16 @@ export default function App() {
                 </button>
 
                 <button
+                  onClick={handleRunFolderBackfill}
+                  disabled={isFolderBackfilling}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                  title="Run retroactive folder tagging for all historical emails"
+                >
+                  <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
+                  <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
+                </button>
+
+                <button
                   onClick={handleClearDatabase}
                   className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold rounded-lg text-xs transition-colors cursor-pointer"
                   title="Flush cached inbox data"
@@ -2060,25 +2100,38 @@ export default function App() {
 
                   {/* AI Operational Assistant Copilot Panel */}
                   <div className="px-6 py-5 border-b border-slate-100 bg-blue-50/15" id="ai_operational_assistant_panel">
-                    <div className="flex items-center justify-between mb-3.5">
+                    <div className="flex items-center justify-between mb-3.5 flex-wrap gap-2">
                       <div className="flex items-center space-x-2">
                         <Sparkles className="h-4.5 w-4.5 text-indigo-600 animate-pulse" />
                         <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">AI Operational Assistant Copilot</h3>
                       </div>
                       
-                      {selectedEmail.tag_type ? (
-                        <span className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
-                          selectedEmail.tag_type === 'Penugasan' 
-                            ? 'bg-amber-100 text-amber-800 border-amber-300 shadow-sm' 
-                            : selectedEmail.tag_type === 'Peringatan'
-                            ? 'bg-rose-100 text-rose-800 border-rose-300 shadow-sm'
-                            : 'bg-indigo-100 text-indigo-800 border-indigo-300 shadow-sm'
-                        }`}>
-                          Kategori: {selectedEmail.tag_type}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-slate-400 italic">Not analyzed by AI</span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {isReAnalyzing ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] bg-indigo-100 text-indigo-800 font-bold px-2.5 py-0.5 rounded-full border border-indigo-200 shadow-2xs">
+                            <RefreshCw className="h-3 w-3 animate-spin text-indigo-600" />
+                            <span>Analyzing...</span>
+                          </span>
+                        ) : (selectedEmail.summary && selectedEmail.summary !== 'Dijadwalkan untuk Daily Bulk Summary' && selectedEmail.summary !== 'Summary is not generated yet. Analysis will run on next sync/simulation.') ? (
+                          <span className="inline-flex items-center gap-1 text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold uppercase px-2.5 py-0.5 rounded-full shadow-2xs">
+                            <Sparkles className="h-2.5 w-2.5 text-emerald-600" />
+                            <span>AI Analyzed</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">Not analyzed by AI</span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleReAnalyzeEmail(selectedEmail.message_id || selectedEmail.id)}
+                          disabled={isReAnalyzing}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-slate-50 text-indigo-600 hover:text-indigo-700 border border-indigo-200 hover:border-indigo-300 rounded-lg text-xs font-bold shadow-2xs transition-all disabled:opacity-50 cursor-pointer"
+                          title="Force Re-Summarize AI Individual Extraction"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${isReAnalyzing ? 'animate-spin' : ''}`} />
+                          <span>{isReAnalyzing ? 'Analyzing...' : '🔄 Re-Analyze AI'}</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="space-y-3">

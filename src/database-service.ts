@@ -617,10 +617,11 @@ export async function processEmailWithAI(subject: string, bodyText: string): Pro
 
     const systemInstruction = `Anda adalah asisten operasional cerdas untuk memproses email masuk milik Fachrul.
 Setiap email harus dianalisis untuk menghasilkan:
-1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. Jika ada instruksi atau penugasan, sebutkan secara spesifik siapa yang harus melakukan apa.
-2. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
-3. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
-4. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, penugasan penting, atau peringatan kegagalan/error kritis harus dianggap penting.`;
+1. Ringkasan efektif (maksimal 2 kalimat) mengenai inti email tersebut. WAJIB membaca teks kutipan/balasan (Quoted Text) yang diawali dengan simbol '>'.
+2. Jika email berisi insiden mesin/ATM/MDM/masalah jaringan: AI WAJIB mengekstrak Nomor Tiket, Lokasi/ID Mesin, dan Detail Masalah (misal: NETWORK_ISSUE). Paksa 'action_required' menjadi true dan 'is_important' menjadi true.
+3. Klasifikasi kategori (tag_type): harus salah satu dari 'Penugasan', 'Informasi', atau 'Peringatan'.
+4. Penentuan apakah ada tindakan yang diperlukan (action_required: true/false).
+5. Penentuan apakah email ini penting atau mendesak (is_important: true/false). Email yang mengandung instruksi mendesak, insiden mesin/jaringan, atau peringatan kegagalan harus dianggap penting.`;
 
     const prompt = `Subject: ${subject}\n\nBody:\n${bodyText}`;
 
@@ -2440,19 +2441,9 @@ export async function dbUpdateEmailFields(
 
 // Historical Data Backfill for unsummarized emails
 export async function dbRunHistoricalBackfill(): Promise<{ processedCount: number; failedCount: number; skippedCount: number }> {
-  const db = getSqliteDb();
-  
-  // 1. Get all emails that are unsummarized
-  const oldEmails: any[] = await new Promise((resolve, reject) => {
-    db.all(
-      "SELECT message_id, subject, body_text FROM emails WHERE summary IS NULL OR summary = '' OR summary = 'No summary generated'",
-      [],
-      (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows || []);
-      }
-    );
-  });
+  // 1. Get all emails that are unsummarized using active DB service
+  const allEmails = await dbGetAllEmails();
+  const oldEmails = allEmails.filter(e => !e.summary || e.summary === '' || e.summary === 'No summary generated');
 
   let processedCount = 0;
   let failedCount = 0;
@@ -3460,19 +3451,8 @@ export async function dbGetPendingIntelligenceEmails(): Promise<Email[]> {
  */
 export async function dbBackfillFolders(): Promise<{ success: boolean; totalProcessed: number; totalMatched: number; message: string }> {
   try {
-    const db = getSqliteDb();
     const filters = await dbGetCustomFilters();
-
-    const emails: any[] = await new Promise((resolve, reject) => {
-      db.all(
-        "SELECT id, message_id, sender, subject, body_text, folder_parent, folder_child, tenant_id FROM emails",
-        [],
-        (err, rows) => {
-          if (err) return reject(err);
-          resolve(rows || []);
-        }
-      );
-    });
+    const emails = await dbGetAllEmails();
 
     let totalMatched = 0;
 
@@ -3482,7 +3462,9 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
         if (filter.tenant_id && filter.tenant_id !== 1 && email.tenant_id && filter.tenant_id !== email.tenant_id) {
           continue;
         }
-        if (matchCustomFilterRule(filter, email.sender, email.subject, email.body_text)) {
+        const senderText = email.sender || (email as any).sender_email || '';
+        const bodyText = email.body_text || (email as any).body || '';
+        if (matchCustomFilterRule(filter, senderText, email.subject, bodyText)) {
           matchedFilter = filter;
           break;
         }
@@ -3502,11 +3484,30 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
         });
 
         try {
-          db.run(
-            "UPDATE email_analysis SET folder = ?, sub_folder = ? WHERE message_id = ?",
-            [parent, child, email.message_id],
-            () => {}
-          );
+          const { getDbService } = await import('./services/dbManager');
+          const dbService = await getDbService();
+          if (dbService.type === 'postgres' && dbService.pgPool) {
+            await dbService.pgPool.query(
+              "UPDATE public.emails SET folder_parent = $1, folder_child = $2, suggested_folder_parent = $1, suggested_folder_child = $2 WHERE message_id = $3 OR id::text = $3",
+              [parent, child, email.message_id || String(email.id)]
+            );
+            await dbService.pgPool.query(
+              "UPDATE public.email_analysis SET folder = $1, sub_folder = $2 WHERE message_id = $3",
+              [parent, child, email.message_id || String(email.id)]
+            ).catch(() => {});
+          } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+            await dbService.mongoDb.collection('emails').updateMany(
+              { $or: [{ message_id: email.message_id }, { id: email.id }] },
+              { $set: { folder_parent: parent, folder_child: child, suggested_folder_parent: parent, suggested_folder_child: child, suggested_bank: parent } }
+            );
+          } else {
+            const db = getSqliteDb();
+            db.run(
+              "UPDATE email_analysis SET folder = ?, sub_folder = ? WHERE message_id = ?",
+              [parent, child, email.message_id],
+              () => {}
+            );
+          }
         } catch (e) {
           // ignore
         }
