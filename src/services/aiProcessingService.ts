@@ -43,6 +43,89 @@ export interface EmailPayload {
 }
 
 /**
+ * Call official Gemini Flash Latest REST API Endpoint
+ * Endpoint: https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent
+ * Header: Content-Type: application/json, X-goog-api-key: process.env.GEMINI_API_KEY
+ */
+export async function callGeminiFlash(prompt: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY || '';
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY environment variable is not defined");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-goog-api-key': apiKey
+  };
+  const payload = {
+    contents: [
+      {
+        parts: [
+          { text: prompt }
+        ]
+      }
+    ]
+  };
+
+  const response = await axios.post(url, payload, { headers, timeout: 30000 });
+  const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error('Gemini Flash returned empty response candidates');
+  }
+  return text;
+}
+
+/**
+ * Call Custom AI (aim.adv.my.id) using OpenAI-Compatible Chat API
+ * Endpoints:
+ *   1) https://aim.adv.my.id/engines/{model}/chat/completions
+ *   2) https://aim.adv.my.id/v1/chat/completions
+ * Headers: Content-Type: application/json, Authorization: Bearer <API_KEY>
+ * Reads response.data.choices[0].message.content
+ */
+export async function callCustomAiModel(
+  model: 'Core' | 'Vision' | string,
+  messages: any[],
+  apiKey: string = process.env.CUSTOM_AI_API_KEY || 'sk-WYKkPR_QQ6LTbnGWyIxPZA'
+): Promise<string> {
+  const targetModel = model || 'Core';
+  const token = apiKey.replace(/^Bearer\s+/i, '');
+
+  const endpoints = [
+    `https://aim.adv.my.id/engines/${encodeURIComponent(targetModel)}/chat/completions`,
+    `https://aim.adv.my.id/v1/chat/completions`
+  ];
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
+
+  const payload = {
+    model: targetModel,
+    messages
+  };
+
+  let lastError: any = null;
+
+  for (const url of endpoints) {
+    try {
+      const response = await axios.post(url, payload, { headers, timeout: 30000 });
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (content !== undefined && content !== null) {
+        return typeof content === 'string' ? content : JSON.stringify(content);
+      }
+    } catch (err: any) {
+      console.warn(`[Custom AI] Endpoint ${url} error:`, err.response?.data || err.message);
+      lastError = err;
+    }
+  }
+
+  throw new Error(`Custom AI (${targetModel}) request failed: ${lastError?.response?.data?.message || lastError?.message || String(lastError)}`);
+}
+
+/**
  * Helper to check if an attachment is an image or media/document format suitable for Vision model
  */
 function isMediaAttachment(att: any): boolean {
@@ -59,7 +142,7 @@ function isMediaAttachment(att: any): boolean {
 }
 
 /**
- * Analyzes email content using Custom AI (Primary: Core or Vision) with NVIDIA AI Rotator Fallback
+ * Analyzes email content using Custom AI (Primary: Core or Vision), Gemini Flash Latest, with NVIDIA AI Rotator Fallback
  */
 export async function analyzeEmailContent(emailPayload: EmailPayload): Promise<any> {
   const identifier = emailPayload.uid || emailPayload.message_id || emailPayload.subject || 'unknown';
@@ -159,44 +242,53 @@ ${textBody || '(No Body Content)'}`;
     }
   }
 
-  // 4. MEKANISME ROTATOR & FALLBACK (NVIDIA SECONDARY)
-  try {
-    console.log(`[AI Primary] Analyzing UID/Message "${identifier}" using Primary Custom AI model: ${targetModel}`);
-    const completion = await customAi.chat.completions.create({
-      model: targetModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessagesContent }
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.3
-    });
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessagesContent }
+  ];
 
-    const responseContent = completion.choices[0]?.message?.content || "";
-    const parsedData = parseCleanJson(responseContent);
+  // 4. MEKANISME ROTATOR & FALLBACK (Custom AI -> Gemini Flash -> NVIDIA Rotator)
+  try {
+    console.log(`[AI Pipeline] 1. Analyzing UID/Message "${identifier}" using Custom AI model: ${targetModel}`);
+    const rawContent = await callCustomAiModel(targetModel, messages);
+    const parsedData = parseCleanJson(rawContent);
 
     if (parsedData && typeof parsedData === 'object' && Object.keys(parsedData).length > 0) {
-      console.log(`[AI Primary] Successfully analyzed UID/Message "${identifier}" with Custom AI (${targetModel})`);
+      console.log(`[AI Pipeline] Successfully analyzed UID/Message "${identifier}" with Custom AI (${targetModel})`);
       return parsedData;
     }
   } catch (primaryError: any) {
-    // Catch primary error quietly without crashing
-    console.warn(`[AI Rotator] Custom AI (Core/Vision) failed. Falling back to NVIDIA AI...`, primaryError?.message || String(primaryError));
+    console.warn(`[AI Pipeline] Custom AI (${targetModel}) failed. Proceeding to Gemini Flash Latest...`, primaryError?.message || String(primaryError));
   }
 
-  // Secondary Fallback: NVIDIA AI Rotator
+  // Fallback 1: Gemini Flash Latest
   try {
-    console.log(`[AI Rotator] Executing NVIDIA AI Secondary Fallback for UID/Message: ${identifier}...`);
+    console.log(`[AI Pipeline] 2. Attempting Gemini Flash Latest for UID/Message: ${identifier}...`);
+    const promptCombined = `${systemPrompt}\n\n${textPrompt}\n\nKembalikan HANYA JSON murni yang valid sesuai schema di atas.`;
+    const geminiText = await callGeminiFlash(promptCombined);
+    const parsedGemini = parseCleanJson(geminiText);
+
+    if (parsedGemini && typeof parsedGemini === 'object' && Object.keys(parsedGemini).length > 0) {
+      console.log(`[AI Pipeline] Successfully analyzed UID/Message "${identifier}" with Gemini Flash Latest`);
+      return parsedGemini;
+    }
+  } catch (geminiError: any) {
+    console.warn(`[AI Pipeline] Gemini Flash Latest failed. Proceeding to NVIDIA AI Rotator fallback...`, geminiError?.message || String(geminiError));
+  }
+
+  // Fallback 2: NVIDIA AI Rotator
+  try {
+    console.log(`[AI Pipeline] 3. Executing NVIDIA AI Secondary Fallback for UID/Message: ${identifier}...`);
     const nvidiaPrompt = `${systemPrompt}\n\n${textPrompt}\n\nKembalikan HANYA JSON murni yang valid sesuai schema di atas.`;
     const nvidiaResponseText = await getAiCompletion(nvidiaPrompt);
     const parsedNvidia = parseCleanJson(nvidiaResponseText);
 
     if (parsedNvidia && typeof parsedNvidia === 'object' && Object.keys(parsedNvidia).length > 0) {
-      console.log(`[AI Rotator] Successfully analyzed UID/Message "${identifier}" with NVIDIA AI Rotator fallback`);
+      console.log(`[AI Pipeline] Successfully analyzed UID/Message "${identifier}" with NVIDIA AI Rotator fallback`);
       return parsedNvidia;
     }
   } catch (secondaryError: any) {
-    console.error(`[AI Rotator] Secondary NVIDIA AI also failed for UID/Message ${identifier}:`, secondaryError?.message || String(secondaryError));
+    console.error(`[AI Pipeline] Secondary NVIDIA AI also failed for UID/Message ${identifier}:`, secondaryError?.message || String(secondaryError));
   }
 
   // 5. FINAL ERROR HANDLING
@@ -947,4 +1039,58 @@ Tanggal: ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'nume
     return `*RANGKUMAN HARIAN DIVISI ${tenantName}*\nTotal ${emails.length} email baru diterima. Silakan cek dashboard untuk detail.`;
   }
 }
+
+/**
+ * Superadmin Single AI Model Tester
+ * Tests an individual AI model with a dummy prompt and calculates latency.
+ */
+export async function testSingleAiModel(modelName: string): Promise<{
+  success: boolean;
+  latency: number;
+  modelName: string;
+  output?: string;
+  error?: string;
+}> {
+  const startTime = Date.now();
+  const normalized = (modelName || '').toLowerCase().trim();
+
+  try {
+    let output = '';
+    if (normalized.includes('gemini') || normalized.includes('flash')) {
+      output = await callGeminiFlash('Tes koneksi sistem ticketing. Berikan respon "OK".');
+    } else if (normalized.includes('core')) {
+      output = await callCustomAiModel('Core', [{ role: 'user', content: 'Tes koneksi sistem ticketing. Berikan respon "OK".' }]);
+    } else if (normalized.includes('vision')) {
+      output = await callCustomAiModel('Vision', [{ role: 'user', content: 'Tes koneksi sistem ticketing. Berikan respon "OK".' }]);
+    } else if (normalized.includes('nano') || normalized.includes('omni')) {
+      output = await processWithNanoOmni('Tes koneksi sistem ticketing.');
+    } else if (normalized.includes('super') || normalized.includes('120b')) {
+      output = await processWithSuper120('Tes koneksi sistem ticketing.');
+    } else if (normalized.includes('qwen')) {
+      output = await callQwen3(null, 'Tes koneksi sistem ticketing.');
+    } else if (normalized.includes('stepfun') || normalized.includes('step')) {
+      output = await callStepFun(null, 'Tes koneksi sistem ticketing.');
+    } else {
+      // Default fallback
+      output = await callCustomAiModel('Core', [{ role: 'user', content: 'Tes koneksi sistem ticketing.' }]);
+    }
+
+    const latency = Date.now() - startTime;
+    return {
+      success: true,
+      latency,
+      modelName,
+      output: (output || '').slice(0, 300)
+    };
+  } catch (err: any) {
+    const latency = Date.now() - startTime;
+    return {
+      success: false,
+      latency,
+      modelName,
+      error: err.response?.data?.message || err.message || String(err)
+    };
+  }
+}
+
 

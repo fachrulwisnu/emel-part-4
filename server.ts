@@ -1398,6 +1398,74 @@ async function startServer() {
     }
   });
 
+  // Single AI Model Tester Endpoint for Superadmin
+  app.post("/api/admin/ai/test-model", async (req, res) => {
+    try {
+      const { modelName } = req.body || {};
+      if (!modelName) {
+        return res.status(400).json({ success: false, message: "Parameter modelName wajib diisi." });
+      }
+
+      const { testSingleAiModel } = await import("./src/services/aiProcessingService.js");
+      const result = await testSingleAiModel(modelName);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          modelName: result.modelName,
+          latency: result.latency,
+          output: result.output,
+          message: `Model ${result.modelName} berhasil diuji (${result.latency} ms)`
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          modelName: result.modelName,
+          latency: result.latency,
+          error: result.error,
+          message: `Gagal menguji model ${result.modelName}: ${result.error}`
+        });
+      }
+    } catch (err: any) {
+      console.error("[API Test AI Model Error]:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // AI System Health Monitor Endpoint
+  app.get("/api/system/ai-health", async (req, res) => {
+    try {
+      const { testSingleAiModel } = await import("./src/services/aiProcessingService.js");
+      const modelsToTest = [
+        "Gemini Flash Latest",
+        "Custom AI Core",
+        "Custom AI Vision",
+        "Nemotron 3 Nano Omni 30B",
+        "Nemotron 3 Super 120B",
+        "Qwen3 Next 80B",
+        "StepFun AI Step 3.7 Flash"
+      ];
+
+      const healthList = await Promise.all(
+        modelsToTest.map(async (name) => {
+          const result = await testSingleAiModel(name);
+          return {
+            name,
+            status: result.success ? "Online" : "Offline",
+            statusCode: result.success ? 200 : 500,
+            latency: `${result.latency} ms`,
+            error: result.error
+          };
+        })
+      );
+
+      res.json({ success: true, health: healthList });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+
   // Folder tree counting endpoint
   app.get("/api/folders", foldersHandler);
 

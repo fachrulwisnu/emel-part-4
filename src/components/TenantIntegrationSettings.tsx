@@ -65,7 +65,70 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
   const [waPhone, setWaPhone] = useState('6281234567890');
   const [isSavingWa, setIsSavingWa] = useState(false);
 
+  // Single AI Model Tester State (Superadmin)
+  const [selectedTestModel, setSelectedTestModel] = useState('Gemini Flash Latest');
+  const [isTestingModel, setIsTestingModel] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    latency: number;
+    modelName: string;
+    output?: string;
+    error?: string;
+  } | null>(null);
+
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleTestSingleModel = async () => {
+    setIsTestingModel(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/admin/ai/test-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelName: selectedTestModel })
+      });
+      const data = await res.json();
+      if (data.success) {
+        const resultObj = {
+          success: true,
+          latency: data.latency,
+          modelName: data.modelName || selectedTestModel,
+          output: data.output
+        };
+        setTestResult(resultObj);
+        setStatusMsg({ type: 'success', text: `Tes Model ${selectedTestModel} Berhasil (${data.latency} ms)` });
+        if (onAddToast) {
+          onAddToast('Tes Model AI Berhasil', `${selectedTestModel} merespon dalam ${data.latency} ms.`);
+        }
+      } else {
+        const resultObj = {
+          success: false,
+          latency: data.latency || 0,
+          modelName: data.modelName || selectedTestModel,
+          error: data.error || data.message || 'Error tidak diketahui'
+        };
+        setTestResult(resultObj);
+        setStatusMsg({ type: 'error', text: `Tes Model ${selectedTestModel} Gagal: ${resultObj.error}` });
+        if (onAddToast) {
+          onAddToast('Tes Model AI Gagal', `${selectedTestModel}: ${resultObj.error}`);
+        }
+      }
+    } catch (err: any) {
+      const resultObj = {
+        success: false,
+        latency: 0,
+        modelName: selectedTestModel,
+        error: err.message || String(err)
+      };
+      setTestResult(resultObj);
+      setStatusMsg({ type: 'error', text: `Gagal terhubung ke server saat menguji model ${selectedTestModel}` });
+      if (onAddToast) {
+        onAddToast('Tes Model AI Gagal', `Koneksi gagal: ${err.message}`);
+      }
+    } finally {
+      setIsTestingModel(false);
+    }
+  };
 
   // Load Mail Configurations
   const loadMailConfigs = async () => {
@@ -421,6 +484,90 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
             </button>
           </div>
         </div>
+      </div>
+
+      {/* SINGLE AI MODEL TESTER (SUPERADMIN DIAGNOSTIC) */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div className="flex items-center space-x-3 border-b border-slate-100 pb-4">
+          <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
+            <Key className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-800">Single AI Model Tester</h2>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-purple-100 text-purple-800 border border-purple-200">
+                Superadmin Tool
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Uji latensi dan fungsionalitas model AI individu secara langsung untuk mendiagnosa koneksi API.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div className="md:col-span-2 space-y-1.5">
+            <label className="text-xs font-bold text-slate-700">Pilih Model AI yang Ingin Diuji</label>
+            <select
+              value={selectedTestModel}
+              onChange={(e) => setSelectedTestModel(e.target.value)}
+              className="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl focus:border-purple-500 focus:outline-none font-medium text-slate-800"
+            >
+              <option value="Gemini Flash Latest">Gemini Flash Latest (Google Cloud)</option>
+              <option value="Custom AI Core">Custom AI Core (aim.adv.my.id)</option>
+              <option value="Custom AI Vision">Custom AI Vision (aim.adv.my.id)</option>
+              <option value="Nemotron 3 Nano Omni 30B">Nemotron 3 Nano Omni 30B (NVIDIA)</option>
+              <option value="Nemotron 3 Super 120B">Nemotron 3 Super 120B (NVIDIA)</option>
+              <option value="Qwen3 Next 80B">Qwen3 Next 80B (Alibaba Cloud)</option>
+              <option value="StepFun AI Step 3.7 Flash">StepFun AI Step 3.7 Flash (StepFun)</option>
+            </select>
+          </div>
+          <div>
+            <button
+              onClick={handleTestSingleModel}
+              disabled={isTestingModel}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isTestingModel ? 'animate-spin' : ''}`} />
+              <span>{isTestingModel ? 'Menguji Model...' : 'Uji Model AI'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Test Output Card */}
+        {testResult && (
+          <div className={`mt-4 p-4 rounded-xl border text-xs space-y-2 ${
+            testResult.success 
+              ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900' 
+              : 'bg-rose-50/70 border-rose-200 text-rose-900'
+          }`}>
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-sm flex items-center gap-2">
+                {testResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600" />
+                )}
+                Hasil Diagnostik: {testResult.modelName}
+              </span>
+              <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-full bg-white/80 border border-slate-200">
+                Latensi: {testResult.latency} ms
+              </span>
+            </div>
+            
+            {testResult.output && (
+              <div className="mt-2 bg-white/90 p-3 rounded-lg border border-slate-200 font-mono text-[11px] text-slate-700 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                {testResult.output}
+              </div>
+            )}
+
+            {testResult.error && (
+              <div className="mt-2 bg-rose-100/90 p-3 rounded-lg border border-rose-200 font-mono text-[11px] text-rose-800 whitespace-pre-wrap">
+                Error: {testResult.error}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* MODAL ADD / EDIT MAIL CONFIG */}

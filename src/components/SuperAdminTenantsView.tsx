@@ -52,6 +52,7 @@ export interface TenantConfig {
 }
 
 const AVAILABLE_AI_MODELS = [
+  { id: 'Gemini Flash Latest', name: 'Gemini Flash Latest', desc: 'Model Google Gemini Flash terbaru via REST API resmi', provider: 'Google Cloud' },
   { id: 'Custom AI Core', name: 'Custom AI Core', desc: 'Engine utama klasifikasi email & penarikan entitas', provider: 'Internal Core' },
   { id: 'Custom AI Vision', name: 'Custom AI Vision', desc: 'Engine multimodal OCR untuk parsing lampiran PDF/Gambar', provider: 'Internal Vision' },
   { id: 'Nemotron 3 Nano Omni 30B', name: 'Nemotron 3 Nano Omni 30B', desc: 'Model 30B parameter super cepat ultra-low latency', provider: 'NVIDIA' },
