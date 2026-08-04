@@ -630,6 +630,7 @@ export default function App() {
         } else if (payload.event === 'email_updated') {
           const updatedEmail = payload.data.email;
           loadAiProgress();
+          addToast('Selesai', 'Email baru masuk & Analisa AI Selesai!');
           if (updatedEmail) {
             let fromName = '';
             let fromAddress = updatedEmail.sender || '';

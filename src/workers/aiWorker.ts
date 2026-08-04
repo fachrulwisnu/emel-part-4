@@ -25,14 +25,15 @@ console.log('[Worker Service] Initializing Email AI Worker...');
 export const aiWorker = new Worker(
   QUEUE_NAME,
   async (job) => {
-    const { email_id, tenant_id } = job.data || {};
-    if (!email_id) {
-      throw new Error('Invalid job payload: missing email_id');
+    const rawData = job.data || {};
+    const messageId = String(rawData.messageId || rawData.email_id || rawData.message_id || '').trim();
+    const tenantId = rawData.tenantId || rawData.tenant_id;
+
+    if (!messageId) {
+      throw new Error('Invalid job payload: missing messageId');
     }
 
-    const emailStr = String(email_id).trim();
-
-    let email = await dbGetEmailByMessageId(emailStr);
+    let email = await dbGetEmailByMessageId(messageId);
 
     // Direct PostgreSQL lookup if dbGetEmailByMessageId returned null
     if (!email) {
@@ -43,8 +44,8 @@ export const aiWorker = new Worker(
         const pgConnString = config.connections?.postgres || process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
         const pool = await getPostgresPool(pgConnString);
 
-        // Strict query searching ONLY using message_id parameter specifically
-        const res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [emailStr]);
+        // Flexible & strict query searching purely using message_id parameter
+        const res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [messageId]);
 
         if (res.rows.length > 0) {
           const row = res.rows[0];
@@ -90,25 +91,25 @@ export const aiWorker = new Worker(
       }
     }
 
-    if (tenant_id) {
-      await dbGetTenantById(Number(tenant_id)).catch(() => null);
+    if (tenantId) {
+      await dbGetTenantById(Number(tenantId)).catch(() => null);
     }
 
     if (!email) {
-      console.warn(`[Worker Warning] Email with message_id ${email_id} not found in database yet. Triggering retry...`);
-      throw new Error(`Email with message_id ${email_id} not found in database yet. Triggering retry...`);
+      console.warn(`[Worker Warning] Email with message_id ${messageId} not found in database yet. Triggering retry...`);
+      throw new Error(`Email with message_id ${messageId} not found in database yet. Triggering retry...`);
     }
 
     // Step B: Eksekusi LLM Analysis & update status ke 'COMPLETED' / 'FAILED'
     try {
-      const targetMessageId = email.message_id || emailStr;
+      const targetMessageId = email.message_id || messageId;
       await analyzeEmail(targetMessageId);
-      console.log(`[Queue: Completed] Email ID ${email_id} selesai diproses.`);
-      return { success: true, email_id: targetMessageId };
+      console.log(`[Queue: Completed] Email with message_id ${targetMessageId} selesai diproses.`);
+      return { success: true, messageId: targetMessageId };
     } catch (err: any) {
-      console.error(`[Worker Exception] Error processing Email ID ${email_id}:`, err.message || err);
+      console.error(`[Worker Exception] Error processing Email message_id ${messageId}:`, err.message || err);
       // Tandai status 'FAILED' di database jika gagal
-      await dbUpdateEmailFields(email.message_id || emailStr, { ai_status: 'FAILED' }).catch(() => {});
+      await dbUpdateEmailFields(email.message_id || messageId, { ai_status: 'FAILED' }).catch(() => {});
       throw err; // Trigger BullMQ auto-retry
     }
   },

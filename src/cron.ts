@@ -454,6 +454,8 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
 
               try {
                 await emailQueue.add('process-email', {
+                  messageId: item.uid,
+                  tenantId: targetTenantId,
                   email_id: item.uid,
                   tenant_id: targetTenantId
                 }, {
@@ -463,7 +465,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                     delay: 2000
                   }
                 });
-                console.log(`[Queue: Added] Email ID ${item.uid} masuk antrean (Tenant ID: ${targetTenantId}).`);
+                console.log(`[Queue: Added] Email messageId ${item.uid} masuk antrean (Tenant ID: ${targetTenantId}).`);
               } catch (queueErr: any) {
                 console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
               }
