@@ -1256,18 +1256,17 @@ Gunakan format Markdown berikut secara eksak:
     `);
 
     const q = `
-      INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids, total_emails_processed, last_email_id_processed, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (tenant_id, summary_date) DO UPDATE 
       SET content_text = EXCLUDED.content_text,
+          is_sent_to_wa = EXCLUDED.is_sent_to_wa,
           source_email_ids = EXCLUDED.source_email_ids,
-          total_emails_processed = EXCLUDED.total_emails_processed,
-          last_email_id_processed = EXCLUDED.last_email_id_processed,
-          updated_at = CURRENT_TIMESTAMP
+          created_at = CURRENT_TIMESTAMP
       RETURNING *;
     `;
     const res = await dbService.pgPool.query(q, [
-      tenantId, summaryDateStr, summaryText, false, JSON.stringify(sourceEmailIds), stats.total_emails, maxEmailId
+      tenantId, summaryDateStr, summaryText, false, JSON.stringify(sourceEmailIds)
     ]);
     savedSummary = res.rows[0];
   } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
@@ -1276,10 +1275,9 @@ Gunakan format Markdown berikut secara eksak:
     const update = {
       $set: {
         content_text: summaryText,
+        is_sent_to_wa: false,
         source_email_ids: sourceEmailIds,
-        total_emails_processed: stats.total_emails,
-        last_email_id_processed: maxEmailId,
-        updated_at: new Date()
+        created_at: new Date()
       }
     };
     const res = await col.findOneAndUpdate(filter, update, { upsert: true, returnDocument: 'after' });

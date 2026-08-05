@@ -1158,6 +1158,20 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
   return savedSummary;
 }
 
+function formatYYYYMMDD(val: any): string {
+  if (!val) return '';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const str = String(val).trim();
+  if (str.includes('T')) return str.split('T')[0];
+  if (str.includes(' ')) return str.split(' ')[0];
+  return str;
+}
+
 /**
  * Get Daily Summaries for Tenant (populated with source_emails metadata)
  */
@@ -1173,7 +1187,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
       rawSummaries = res.map((r: any) => ({
         id: r._id,
         tenant_id: r.tenant_id,
-        summary_date: r.summary_date,
+        summary_date: formatYYYYMMDD(r.summary_date),
         content_text: r.content_text,
         is_sent_to_wa: !!r.is_sent_to_wa,
         source_email_ids: Array.isArray(r.source_email_ids) ? r.source_email_ids : [],
@@ -1199,7 +1213,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
         return {
           id: row.id,
           tenant_id: row.tenant_id,
-          summary_date: row.summary_date,
+          summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
