@@ -132,16 +132,35 @@ export default function CitOrderModal({
 
   // Sync / Prefill form fields when prefillEmail or metadata changes
   useEffect(() => {
-    if (isOpen && prefillEmail) {
-      setTicketSubject(prefillEmail.subject || '');
-      setSourceReference(prefillEmail.message_id || '');
-      setCitType(prefillEmail.cit_type === 'ATM' ? 'ATM' : 'CIT');
-      setSuggestedBank(prefillEmail.suggested_bank || '');
-      setExtractedNotes(prefillEmail.extracted_notes || '');
+    let isMounted = true;
+
+    const syncPrefillData = async () => {
+      if (!isOpen || !prefillEmail) return;
+
+      let emailData: any = { ...prefillEmail };
+
+      // Try fetching fresh extracted order-cit-data from backend
+      try {
+        const res = await fetch(`/api/emails/${prefillEmail.message_id}/order-cit-data`);
+        const result = await res.json();
+        if (result.success && result.data && isMounted) {
+          emailData = { ...emailData, ...result.data };
+        }
+      } catch (err) {
+        console.warn('Failed to fetch order-cit-data, using local prefillEmail:', err);
+      }
+
+      if (!isMounted) return;
+
+      setTicketSubject(emailData.subject || '');
+      setSourceReference(emailData.message_id || '');
+      setCitType(emailData.cit_type === 'ATM' ? 'ATM' : 'CIT');
+      setSuggestedBank(emailData.suggested_bank || '');
+      setExtractedNotes(emailData.extracted_notes || emailData.summary || '');
 
       // Parse and prefill Branch
-      const branchMatch = (prefillEmail.body_text || '').match(/(?:Branch|Cabang|Bank\s+Branch\s+Name|Branch\s+Name)\s*[:=]\s*([a-zA-Z0-9\s\-]+)/i);
-      const extractedBranch = branchMatch ? branchMatch[1].trim() : (prefillEmail.folder_child || '');
+      const branchMatch = (emailData.body_text || '').match(/(?:Branch|Cabang|Bank\s+Branch\s+Name|Branch\s+Name)\s*[:=]\s*([a-zA-Z0-9\s\-]+)/i);
+      const extractedBranch = branchMatch ? branchMatch[1].trim() : (emailData.folder_child || '');
 
       if (extractedBranch && branches.length > 0) {
         const found = branches.find(b => 
@@ -153,8 +172,8 @@ export default function CitOrderModal({
         } else {
           // Check if folder_child matches a branch directly
           const fallback = branches.find(b => 
-            (b.name || '').toLowerCase() === (prefillEmail.folder_child || '').toLowerCase() || 
-            (b.branch_name || '').toLowerCase() === (prefillEmail.folder_child || '').toLowerCase()
+            (b.name || '').toLowerCase() === (emailData.folder_child || '').toLowerCase() || 
+            (b.branch_name || '').toLowerCase() === (emailData.folder_child || '').toLowerCase()
           );
           if (fallback) setSelectedBranchId(String(fallback.id));
         }
@@ -165,25 +184,24 @@ export default function CitOrderModal({
 
       // Parse and prefill Amount with AI-extracted total_amount priority
       let parsedAmount = '';
-      if (prefillEmail.total_amount && Number(prefillEmail.total_amount) > 0) {
-        parsedAmount = String(prefillEmail.total_amount);
+      if (emailData.total_amount && Number(emailData.total_amount) > 0) {
+        parsedAmount = String(emailData.total_amount);
       } else {
-        const amountMatch = (prefillEmail.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
+        const amountMatch = (emailData.body_text || '').match(/(?:Amount|Nilai)\s*[:=]\s*([\d,.]+)/i);
         parsedAmount = amountMatch ? amountMatch[1].replace(/[,.]/g, '') : '';
-        if (!parsedAmount && prefillEmail.body_text) {
-          // Look for denom clues in extracted_notes or body (e.g. 100k, 50k, total digits)
-          const digitsMatch = prefillEmail.body_text.match(/\b\d{5,10}\b/g);
+        if (!parsedAmount && emailData.body_text) {
+          const digitsMatch = emailData.body_text.match(/\b\d{5,10}\b/g);
           if (digitsMatch && digitsMatch.length > 0) {
             parsedAmount = digitsMatch[0];
           }
         }
       }
-      const finalAmountVal = parsedAmount || (prefillEmail.currency === 'USD' ? '1000' : '100000000');
+      const finalAmountVal = parsedAmount || (emailData.currency === 'USD' ? '1000' : '100000000');
       setAmount(finalAmountVal);
 
       // Parse and prefill Currency with AI-extracted currency priority
-      const currMatch = (prefillEmail.body_text || '').match(/(?:Currency|Mata\s+Uang|Currency\s+Code)\s*[:=]\s*([a-zA-Z]{3})/i);
-      const extractedCurr = (prefillEmail.currency || (currMatch ? currMatch[1].toUpperCase() : 'IDR')).toUpperCase();
+      const currMatch = (emailData.body_text || '').match(/(?:Currency|Mata\s+Uang|Currency\s+Code)\s*[:=]\s*([a-zA-Z]{3})/i);
+      const extractedCurr = (emailData.currency || (currMatch ? currMatch[1].toUpperCase() : 'IDR')).toUpperCase();
       if (extractedCurr && currencies.length > 0) {
         const found = currencies.find(c => 
           (c.code || '').toUpperCase() === extractedCurr || 
@@ -197,45 +215,51 @@ export default function CitOrderModal({
 
       // Dynamically generate default denomination rows
       const rows: DenomRow[] = [];
-      const activeCurr = prefillEmail.currency || extractedCurr || 'IDR';
-      const availableList = getDenominationsForCurrency(activeCurr);
+      const activeCurr = emailData.currency || extractedCurr || 'IDR';
 
-      if (prefillEmail.denomination_suggestion && Number(prefillEmail.denomination_suggestion) > 0) {
-        const targetAmount = Number(finalAmountVal);
-        const suggestion = Number(prefillEmail.denomination_suggestion);
-        rows.push({
-          denomination: suggestion,
-          quantity: Math.floor(targetAmount / suggestion) || 1
-        });
-      } else {
-        const lowercaseNotes = (prefillEmail.extracted_notes || '').toLowerCase() + ' ' + (prefillEmail.body_text || '').toLowerCase();
-        if (activeCurr.toUpperCase() === 'USD') {
-          if (lowercaseNotes.includes('100 dollar') || lowercaseNotes.includes('100$') || lowercaseNotes.includes('denom 100')) {
-            rows.push({ denomination: 100, quantity: 10 });
-          }
-          if (lowercaseNotes.includes('50 dollar') || lowercaseNotes.includes('50$') || lowercaseNotes.includes('denom 50')) {
-            rows.push({ denomination: 50, quantity: 20 });
-          }
-        } else {
-          if (lowercaseNotes.includes('100k') || lowercaseNotes.includes('100.000') || lowercaseNotes.includes('100 ribu')) {
-            rows.push({ denomination: 100000, quantity: 1000 });
-          }
-          if (lowercaseNotes.includes('50k') || lowercaseNotes.includes('50.000') || lowercaseNotes.includes('50 ribu')) {
-            rows.push({ denomination: 50000, quantity: 1000 });
+      // Use denomination_breakdown if present
+      let rawBreakdown = emailData.denomination_breakdown;
+      if (typeof rawBreakdown === 'string') {
+        try { rawBreakdown = JSON.parse(rawBreakdown); } catch { rawBreakdown = {}; }
+      }
+
+      if (rawBreakdown && typeof rawBreakdown === 'object' && Object.keys(rawBreakdown).length > 0) {
+        for (const [denomKey, denomQty] of Object.entries(rawBreakdown)) {
+          const dNum = Number(denomKey);
+          const qNum = Number(denomQty);
+          if (!isNaN(dNum) && dNum > 0) {
+            rows.push({ denomination: dNum, quantity: qNum > 0 ? qNum : 1 });
           }
         }
       }
 
+      if (rows.length === 0 && emailData.denomination_suggestion && Number(emailData.denomination_suggestion) > 0) {
+        const targetAmount = Number(finalAmountVal);
+        const suggestion = Number(emailData.denomination_suggestion);
+        rows.push({
+          denomination: suggestion,
+          quantity: Math.floor(targetAmount / suggestion) || 1
+        });
+      }
+
       if (rows.length === 0) {
+        const availableList = getDenominationsForCurrency(activeCurr);
         const defaultDenom = availableList[0] || (activeCurr.toUpperCase() === 'USD' ? 100 : 100000);
         const targetAmount = Number(finalAmountVal);
         rows.push({ denomination: defaultDenom, quantity: Math.floor(targetAmount / defaultDenom) || 1 });
       }
       setDenomRows(rows);
+    };
+
+    if (isOpen && prefillEmail) {
+      syncPrefillData();
     } else if (isOpen) {
-      // Clear form
       resetForm();
     }
+
+    return () => {
+      isMounted = false;
+    };
   }, [isOpen, prefillEmail, branches, currencies]);
 
   // Update denomination rows when currency changes to prevent cross-currency mismatch

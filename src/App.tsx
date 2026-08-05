@@ -39,8 +39,10 @@ import {
   FileText,
   Send,
   Tag,
-  FolderSync
+  FolderSync,
+  RotateCcw
 } from 'lucide-react';
+import { PendingOrderInput } from './components/PendingOrderInput';
 import CitDashboard from './components/CitDashboard';
 import CitOrderModal from './components/CitOrderModal';
 import { CitDispatchFullPage } from './components/CitDispatchFullPage';
@@ -66,6 +68,10 @@ interface UserPermissions {
   daily_summary: boolean;
   mail_wa_setup: boolean;
   dynamic_filters: boolean;
+  order_input_read?: boolean;
+  order_input_create?: boolean;
+  order_input_update?: boolean;
+  order_input_delete?: boolean;
 }
 
 interface UserSession {
@@ -221,9 +227,9 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Navigation
-  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'intelligence' | 'cit-dashboard' | 'bulk-summary' | 'dynamic-rules' | 'settings' | 'superadmin-analytics' | 'superadmin-tenants' | 'tenant-settings' | 'dynamic-filters' | 'redis-monitor'>('inbox');
+  const [currentMenu, setCurrentMenu] = useState<'inbox' | 'intelligence' | 'cit-dashboard' | 'bulk-summary' | 'dynamic-rules' | 'settings' | 'superadmin-analytics' | 'superadmin-tenants' | 'tenant-settings' | 'dynamic-filters' | 'redis-monitor' | 'pending-input'>('inbox');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor'>('mail');
+  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor' | 'pending-input'>('mail');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Multi-Account Filter States
@@ -493,6 +499,41 @@ export default function App() {
   const [fullPageCitEmailId, setFullPageCitEmailId] = useState<string | null>(null);
   const [citOrderPrefillEmail, setCitOrderPrefillEmail] = useState<Email | null>(null);
   const [activeContextMenuId, setActiveContextMenuId] = useState<string | null>(null);
+  const [isReSummarizing, setIsReSummarizing] = useState(false);
+
+  const handleReSummaryTenant = async () => {
+    if (!window.confirm("Apakah Anda yakin ingin me-reset seluruh data summary AI dan melakukan Re-Summary Keseluruhan untuk tenant ini?")) {
+      return;
+    }
+    setIsReSummarizing(true);
+    addToast('Re-Summary Dimulai', 'Me-reset data AI dan memasukkan email ke antrean Redis Queue...');
+    try {
+      const tenantId = currentUser?.tenantId || currentUser?.tenant_id || 1;
+      const accountEmail = currentUser?.email || selectedSourceEmail || '';
+
+      const response = await fetch('/api/ai/resummary-tenant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          account_email: accountEmail
+        })
+      });
+      const data = await response.json();
+      if (data.success) {
+        addToast('Re-Summary Berhasil', data.message || `${data.enqueued_count || 0} email berhasil masuk antrean Redis.`);
+        fetchPendingQueue();
+        loadEmails();
+      } else {
+        addToast('Re-Summary Gagal', data.message || 'Gagal me-reset email.', 'error');
+      }
+    } catch (err: any) {
+      console.error('Re-summary tenant error:', err);
+      addToast('Re-Summary Error', err.message || 'Gagal terhubung ke server.', 'error');
+    } finally {
+      setIsReSummarizing(false);
+    }
+  };
 
   const toggleCitOrderMark = async (email: Email) => {
     try {
@@ -1101,58 +1142,42 @@ export default function App() {
     }
   };
 
-  const handleBulkProcessAI = () => {
+  const handleBulkProcessAI = async () => {
     if (pendingCount === 0) {
       addToast('Antrean Kosong', 'Tidak ada email pending di antrean.');
       return;
     }
 
     setIsBulkProcessing(true);
-    setBulkProgress({ current: 0, total: pendingCount });
-    setBulkLogs(["[System] Menghubungkan ke real-time stream bulk process..."]);
-    setIsBulkStreaming(true);
+    setBulkLogs(["[System] Mengirim permintaan Bulk AI Extraction ke antrean Redis Queue..."]);
 
-    const eventSource = new EventSource('/api/emails/bulk-summary/stream');
+    try {
+      const tenantId = currentUser?.tenantId || currentUser?.tenant_id || 1;
+      const response = await fetch('/api/ai/bulk-extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId })
+      });
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.percentage !== undefined) {
-          setBulkProgress({ current: data.processedCount || 0, total: data.total || pendingCount });
-        }
-        if (data.log) {
-          setBulkLogs(prev => [...prev, data.log]);
-        }
+      const data = await response.json();
 
-        if (data.status === 'complete') {
-          addToast('Bulk AI Selesai', data.log || 'Semua email pending berhasil diproses.');
-          eventSource.close();
-          setIsBulkStreaming(false);
-          setIsBulkProcessing(false);
-          fetchPendingQueue();
-          loadEmails(); // Refresh emails list
-        } else if (data.status === 'error') {
-          addToast('Bulk AI Error', data.log || 'Terjadi kesalahan.');
-          eventSource.close();
-          setIsBulkStreaming(false);
-          setIsBulkProcessing(false);
-          fetchPendingQueue();
-        }
-      } catch (err: any) {
-        console.error("Gagal parsing data SSE:", err);
+      if (data.success) {
+        addToast('Bulk AI Enqueued', data.message || `${data.queued_count || pendingCount} email dimasukkan ke antrean.`);
+        setBulkLogs(prev => [...prev, `[Success] ${data.message || 'Berhasil dimasukkan ke antrean.'}`]);
+        setIsBulkProcessing(false);
+        fetchPendingQueue();
+        loadEmails();
+      } else {
+        addToast('Bulk AI Error', data.message || 'Gagal memasukkan email ke antrean.', 'error');
+        setBulkLogs(prev => [...prev, `[Error] ${data.message}`]);
+        setIsBulkProcessing(false);
       }
-    };
-
-    eventSource.onerror = (err) => {
-      console.error("SSE EventSource error:", err);
-      setBulkLogs(prev => [...prev, "[Error] Koneksi stream terputus atau terjadi kesalahan server."]);
-      addToast('Stream Error', 'Koneksi real-time ke server terputus.');
-      eventSource.close();
-      setIsBulkStreaming(false);
+    } catch (err: any) {
+      console.error("[Bulk Process AI Error]:", err);
+      addToast('Bulk AI Error', err.message || 'Gagal memanggil API bulk extract.', 'error');
+      setBulkLogs(prev => [...prev, `[Error] ${err.message || String(err)}`]);
       setIsBulkProcessing(false);
-      fetchPendingQueue();
-    };
+    }
   };
 
   // Poll pending queue count to keep the badge dynamic
@@ -1607,6 +1632,7 @@ export default function App() {
             <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans">
               {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
               {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
+                            {currentMenu === 'pending-input' && 'Pending Order Input'}
               {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
               {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
               {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
@@ -1682,6 +1708,16 @@ export default function App() {
                 >
                   <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
                   <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
+                </button>
+
+                <button
+                  onClick={handleReSummaryTenant}
+                  disabled={isReSummarizing}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                  title="Reset & Re-Summary seluruh email untuk tenant ini via Redis Queue"
+                >
+                  <RotateCcw className={`h-3.5 w-3.5 ${isReSummarizing ? 'animate-spin' : ''}`} />
+                  <span>{isReSummarizing ? 'Re-Summarizing...' : '🔄 Re-Summary Keseluruhan'}</span>
                 </button>
 
                 <button
@@ -1867,7 +1903,7 @@ export default function App() {
                     <div className="flex items-center justify-between text-xs font-semibold">
                       <div className="flex items-center gap-1.5 text-indigo-200">
                         <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-                        <span>Worker AI Active</span>
+                        <span>⚙️ Core AI Email Engine Processing</span>
                       </div>
                       <span className="text-[10px] font-mono text-indigo-300 bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-800">
                         {aiProgress.completed} / {aiProgress.total} ({aiProgress.percentage}%)
@@ -1880,7 +1916,7 @@ export default function App() {
                       />
                     </div>
                     <div className="flex items-center justify-between text-[9.5px] text-slate-300 font-mono">
-                      <span>Proses ekstraksi email...</span>
+                      <span>Menjalankan engine ekstraksi email...</span>
                       <span className="font-bold text-amber-300">{aiProgress.unanalyzed} pending</span>
                     </div>
                   </div>
@@ -1896,10 +1932,10 @@ export default function App() {
                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                         <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
                       </span>
-                      {pendingCount} Email Menunggu AI
+                      {pendingCount} Payload di Antrean Engine
                     </span>
                     <span className="text-[10px] font-semibold underline hover:text-amber-950 flex items-center gap-0.5">
-                      Kelola Antrean &rarr;
+                      Kelola Traffic Engine &rarr;
                     </span>
                   </button>
                 )}
@@ -2109,7 +2145,7 @@ export default function App() {
                         <Sparkles className="h-4 w-4 animate-spin shrink-0" />
                         <span className="text-xs font-semibold">AI Operasional sedang mengekstrak detail CIT/ATM...</span>
                       </div>
-                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">Nemotron / Inkling ACTIVATED</span>
+                      <span className="text-[10px] font-bold text-sky-600 bg-sky-100/80 px-2 py-0.5 rounded-md animate-pulse font-mono">Core AI Engine ACTIVATED</span>
                     </div>
                   )}
                   {selectedEmail.ai_status === 'FAILED' && (
@@ -2478,6 +2514,12 @@ export default function App() {
         )}
 
         {/* CIT DASHBOARD SECTION */}
+                {currentMenu === 'pending-input' && (
+          <PendingOrderInput 
+            currentUser={currentUser} 
+            onOpenDispatch={(emailId) => setFullPageCitEmailId(emailId)}
+          />
+        )}
         {currentMenu === 'cit-dashboard' && (
           <CitDashboard 
             onAddToast={addToast}
@@ -3749,8 +3791,8 @@ export default function App() {
         {currentMenu === 'bulk-summary' && (
           <div className="flex-1 overflow-y-auto">
             <BulkSummaryView 
-              currentTenantId={currentUser?.tenant_id || undefined} 
-              tenantName={currentUser?.tenant_name} 
+              currentTenantId={currentUser?.tenant_id || 1} 
+              tenantName={currentUser?.tenant_name || 'Super Admin'} 
             />
           </div>
         )}
@@ -4036,7 +4078,7 @@ export default function App() {
                   AI Pending Queue Management
                 </h3>
                 <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                  Kelola pemrosesan massal email dengan Batched Parallelism (maks. 2 per batch, jeda 15s) dan AI Rotator (Nemotron-3-Super &rarr; Nemotron-3-Nano-Omni &rarr; GPT-OSS-120B &rarr; StepFun).
+                  Kelola antrean payload email massal dengan arsitektur Batched Parallelism dan Core AI Engine Rotator.
                 </p>
               </div>
               <button

@@ -712,10 +712,15 @@ async function startServer() {
         ? createdSummaries[0]
         : (latestSummaries && latestSummaries.length > 0 ? latestSummaries[0] : null);
 
-      res.json({
+            res.json({
         success: true,
         message: tenantId ? `Bulk summary generated for Tenant ID ${tenantId}.` : "Bulk summaries generated successfully for all enabled divisions.",
-        data: summaryData,
+        data: summaryData ? {
+          ...summaryData,
+          summary_text: summaryData.content_text,
+          generated_at: summaryData.created_at,
+          referenced_emails: summaryData.source_emails
+        } : null,
         summaries: latestSummaries
       });
     } catch (err: any) {
@@ -723,8 +728,313 @@ async function startServer() {
     }
   };
 
+  const handleSingleBulkSummaryGenerate = async (req: any, res: any) => {
+    try {
+      const { generateDailySummary } = await import("./src/services/aiProcessingService");
+      const { getDbService, dbGetDailySummaries } = await import("./src/services/dbManager");
+      
+      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.body?.tenant_id;
+      const raw_target_date = req.body?.target_date || req.query?.target_date || req.body?.date || req.query?.date;
+      const is_merge = Boolean(req.body?.is_merge);
+      const force_refresh = Boolean(req.body?.force_refresh);
+
+      if (!tenant_id) {
+        return res.status(400).json({ success: false, message: "tenant_id wajib disertakan.", data: null });
+      }
+
+      const tenantIdNum = Number(tenant_id);
+
+      // INSTRUKSI 1: VALIDASI TANGGAL (MAX 2 HARI BACKDATE & TIDAK BOLEH MASA DEPAN)
+      const now = new Date();
+      const getYYYYMMDD = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+
+      const todayStr = getYYYYMMDD(now);
+      const h2Date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2);
+      const h2Str = getYYYYMMDD(h2Date);
+
+      const target_date = (raw_target_date && typeof raw_target_date === 'string' && raw_target_date.trim())
+        ? raw_target_date.trim().split('T')[0]
+        : todayStr;
+
+      if (target_date > todayStr) {
+        return res.status(400).json({
+          success: false,
+          message: "Tidak dapat merangkum tanggal di masa depan.",
+          data: null
+        });
+      }
+
+      if (target_date < h2Str) {
+        return res.status(400).json({
+          success: false,
+          message: `Peringatan: Rentang tanggal melebihi batas maksimal 2 hari ke belakang. Silakan pilih tanggal antara ${h2Str} sampai ${todayStr}.`,
+          data: null
+        });
+      }
+
+      // Check cache in database first
+      const allSummaries = await dbGetDailySummaries(tenantIdNum);
+      const cachedSummary = allSummaries.find((s: any) => {
+        const sDate = String(s.summary_date || '');
+        const cDate = s.created_at ? (s.created_at instanceof Date ? s.created_at.toISOString() : String(s.created_at)) : '';
+        return sDate === target_date || (cDate.length > 0 && cDate.startsWith(target_date));
+      });
+
+      // INSTRUKSI 2: LOGIKA BACKEND CACHE & INCREMENTAL DETECTION
+      const dbService = await getDbService();
+      let emailCountNow = 0;
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        const cntRes = await dbService.pgPool.query(
+          `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2`,
+          [tenantIdNum, target_date]
+        );
+        emailCountNow = Number(cntRes.rows[0]?.cnt || 0);
+      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const startOfDay = new Date(target_date);
+        startOfDay.setHours(0,0,0,0);
+        const endOfDay = new Date(target_date);
+        endOfDay.setHours(23,59,59,999);
+        emailCountNow = await dbService.mongoDb.collection('emails').countDocuments({
+          tenant_id: tenantIdNum,
+          $or: [{ received_at: { $gte: startOfDay, $lte: endOfDay } }, { date: { $gte: startOfDay, $lte: endOfDay } }]
+        });
+      }
+
+      const isPastDate = target_date < todayStr;
+
+      // Kondisi A: Tanggal Masa Lalu -> Return Cache tanpa AI
+      if (isPastDate && cachedSummary && !force_refresh) {
+        return res.json({
+          success: true,
+          cached: true,
+          has_new_emails: false,
+          new_emails_count: 0,
+          message: `Rangkuman tanggal ${target_date} dimuat dari cache database.`,
+          data: {
+             ...cachedSummary,
+             summary_text: cachedSummary.content_text,
+             generated_at: cachedSummary.created_at,
+             referenced_emails: cachedSummary.source_emails
+          }
+        });
+      }
+
+      // Kondisi B: Hari Ini / Incremental Check
+      if (!isPastDate && cachedSummary && !force_refresh && !is_merge) {
+        const processedCount = Number((cachedSummary as any).total_emails_processed || (cachedSummary.source_email_ids ? cachedSummary.source_email_ids.length : 0));
+        const newEmailsCount = Math.max(0, emailCountNow - processedCount);
+
+        if (newEmailsCount > 0) {
+          return res.json({
+            success: true,
+            cached: true,
+            has_new_emails: true,
+            new_emails_count: newEmailsCount,
+            total_emails_now: emailCountNow,
+            total_emails_processed: processedCount,
+            message: `Terdeteksi ${newEmailsCount} email baru sejak rangkuman terakhir. Klik 'Merge New Emails' untuk memperbarui.`,
+            data: {
+               ...cachedSummary,
+               summary_text: cachedSummary.content_text,
+               generated_at: cachedSummary.created_at,
+               referenced_emails: cachedSummary.source_emails
+            }
+          });
+        } else {
+          return res.json({
+            success: true,
+            cached: true,
+            has_new_emails: false,
+            new_emails_count: 0,
+            message: "Rangkuman harian sudah paling baru (cached).",
+            data: {
+               ...cachedSummary,
+               summary_text: cachedSummary.content_text,
+               generated_at: cachedSummary.created_at,
+               referenced_emails: cachedSummary.source_emails
+            }
+          });
+        }
+      }
+
+      // Otherwise, generate/merge with Core AI
+      const estimated_seconds = Math.max(4, Math.ceil((emailCountNow || 5) * 0.4));
+      
+      try {
+        const summary = await generateDailySummary(tenantIdNum, target_date);
+        return res.json({
+          success: true,
+          cached: false,
+          has_new_emails: false,
+          new_emails_count: 0,
+          estimated_seconds,
+          message: is_merge 
+            ? `Berhasil menggabungkan ${emailCountNow} email ke dalam Executive Summary.`
+            : `Summary berhasil digenerate untuk tanggal ${target_date}.`,
+          data: {
+             ...summary,
+             summary_text: summary.content_text,
+             generated_at: summary.created_at,
+             referenced_emails: summary.source_emails
+          }
+        });
+      } catch (err: any) {
+        if (err.message && err.message.includes('Tidak ada email masuk')) {
+           return res.json({
+             success: false,
+             message: err.message,
+             data: null
+           });
+        }
+        throw err;
+      }
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err), data: null });
+    }
+  };
+
   app.post("/api/daily-summaries/trigger", handleBulkSummaryTrigger);
-  app.post("/api/bulk-summary/generate", handleBulkSummaryTrigger);
+  app.post("/api/bulk-summary/generate", handleSingleBulkSummaryGenerate);
+
+
+  app.post("/api/emails/update-status", async (req, res) => {
+    try {
+      const { message_id, processed_tickets, target_tickets, order_status } = req.body;
+      if (!message_id) return res.status(400).json({ success: false, message: 'message_id required' });
+      
+      const { getDbService } = await import("./src/services/dbManager");
+      const dbService = await getDbService();
+
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        await dbService.pgPool.query(
+          "UPDATE public.emails SET processed_tickets = $1, target_tickets = $2, order_status = $3 WHERE message_id = $4 OR id::text = $4",
+          [processed_tickets, target_tickets, order_status, message_id]
+        );
+      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        await dbService.mongoDb.collection('emails').updateOne(
+          { $or: [{ message_id }, { _id: message_id }] },
+          { $set: { processed_tickets, target_tickets, order_status } }
+        );
+      }
+      
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // Get pending orders
+  app.get("/api/emails/pending-orders", async (req, res) => {
+    try {
+      const { getDbService } = await import("./src/services/dbManager");
+      const dbService = await getDbService();
+      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const tenantId = tenant_id ? Number(tenant_id) : undefined;
+      
+      let emails = [];
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        let q = "SELECT * FROM public.emails WHERE (order_status = 'NEW' OR order_status = 'PARTIAL' OR is_cit_order = true) AND (order_status != 'COMPLETED' OR order_status IS NULL)";
+        let params = [];
+        if (tenantId) {
+          q += " AND tenant_id = $1";
+          params.push(tenantId);
+        }
+        q += " ORDER BY date DESC NULLS LAST LIMIT 50";
+        const resDb = await dbService.pgPool.query(q, params);
+        emails = resDb.rows;
+      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+        const query: any = { 
+          $or: [
+            { order_status: 'NEW' },
+            { order_status: 'PARTIAL' },
+            { is_cit_order: true }
+          ],
+          order_status: { $ne: 'COMPLETED' }
+        };
+        if (tenantId) query.tenant_id = tenantId;
+        emails = await dbService.mongoDb.collection('emails').find(query).sort({ received_at: -1, date: -1 }).limit(50).toArray();
+      }
+      
+      res.json({ success: true, emails });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  app.get("/api/bulk-summary/today", async (req, res) => {
+    try {
+      const { dbGetDailySummaries, getDbService } = await import("./src/services/dbManager");
+      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const target_date = req.query?.target_date || req.query?.date;
+      const tenantId = tenant_id ? Number(tenant_id) : undefined;
+      const latestSummaries = await dbGetDailySummaries(tenantId);
+      
+      const now = new Date();
+      const getYYYYMMDD = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+      const todayStr = getYYYYMMDD(now);
+      const targetDateStr = typeof target_date === 'string' && target_date ? target_date : todayStr;
+
+      const matchedSummary = latestSummaries.find((s: any) => {
+        const sDate = String(s.summary_date || '');
+        const cDate = s.created_at ? (s.created_at instanceof Date ? s.created_at.toISOString() : String(s.created_at)) : '';
+        return sDate === targetDateStr || (cDate.length > 0 && cDate.startsWith(targetDateStr));
+      }) || (target_date ? null : latestSummaries[0]);
+
+      let has_new_emails = false;
+      let new_emails_count = 0;
+      let emailCountNow = 0;
+
+      if (matchedSummary && tenantId && targetDateStr === todayStr) {
+        const dbService = await getDbService();
+        if (dbService.type === 'postgres' && dbService.pgPool) {
+          const cntRes = await dbService.pgPool.query(
+            `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2`,
+            [tenantId, targetDateStr]
+          );
+          emailCountNow = Number(cntRes.rows[0]?.cnt || 0);
+        } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+          const startOfDay = new Date(targetDateStr);
+          startOfDay.setHours(0,0,0,0);
+          const endOfDay = new Date(targetDateStr);
+          endOfDay.setHours(23,59,59,999);
+          emailCountNow = await dbService.mongoDb.collection('emails').countDocuments({
+            tenant_id: tenantId,
+            $or: [{ received_at: { $gte: startOfDay, $lte: endOfDay } }, { date: { $gte: startOfDay, $lte: endOfDay } }]
+          });
+        }
+        const processedCount = Number((matchedSummary as any).total_emails_processed || (matchedSummary.source_email_ids ? matchedSummary.source_email_ids.length : 0));
+        new_emails_count = Math.max(0, emailCountNow - processedCount);
+        has_new_emails = new_emails_count > 0;
+      }
+
+      res.json({
+        success: true,
+        cached: !!matchedSummary,
+        has_new_emails,
+        new_emails_count,
+        total_emails_now: emailCountNow,
+        data: matchedSummary ? {
+          ...matchedSummary,
+          summary_text: matchedSummary.content_text,
+          generated_at: matchedSummary.created_at,
+          referenced_emails: matchedSummary.source_emails
+        } : null,
+        summaries: latestSummaries
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
 
   // Get grouped emails based on AI-categorized folder -> sub_folder -> list of emails
   app.get("/api/emails/grouped", async (req, res) => {
@@ -1173,41 +1483,205 @@ async function startServer() {
     }
   });
 
-  // POST Trigger Bulk AI Process
-  app.post("/api/ai/bulk-process", async (req, res) => {
+  // POST Trigger Bulk AI Process / Extract
+  const handleBulkExtract = async (req: any, res: any) => {
     try {
-      const pending = await dbGetAllPendingEmails();
-      const total = pending.length;
-      
-      if (total === 0) {
-        return res.json({ success: true, message: "No pending emails to process." });
+      const { emailQueue, aiQueue } = await import("./src/config/queue");
+      const activeQueue = aiQueue || emailQueue;
+      const { dbGetPendingEmails } = await import("./src/services/dbManager");
+      const { dbGetAllPendingEmails } = await import("./src/database-service");
+
+      const userTenantId = req.user?.tenantId || req.user?.tenant_id || req.body?.tenant_id || req.query?.tenant_id;
+      const tenantId = userTenantId ? Number(userTenantId) : undefined;
+
+      // INSTRUKSI 1: Ambil SELURUH data email pending dari database
+      let pendingEmails: any[] = [];
+      try {
+        pendingEmails = await dbGetPendingEmails(tenantId);
+      } catch (err) {
+        console.warn("[Bulk Extract] dbGetPendingEmails error, falling back to dbGetAllPendingEmails:", err);
       }
 
-      // Process in background asynchronously
-      (async () => {
-        const BATCH_SIZE = 5;
-        for (let i = 0; i < total; i += BATCH_SIZE) {
-          const batch = pending.slice(i, i + BATCH_SIZE);
-          await Promise.all(batch.map(async (email) => {
-            try {
-              await analyzeEmail(email.message_id);
-            } catch (err) {
-              console.error(`[Background Bulk AI Error] Failed to process email ${email.message_id}:`, err);
-            }
-          }));
-          
-          if (i + BATCH_SIZE < total) {
-            await new Promise(resolve => setTimeout(resolve, 15000));
-          }
-        }
-      })().catch(err => {
-        console.error("[Background Bulk AI Exception]:", err);
-      });
+      if (!pendingEmails || pendingEmails.length === 0) {
+        const allPending = await dbGetAllPendingEmails();
+        pendingEmails = tenantId 
+          ? allPending.filter((e: any) => !e.tenant_id || Number(e.tenant_id) === tenantId)
+          : allPending;
+      }
 
-      res.json({ success: true, message: `Bulk process started in background for ${total} emails.` });
+      if (!pendingEmails || pendingEmails.length === 0) {
+        return res.status(200).json({
+          success: true,
+          message: "Tidak ada email pending untuk diproses.",
+          queued_count: 0
+        });
+      }
+
+      // INSTRUKSI 2: Push ke Redis Queue (Full Payload & Fire and Forget)
+      let queuedCount = 0;
+      for (const email of pendingEmails) {
+        const messageId = String(email.message_id || email.id || '').trim();
+        if (!messageId) continue;
+
+        await activeQueue.add('process-email', {
+          message_id: messageId,
+          tenant_id: email.tenant_id ? Number(email.tenant_id) : (tenantId || 1),
+          subject: email.subject || '',
+          body: email.body || email.body_text || email.html_body || '', // WAJIB ADA
+          sender: email.sender || email.sender_email || '',
+          received_at: email.received_at || email.date || new Date().toISOString()
+        }, {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 5000
+          }
+        });
+        queuedCount++;
+      }
+
+      console.log(`[Bulk Extract] Successfully enqueued ${queuedCount} emails to Redis queue.`);
+
+      // INSTRUKSI 3: Kembalikan respons cepat ke UI
+      return res.status(200).json({
+        success: true,
+        message: `${queuedCount} email berhasil dimasukkan ke antrean AI untuk diproses secara massal.`,
+        queued_count: queuedCount
+      });
     } catch (err: any) {
-      console.error("[API Bulk AI Error]:", err);
-      res.status(500).json({ success: false, message: err.message || String(err) });
+      console.error("[Bulk Extraction API Error]:", err);
+      return res.status(500).json({
+        success: false,
+        message: err.message || String(err),
+        queued_count: 0
+      });
+    }
+  };
+
+  app.post("/api/ai/bulk-extract", handleBulkExtract);
+  app.post("/api/ai/bulk-process", handleBulkExtract);
+  app.post("/api/emails/bulk-extract", handleBulkExtract);
+  app.post("/api/emails/bulk-process", handleBulkExtract);
+
+  // INSTRUKSI 2: BACKEND ENDPOINT & QUERY SQL RESET (POST /api/ai/resummary-tenant)
+  app.post("/api/ai/resummary-tenant", async (req, res) => {
+    try {
+      const { tenant_id, account_email } = req.body || {};
+      const userTenantId = req.user?.tenantId || req.user?.tenant_id || tenant_id;
+      const tenantId = userTenantId ? Number(userTenantId) : 1;
+      const accountEmail = account_email ? String(account_email).trim() : '';
+
+      const { getDbService } = await import("./src/services/dbManager");
+      const { aiQueue } = await import("./src/config/queue");
+      const dbService = await getDbService();
+
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        // Tahap A: SQL Reset Data AI
+        let resetQuery = `
+          UPDATE emails 
+          SET 
+              summary = NULL, 
+              action_required = NULL, 
+              tag_type = NULL,
+              suggested_tag = NULL, 
+              is_important = NULL, 
+              urgency_level = NULL,
+              denomination_breakdown = '{}'::jsonb
+          WHERE tenant_id = $1
+        `;
+        const resetParams: any[] = [tenantId];
+        if (accountEmail && accountEmail !== 'all') {
+          resetQuery += ` AND (receiver = $2 OR sender = $2 OR source_email = $2)`;
+          resetParams.push(accountEmail);
+        }
+
+        await dbService.pgPool.query(resetQuery, resetParams);
+        console.log(`[Re-Summary Tenant] Tahap A Selesai: Reset summary data AI di PostgreSQL untuk Tenant ID ${tenantId} (Account: ${accountEmail || 'All'})`);
+
+        // Tahap B: Ambil Data & Push ke Redis
+        let selectQuery = `
+          SELECT * FROM emails 
+          WHERE tenant_id = $1 AND summary IS NULL
+        `;
+        const selectParams: any[] = [tenantId];
+        if (accountEmail && accountEmail !== 'all') {
+          selectQuery += ` AND (receiver = $2 OR sender = $2 OR source_email = $2)`;
+          selectParams.push(accountEmail);
+        }
+
+        const resDb = await dbService.pgPool.query(selectQuery, selectParams);
+        const resetEmails = resDb.rows;
+
+        let enqueuedCount = 0;
+        for (const email of resetEmails) {
+          const messageId = String(email.message_id || email.id || '').trim();
+          if (!messageId) continue;
+
+          await aiQueue.add('process-email', {
+            message_id: messageId,
+            tenant_id: email.tenant_id ? Number(email.tenant_id) : tenantId,
+            subject: email.subject || '',
+            body: email.body_text || email.body || email.html_body || '',
+            body_text: email.body_text || email.body || '',
+            sender: email.sender || '',
+            receiver: email.receiver || '',
+            date: email.date || new Date().toISOString()
+          }, {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 5000 }
+          });
+          enqueuedCount++;
+        }
+
+        console.log(`[Re-Summary Tenant] Tahap B Selesai: ${enqueuedCount} email dimasukkan ke aiQueue Redis.`);
+
+        return res.status(200).json({
+          success: true,
+          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean Redis Queue.`,
+          enqueued_count: enqueuedCount
+        });
+      } else {
+        // Fallback engine (MongoDB / Local)
+        const { dbGetAllEmails, dbUpdateEmailFields } = await import("./src/database-service");
+        const allEmails = await dbGetAllEmails();
+        const filtered = allEmails.filter(e => Number(e.tenant_id) === tenantId);
+
+        let enqueuedCount = 0;
+        for (const email of filtered) {
+          await dbUpdateEmailFields(email.message_id, {
+            summary: null,
+            action_required: null,
+            tag_type: null,
+            suggested_tag: null,
+            is_important: null,
+            urgency_level: null,
+            denomination_breakdown: {}
+          });
+
+          await aiQueue.add('process-email', {
+            message_id: email.message_id,
+            tenant_id: tenantId,
+            subject: email.subject || '',
+            body: email.body_text || email.body || '',
+            sender: email.sender || '',
+            date: email.date || new Date().toISOString()
+          });
+          enqueuedCount++;
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean Redis Queue.`,
+          enqueued_count: enqueuedCount
+        });
+      }
+    } catch (err: any) {
+      console.error("[Re-Summary Tenant API Error]:", err);
+      return res.status(500).json({
+        success: false,
+        message: err.message || String(err),
+        enqueued_count: 0
+      });
     }
   });
 
@@ -1784,6 +2258,53 @@ async function startServer() {
       }
     } catch (err: any) {
       console.error("[POST /api/emails/backfill-and-resummarize Error]:", err);
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // GET Auto-Fill Form Order CIT Data by message_id or id
+  app.get(["/api/emails/:message_id/order-cit-data", "/api/emails/order-cit-data/:message_id"], async (req, res) => {
+    try {
+      const { message_id } = req.params;
+      let emailRecord = await dbGetEmailByMessageId(message_id);
+
+      if (!emailRecord) {
+        const allEmails = await dbGetAllEmails();
+        emailRecord = allEmails.find(e => String(e.message_id) === String(message_id) || String(e.id) === String(message_id));
+      }
+
+      if (!emailRecord) {
+        return res.status(404).json({ success: false, message: "Email record not found" });
+      }
+
+      let parsedBreakdown: any = emailRecord.denomination_breakdown || {};
+      if (typeof parsedBreakdown === 'string') {
+        try {
+          parsedBreakdown = JSON.parse(parsedBreakdown);
+        } catch {
+          parsedBreakdown = {};
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          message_id: emailRecord.message_id,
+          subject: emailRecord.subject,
+          sender: emailRecord.sender,
+          summary: emailRecord.summary || '',
+          total_amount: emailRecord.total_amount || 0,
+          denomination_breakdown: parsedBreakdown,
+          denomination_suggestion: emailRecord.denomination_suggestion || 0,
+          suggested_bank: emailRecord.suggested_bank || emailRecord.folder_parent || '',
+          cit_type: emailRecord.cit_type || 'CIT',
+          extracted_notes: emailRecord.extracted_notes || '',
+          currency: emailRecord.currency || 'IDR',
+          folder_child: emailRecord.folder_child || ''
+        }
+      });
+    } catch (err: any) {
+      console.error("[GET /api/emails/:message_id/order-cit-data Error]:", err);
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
   });

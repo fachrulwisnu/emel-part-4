@@ -70,75 +70,89 @@ DATABASE_URL=postgres://user:password@localhost:5432/email_automation_db
 
 ---
 
-## 🏗️ Application Architecture & Detailed Flow
+## 🏗️ Application Architecture & Detailed Flow (Full-Payload Redis Broker)
 
-### High-Level Architecture
+### 1. Diagram Alur Sistem (Mermaid JS)
+
+```mermaid
+graph TD
+    subgraph Trigger [Pemicu System / Input]
+        A1[Cron Job POP3 Fetcher]
+        A2[UI Manual Trigger: Bulk / Individual]
+    end
+
+    subgraph Storage_Initial [Initial Storage]
+        B1[(PostgreSQL / DB)\nRow Email Mentah Status: PENDING]
+    end
+
+    subgraph Broker [Message Broker Layer]
+        C1[Redis Queue / BullMQ\naiQueue]
+    end
+
+    subgraph Processing [Background Worker Engine]
+        D1[AI Worker\naiWorker.process]
+        D2[AI Extraction Service\nanalyzeEmail / Gemini Model]
+    end
+
+    subgraph Storage_Final [Final Persistence]
+        E1[(PostgreSQL / DB)\nUPDATE: summary, tag_type, ai_status = COMPLETED]
+    end
+
+    A1 -->|INSERT Email Mentah| B1
+    A1 -->|Push Full Payload| C1
+    A2 -->|Query Pending & Push Full Payload| C1
+    
+    C1 -->|Pop Job Payload| D1
+    D1 -->|Parse & Validate JSON| D2
+    D2 -->|Hasil Ringkasan & Tagging| D1
+    D1 -->|UPDATE Email Fields| E1
 ```
-+------------------+     POP3/IMAP      +----------------------+
-|  Email Server    | -----------------> | POP3 Cron Fetcher    |
-+------------------+                    +----------------------+
-                                                  |
-                                                  v
-                                        +----------------------+
-                                        | Custom Filter Sweep  | (Auto-Folder Tagging)
-                                        +----------------------+
-                                        | Status: PENDING      |
-                                        +----------------------+
-                                                  |
-                                                  v
-                                        +----------------------+
-                                        | BullMQ Redis Queue   |
-                                        +----------------------+
-                                                  |
-                                                  v
-                                        +----------------------+
-                                        | AI Processing Worker | (Gemini AI Engine)
-                                        +----------------------+
-                                                  |
-                                                  v
-                                        +----------------------+
-                                        | Relational DB        |
-                                        +----------------------+
-                                                  |
-                                                  v
-                                        +----------------------+
-                                        | React Dashboard UI   | (SSE Realtime Updates)
-                                        +----------------------+
-```
 
-### Detailed Low-Level System Flow & Logic Execution
+### 2. Penjelasan Flow Arsitektur (Step-by-Step)
 
-#### 1. POP3 Fetcher Multi-Account (`src/cron.ts`)
-- **Penjadwalan (Cron Scheduler)**: Berjalan setiap interval tertentu untuk mengecek pesan baru dari server mail.
-- **Iterasi Akun Active (`mail_configs`)**: Mengambil seluruh konfigurasi server email aktif yang terdaftar berdasarkan `tenant_id`.
-- **Ekstraksi Body & Parsing Raw Header**: Membaca raw header, sender, subject, serta body teks/HTML.
-- **Pattern Matching Auto-Tagging (`custom_filters`)**: 
-  - Membandingkan `sender_email`, `subject`, dan `body` terhadap aturan di tabel `custom_filters`.
-  - Jika `sender_email` cocok dengan string comma-separated di `match_from`, folder langsung ditentukan ke `action_parent` & `action_child` (misal: `REGION 1 > PALEMBANG`).
-- **Penyimpanan Status PENDING**: Menyimpan email ke tabel `emails` dengan `status = 'PENDING'`.
-- **Enqueue Job ke BullMQ**: Menambahkan job baru ke antrean Redis `email-ai-queue` untuk diproses secara asinkron oleh AI Engine.
+- **Langkah 1: Ingestion (Penarikan Data):**
+  Email masuk melalui Cron Job POP3 (`fetchPop3Emails`) secara berkala atau dipanggil melalui aksi manual pengguna di UI ("Proses Semua" / Bulk Extraction). Pada tahap ini, email mentah disimpan terlebih dahulu (*INSERT*) ke database PostgreSQL dengan status `ai_status = 'PENDING'`.
 
-#### 2. AI Worker Engine (`src/services/aiWorker.ts` & `src/services/aiProcessingService.ts`)
-- **Queue Consumer**: Worker mendengarkan job dari BullMQ queue.
-- **Klasifikasi Tingkat Urgensi & Ringkasan**: Mengirimkan isi email ke Google Gemini AI untuk mengekstrak:
-  - Urgensi: `HIGH`, `MEDIUM`, `LOW`.
-  - Flag Tindakan: `action_required` (true/false).
-  - Ringkasan Eksekutif Bahasa Indonesia.
-- **Ekstraksi CIT Order (Bank Order Dispatch)**:
-  - Deteksi pesan pemesanan pengiriman uang tunai / pengisian ATM.
-  - Regex & AI extraction jumlah lembar pecahan uang (`target_tickets`, denominasi 100k, 50k, dsb).
-- **Update Database State**: Mengubah status email dari `PENDING` menjadi `PROCESSED`.
+- **Langkah 2: Queuing (Antrean Redis):**
+  Sistem **tidak lagi memanggil AI secara langsung** secara sinkron untuk menghindari *timeout* dan *Database Race Condition*. Sistem membungkus seluruh data utuh (*Full Payload*: `message_id`, `tenant_id`, `subject`, `body`, `sender`, `received_at`) lalu mem-push-nya ke antrean Redis (`aiQueue.add(...)`). Endpoint API langsung mengembalikan respons HTTP 200 (*Fire and Forget*) tanpa menunggu eksekusi AI selesai.
 
-#### 3. Retroactive Tagging / Backfill Sweeper (`src/database-service.ts`)
-- **Fungsi `dbBackfillFolders()`**: Mengambil email lama yang ada di database.
-- **Evaluasi Ulang Filter**: Membandingkan email lama dengan seluruh aturan `custom_filters` terbaru.
-- **Update Massal**: Memperbarui kolom `folder_parent` dan `folder_child` secara instan serta memicu refresh Virtual Folder Tree pada UI Sidebar.
+- **Langkah 3: Asynchronous Processing (Worker):**
+  Worker di latar belakang (`aiWorker.process`) mendengarkan (*listen*) antrean Redis. Ketika job masuk, worker mengambil *Full Payload* tersebut. Karena payload sudah berisi teks email lengkap, worker dapat langsung bekerja tanpa harus bergantung pada hasil baca (*SELECT*) ulang dari DB yang berisiko belum ter-commit.
 
-#### 4. Multi-Tenant & Multi-Account Isolation
-- **Role-Based Access Control (RBAC)**:
-  - `SUPER_ADMIN`: Memiliki akses penuh ke Global Analytics, Tenant Management, dan seluruh tenant folder.
-  - `TENANT_USER`: Akses terisolasi terbatas pada `tenant_id` penggunanya sendiri.
-- **Multi-Account Filtering**: Memungkinkan filter tampilan email berdasarkan alamat `source_email` individual atau agregat seluruh akun.
+- **Langkah 4: AI Extraction:**
+  Fungsi `analyzeEmail` menerima payload utuh, menyusun prompt, dan mengirimkannya ke LLM Engine (Google Gemini / AI Model Provider). Setelah AI mengembalikan respons JSON, fungsi **wajib melakukan validasi ketat**: jika objek hasil AI kosong atau `summary` bernilai kosong/NULL, sistem akan melempar *Error* agar job dianggap *Failed* dan dapat di-retry oleh BullMQ, bukan *Silent Success*.
+
+- **Langkah 5: DB Persistence:**
+  Setelah eksekusi dan validasi AI berhasil, `dbManager.dbUpdateEmailFields` / `updateEmail` menjalankan query `UPDATE` ke row PostgreSQL berdasarkan `message_id`. Pendekatan ini menjamin tidak terjadi *Race Condition* karena *INSERT* data mentah pada Langkah 1 dipastikan sudah selesai di-commit sebelum *UPDATE* dipanggil.
+
+---
+
+### 3. Function Mapping (Kamus Kode Developer)
+
+Tabel berikut memetakan fungsi-fungsi utama dalam basis kode untuk memudahkan proses *Hand-Over* (HO) developer baru:
+
+| Nama Fungsi / Handler | File Lokasi | Deskripsi & Tugas Utama |
+| :--- | :--- | :--- |
+| `fetchPop3Emails()` | `src/cron.ts` | Bertugas menarik email baru dari server POP3/IMAP, melakukan filtering awal, dan menyimpan (*INSERT*) email mentah ke DB. |
+| `executeControlledBulkProcess()` / API Handler `POST /api/ai/bulk-extract` | `src/services/aiProcessingService.ts` & `server.ts` | Bertugas men-query seluruh email pending dari DB dan mem-push *Full Payload* ke antrean Redis (`aiQueue`), lalu langsung mereturn HTTP 200 (*Fire and Forget*). |
+| `POST /api/ai/resummary-tenant` | `server.ts` | Endpoint khusus Re-Summary Tenant: Mereset kolom AI (`summary = NULL`, `urgency_level = NULL`, `denomination_breakdown = '{}'::jsonb`) untuk tenant & receiver terkait, lalu mem-push ulang email ke Redis Queue. |
+| `aiQueue.add(...)` | `src/config/queue.ts` | Bertugas memasukkan paket job data (*Full Payload*) ke dalam Redis Queue berbasis BullMQ. Melakukan `await aiQueue.obliterate({ force: true })` saat startup untuk clean start. |
+| `aiWorker.process(...)` | `src/workers/aiWorker.ts` | *Listener* latar belakang yang mengambil job dari Redis BullMQ secara asinkron untuk diproses oleh worker. |
+| `analyzeEmail(emailPayload)` | `src/database-service.ts` | Jantung ekstraksi AI. Menerima payload utuh, mengekstrak JSON `denomination_breakdown` & total nominal (`BIGINT`), memanggil LLM Provider, serta memvalidasi respons JSON. |
+| `generateDailySummary(tenantId)` | `src/services/aiProcessingService.ts` | Menghasilkan rangkuman harian divisi dengan Fallback Max Date jika tidak ada email pada `CURRENT_DATE`. |
+| `dbManager.updateEmail(...)` / `dbUpdateEmailFields` | `src/services/dbManager.ts` | Bertugas menyimpan (*UPDATE*) hasil ekstraksi JSON dari AI (`summary`, `urgency_level`, `receiver`, `date`, `denomination_breakdown`) kembali ke PostgreSQL secara presisi. |
+
+---
+
+## 🗺️ Database Column Schema Mapping (Exact PostgreSQL Match)
+
+Aplikasi telah disesuaikan 100% secara mutlak dengan skema tabel `emails` PostgreSQL:
+
+- `summary`: Menyimpan teks hasil ringkasan email AI (bukan `summary_text`).
+- `urgency_level`: Menyimpan tingkat urgensi email (`High`, `Medium`, `Routine`, dsb. Bukan `urgent_level`).
+- `receiver`: Menyimpan email penerima (bukan `receiver_email`).
+- `"date"`: Tanggal dan waktu email diterima (menggunakan tanda kutip ganda `"date"` karena reserved word PostgreSQL).
+- `denomination_breakdown`: JSONB (`DEFAULT '{}'::jsonb`) untuk menyimpan rincian pecahan uang (Key-Value Pair murni, contoh: `{"50000": 350000000, "100000": 100000000}`).
 
 ---
 

@@ -64,3 +64,17 @@ emailQueue.on('error', (err) => {
   }
 });
 
+export const aiQueue = emailQueue;
+
+// Script cleanup sementara untuk membersihkan antrean usang saat startup
+async function clearStaleQueues() {
+  try {
+    await aiQueue.obliterate({ force: true });
+    console.log("🧹 [Redis] Seluruh antrean AI lama berhasil dibersihkan!");
+  } catch (error) {
+    console.log("🧹 [Redis] Obliterate skipped atau queue sudah kosong.");
+  }
+}
+
+clearStaleQueues();
+

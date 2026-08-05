@@ -25,92 +25,43 @@ console.log('[Worker Service] Initializing Email AI Worker...');
 export const aiWorker = new Worker(
   QUEUE_NAME,
   async (job) => {
-    const rawData = job.data || {};
-    const messageId = String(rawData.messageId || rawData.email_id || rawData.message_id || '').trim();
-    const tenantId = rawData.tenantId || rawData.tenant_id;
+    const emailPayload = job.data || {};
+    const messageId = String(emailPayload.message_id || emailPayload.messageId || emailPayload.email_id || emailPayload.id || '').trim();
+    const tenantId = emailPayload.tenant_id || emailPayload.tenantId || 1;
+
+    console.log(`[Queue: Active] Memproses Email ID ${messageId} (Tenant: ${tenantId})...`);
 
     if (!messageId) {
-      throw new Error('Invalid job payload: missing messageId');
+      console.warn(`[Queue: Ignored] Membuang stale job tanpa message_id.`);
+      return { success: false, reason: 'missing_message_id' };
     }
 
-    let email = await dbGetEmailByMessageId(messageId);
-
-    // Direct PostgreSQL lookup if dbGetEmailByMessageId returned null
-    if (!email) {
-      try {
-        const { getDatabaseConfig } = await import('../utils/configManager');
-        const { getPostgresPool } = await import('../lib/postgres');
-        const config = await getDatabaseConfig();
-        const pgConnString = config.connections?.postgres || process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5432/email_ticketing";
-        const pool = await getPostgresPool(pgConnString);
-
-        // Flexible & strict query searching purely using message_id parameter
-        const res = await pool.query('SELECT * FROM public.emails WHERE message_id = $1 LIMIT 1', [messageId]);
-
-        if (res.rows.length > 0) {
-          const row = res.rows[0];
-          email = {
-            id: row.id,
-            message_id: row.message_id,
-            subject: row.subject || '',
-            sender: row.sender || row.sender_email || '',
-            receiver: row.receiver || '',
-            date: row.date || '',
-            body_text: row.body_text || row.body || '',
-            html_body: row.html_body || row.body_html || '',
-            tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
-            category: row.category || '',
-            sub_category: row.sub_category || '',
-            folder_parent: row.folder_parent || '',
-            folder_child: row.folder_child || '',
-            api_workflow_status: row.api_workflow_status || 'none',
-            api_workflow_log: row.api_workflow_log || '',
-            attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || []),
-            is_read: row.is_read === true || row.is_read === 1,
-            tag_type: row.tag_type || '',
-            summary: row.summary || '',
-            action_required: row.action_required === true || row.action_required === 1,
-            suggested_tag: row.suggested_tag || '',
-            is_important: row.is_important === true || row.is_important === 1,
-            urgency_level: row.urgency_level || 'Routine',
-            suggested_folder_parent: row.suggested_folder_parent || '',
-            suggested_folder_child: row.suggested_folder_child || '',
-            is_cit_order: row.is_cit_order === true || row.is_cit_order === 1,
-            cit_type: row.cit_type || 'None',
-            suggested_bank: row.suggested_bank || '',
-            extracted_notes: row.extracted_notes || '',
-            currency: row.currency || 'IDR',
-            denomination_suggestion: row.denomination_suggestion !== undefined && row.denomination_suggestion !== null ? Number(row.denomination_suggestion) : undefined,
-            total_amount: row.total_amount !== undefined && row.total_amount !== null ? Number(row.total_amount) : undefined,
-            ai_status: row.ai_status || 'PENDING',
-            is_summarized: row.is_summarized === 1 || row.is_summarized === true || row.ai_status === 'COMPLETED' || (!!row.summary && row.summary.trim().length > 0)
-          };
-        }
-      } catch (dbErr) {
-        console.warn('[Worker Service] Direct DB Query Warning:', dbErr);
-      }
+    // INSTRUKSI 2: Validasi Payload Ketat (Tolak Antrean Usang)
+    const emailBody = emailPayload.body || emailPayload.body_text || emailPayload.html_body;
+    if (!emailBody || String(emailBody).trim().length === 0) {
+      console.warn(`[Queue: Ignored] Membuang stale job untuk ID ${messageId} karena payload tidak lengkap (Bukan Full Payload).`);
+      return { success: false, reason: 'incomplete_payload' };
     }
 
-    if (tenantId) {
-      await dbGetTenantById(Number(tenantId)).catch(() => null);
-    }
+    const emailToProcess = {
+      message_id: messageId,
+      tenant_id: tenantId,
+      subject: emailPayload.subject || '',
+      sender: emailPayload.sender || emailPayload.sender_email || '',
+      date: emailPayload.received_at || emailPayload.date || new Date().toISOString(),
+      body_text: emailBody,
+      body: emailBody,
+      attachments: emailPayload.attachments || []
+    };
 
-    if (!email) {
-      console.warn(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
-      throw new Error(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
-    }
-
-    // Step B: Eksekusi LLM Analysis & update status ke 'COMPLETED' / 'FAILED'
     try {
-      const targetMessageId = email.message_id || messageId;
-      await analyzeEmail(targetMessageId);
-      console.log(`[Queue: Completed] Email with message_id ${targetMessageId} selesai diproses.`);
-      return { success: true, messageId: targetMessageId };
+      await analyzeEmail(emailToProcess, tenantId);
+      console.log(`[Queue: Completed] Email ID ${messageId} selesai diproses.`);
+      return { success: true, messageId };
     } catch (err: any) {
       console.error(`[Worker Exception] Error processing Email message_id ${messageId}:`, err.message || err);
-      // Tandai status 'FAILED' di database jika gagal
-      await dbUpdateEmailFields(email.message_id || messageId, { ai_status: 'FAILED' }).catch(() => {});
-      throw err; // Trigger BullMQ auto-retry
+      await dbUpdateEmailFields(messageId, { ai_status: 'FAILED' }).catch(() => {});
+      throw err;
     }
   },
   {
@@ -121,18 +72,21 @@ export const aiWorker = new Worker(
 
 // Listener Event status pekerjaan di Queue
 aiWorker.on('active', (job) => {
-  const { email_id, tenant_id } = job.data || {};
-  console.log(`[Queue: Active] Memproses Email ID ${email_id} (Tenant: ${tenant_id || 'Global'})...`);
+  const emailPayload = job.data || {};
+  const messageId = emailPayload.message_id || emailPayload.messageId || emailPayload.email_id || emailPayload.id;
+  console.log(`[Queue: Active] Memproses Email ID ${messageId} (Tenant: ${emailPayload.tenant_id || 'Global'})...`);
 });
 
 aiWorker.on('completed', (job) => {
-  const { email_id } = job.data || {};
-  console.log(`[Queue: Completed] Email ID ${email_id} selesai diproses.`);
+  const emailPayload = job.data || {};
+  const messageId = emailPayload.message_id || emailPayload.messageId || emailPayload.email_id || emailPayload.id;
+  console.log(`[Queue: Completed] Email ID ${messageId} selesai diproses.`);
 });
 
 aiWorker.on('failed', (job, err) => {
-  const email_id = job?.data?.email_id;
-  console.log(`[Queue: Failed] Email ID ${email_id || 'unknown'} gagal diproses.`);
+  const emailPayload = job?.data || {};
+  const messageId = emailPayload.message_id || emailPayload.messageId || emailPayload.email_id || emailPayload.id;
+  console.log(`[Queue: Failed] Email ID ${messageId || 'unknown'} gagal diproses.`);
 });
 
 aiWorker.on('error', (err) => {

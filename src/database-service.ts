@@ -753,9 +753,13 @@ async function getSummaryNemotron(emailText: string): Promise<any> {
     const apiKey = process.env.NVIDIA_API_KEY_NEMOTRON || process.env.NVIDIA_API_KEY || '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';
     const systemContent = `Anda adalah asisten data operasional cerdas berbasis model nvidia/nemotron-3-ultra-550b-a55b. Ekstrak data operasional penting dari email ke dalam format JSON. Anda harus mengembalikan JSON murni tanpa markdown, tanpa teks penjelasan apa pun di luar JSON.
 
+ATURAN MERANGKUM (summary): DILARANG KERAS menggunakan kalimat pembuka basa-basi seperti 'Email ini berisi...' atau 'Pesan dari pengirim mengenai...'. Langsung tuliskan inti instruksi secara profesional (Siapa, Melakukan Apa, Berapa Nominal, Kapan, Dimana).
+ATURAN SPESIFIK EMAIL LAMPIRAN (CIT/RUNSHEET): Jika email menyatakan pengiriman data, lampiran, atau instruksi operasional (seperti 'Terlampir data CIT Permata' atau konfirmasi penugasan) meskipun tidak ada nominal uang di dalam teks body, DILARANG KERAS menggunakan ringkasan generik seperti 'Berisi informasi operasional rutin'. WAJIB rangkum spesifik jenis datanya, siapa pengirimnya, dan tujuannya. Contoh ringkasan yang benar: 'Pengiriman data CIT Permata untuk Advantage Batam dari Bank Permata (Sri Purwati) tanggal 06 Agustus 2026.'
+ATURAN ANGKA: Untuk field total_amount atau denomination_suggestion, JANGAN menyertakan mata uang (seperti USD, Rp). Berikan ANGKA MURNI saja.
+
 JSON schema:
 {
-  "summary": "Ringkasan email utama dan thread percakapan dalam Bahasa Indonesia",
+  "summary": "Ringkasan email utama dan thread percakapan secara langsung tanpa kata pembuka basa-basi",
   "currency": "IDR" | "USD",
   "total_amount": number | null,
   "denomination_suggestion": number | null,
@@ -1213,21 +1217,36 @@ export async function syncAndAnalyzeEmail(email: Email): Promise<void> {
 /**
  * Asynchronously analyzes a specific email and updates its status in the DB
  */
-export async function analyzeEmail(messageId: string): Promise<void> {
+export async function analyzeEmail(emailPayload: any, tenantId?: number): Promise<void> {
+  let email: any = typeof emailPayload === 'object' && emailPayload !== null ? emailPayload : { message_id: String(emailPayload) };
+  const messageId = String(email.message_id || email.id || emailPayload || '').trim();
+
+  // Helper sanitasi angka murni untuk PostgreSQL BIGINT
+  const extractNumber = (val: any): number => {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'number') return isNaN(val) ? 0 : Math.floor(val);
+    const cleaned = String(val).replace(/[^0-9]/g, '');
+    return cleaned ? Number(cleaned) : 0;
+  };
+
   try {
-    // Check if email exists
-    const email = await dbGetEmailByMessageId(messageId);
-    if (!email) {
-      console.warn(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
-      throw new Error(`[Queue Retry] Email with message_id ${messageId} not found in DB yet. Forcing queue retry...`);
+    // Guard Clause: Validasi Payload Ketat (Tolak Antrean Usang)
+    const emailBody = email.body || email.body_text || email.html_body;
+    if (!emailBody || emailBody.trim().length === 0) {
+      console.warn(`[Queue: Ignored] Membuang stale job untuk ID ${messageId} karena payload tidak lengkap (Bukan Full Payload).`);
+      return; // Mematikan / melewati stale job tanpa DB polling
     }
+
+    if (!email.subject) email.subject = '';
+    if (!email.sender) email.sender = '';
+    if (!email.body_text) email.body_text = emailBody;
 
     // Check dynamic filters first for auto-tagging & folder creation
     const filterRouting = await applyDynamicFilters(email);
 
     // Move to ANALYZING state
     console.log(`[Async AI] Memproses email: "${email.subject}" (${messageId})`);
-    await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' });
+    await dbUpdateEmailFields(messageId, { ai_status: 'ANALYZING' }).catch(() => {});
 
     // Notify frontend of status change
     if (dbBroadcasterFn) {
@@ -1262,12 +1281,21 @@ export async function analyzeEmail(messageId: string): Promise<void> {
           action_parent: filterRouting.action_parent,
           action_child: filterRouting.action_child
         });
+
+        if (!summaryData || (!summaryData.summary && !summaryData.summary_text)) {
+            throw new Error(`[AI Parsing Error] Hasil AI kosong atau format JSON salah untuk email ${messageId}`);
+        }
+
         console.log(`[Parallel AI] Summary and Tagging completed for: ${messageId}`);
       } catch (err) {
         console.error(`[Parallel AI] Summary/Tagging failed for ${messageId}, falling back to legacy:`, err);
         summaryData = await processEmailAI(
           `Subject: ${email.subject}\n\nBody:\n${email.body_text}`
         ).catch(() => null);
+
+        if (!summaryData || (!summaryData.summary && !summaryData.summary_text)) {
+            throw new Error(`[AI Parsing Error] Hasil AI legacy kosong atau format JSON salah untuk email ${messageId}`);
+        }
       }
     })();
     tasks.push(summaryTask);
@@ -1289,6 +1317,10 @@ export async function analyzeEmail(messageId: string): Promise<void> {
             action_child: filterRouting.action_child
           });
 
+          if (!intelligenceData || typeof intelligenceData !== 'object') {
+             throw new Error(`[AI Parsing Error] Hasil AI Intelligence kosong atau invalid untuk email ${messageId}`);
+          }
+
           // Save intelligence to table email_analysis
           await dbSaveEmailAnalysis(messageId, intelligenceData).catch(err => {
             console.error(`[Parallel AI] Failed to save email analysis:`, err);
@@ -1296,13 +1328,19 @@ export async function analyzeEmail(messageId: string): Promise<void> {
           console.log(`[Parallel AI] Email Intelligence completed for: ${messageId}`);
         } catch (err) {
           console.error(`[Parallel AI] Email Intelligence failed for ${messageId}:`, err);
+          throw err;
         }
       })();
       tasks.push(intelligenceTask);
     }
 
     // Wait for all tasks to settle in parallel
-    await Promise.allSettled(tasks);
+    // Wait for all tasks
+    const results = await Promise.allSettled(tasks);
+    const failedTasks = results.filter(r => r.status === 'rejected');
+    if (failedTasks.length > 0) {
+       throw new Error(`[AI Task Error] ${failedTasks.length} parallel AI tasks failed. Reason: ${failedTasks[0].reason?.message || failedTasks[0].reason}`);
+    }
 
     let summary = "";
     let action_required = false;
@@ -1349,17 +1387,38 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         : (summaryData?.extracted_notes || '');
 
       currency = summaryData?.currency || 'IDR';
-      denomination_suggestion = summaryData?.denomination_suggestion;
-      total_amount = summaryData?.total_amount;
 
-      console.log(`[Parallel AI] Email processed successfully: ${email.subject}`);
+      // INSTRUKSI 1: Logika Sanitasi Angka & Variable Declarations (MENCEGAH REFERENCE ERROR)
+      let rawBreakdown = summaryData?.denomination_breakdown || intelligenceData?.denomination_breakdown || {};
+      if (typeof rawBreakdown !== 'object' || rawBreakdown === null) rawBreakdown = {};
+
+      let cleanBreakdown: Record<string, number> = {};
+      for (const [key, value] of Object.entries(rawBreakdown)) {
+        const cleanKey = extractNumber(key);
+        const cleanValue = extractNumber(value);
+        if (cleanKey > 0) {
+          cleanBreakdown[cleanKey] = cleanValue;
+        }
+      }
+
+      let totalAmount = extractNumber(summaryData?.total_amount || intelligenceData?.total_amount);
+      let denomSuggestion = extractNumber(summaryData?.denomination_suggestion || intelligenceData?.denomination_suggestion || 0);
+
+      if (Object.keys(cleanBreakdown).length > 0) {
+        totalAmount = Object.values(cleanBreakdown).reduce((acc: number, val: number) => acc + val, 0);
+      }
+      total_amount = totalAmount;
+      denomination_suggestion = denomSuggestion;
+
+      console.log(`[Parallel AI] Email processed successfully: ${email.subject} (Total Amount: ${total_amount})`);
 
       // Update to COMPLETED
       await dbUpdateEmailFields(messageId, {
-        summary,
-        action_required,
-        urgency_level,
-        suggested_tag,
+        summary: summaryData?.summary || summaryData?.summary_text || summary,
+        action_required: summaryData?.action_required !== undefined ? !!summaryData.action_required : action_required,
+        tag_type: summaryData?.tag_type || suggested_tag || 'Lainnya',
+        suggested_tag: suggested_tag || '',
+        urgency_level: summaryData?.urgency_level || summaryData?.urgent_level || urgency_level || 'Routine',
         is_important: urgency_level === 'High' || urgency_level === 'Peringatan' || urgency_level === 'Medium',
         folder_parent: suggested_folder_parent,
         folder_child: suggested_folder_child,
@@ -1368,8 +1427,9 @@ export async function analyzeEmail(messageId: string): Promise<void> {
         suggested_bank,
         extracted_notes,
         currency,
-        denomination_suggestion,
-        total_amount,
+        denomination_suggestion: denomSuggestion,
+        total_amount: totalAmount,
+        denomination_breakdown: JSON.stringify(cleanBreakdown),
         ai_status: 'COMPLETED',
         is_summarized: true
       });
@@ -1400,6 +1460,9 @@ export async function analyzeEmail(messageId: string): Promise<void> {
       ai_status: 'FAILED',
       is_summarized: false
     });
+    
+    // Throw error so the Queue / Bulk Processor knows it failed
+    throw aiError;
   }
 
     // Fetch final email data to broadcast to frontend
@@ -1486,7 +1549,7 @@ export async function processEmailQueue(): Promise<void> {
 /**
  * Retrieve a single email by its message_id from SQLite with a fallback to Supabase
  */
-export async function dbGetEmailByMessageId(messageId: string): Promise<Email | null> {
+export async function dbGetEmailByMessageId(messageId: string, tenantId?: number): Promise<Email | null> {
   console.log(`Mencari data dengan message_id atau id: ${messageId}`);
   
   // 1. Check active database MongoDB
@@ -2347,7 +2410,7 @@ export async function dbUpdateEmailFields(
     total_amount?: number;
     is_summarized?: boolean;
   }
-): Promise<void> {
+): Promise<boolean> {
   // SQLite update
   const db = getSqliteDb();
   const sets: string[] = [];
@@ -2383,16 +2446,14 @@ export async function dbUpdateEmailFields(
     });
   }
   
-  // 2. Remote update (MongoDB or Supabase)
-  const { getDbDriver } = await import('./config/dbSwitcher');
-  const driver = getDbDriver();
-
+  // 2. Remote update (MongoDB or PostgreSQL)
   const updatePayload: any = {};
   if (fields.folder_parent !== undefined) updatePayload.folder_parent = fields.folder_parent;
   if (fields.folder_child !== undefined) updatePayload.folder_child = fields.folder_child;
   if (fields.tags !== undefined) updatePayload.tags = fields.tags;
   if (fields.is_important !== undefined) updatePayload.is_important = fields.is_important;
   if (fields.urgency_level !== undefined) updatePayload.urgency_level = fields.urgency_level;
+  if (fields.tag_type !== undefined) updatePayload.tag_type = fields.tag_type;
   if (fields.suggested_tag !== undefined) {
     updatePayload.suggested_tag = fields.suggested_tag;
     updatePayload.tag_type = fields.suggested_tag;
@@ -2407,36 +2468,23 @@ export async function dbUpdateEmailFields(
   if (fields.currency !== undefined) updatePayload.currency = fields.currency;
   if (fields.denomination_suggestion !== undefined) updatePayload.denomination_suggestion = fields.denomination_suggestion;
   if (fields.total_amount !== undefined) updatePayload.total_amount = fields.total_amount;
+  if (fields.denomination_breakdown !== undefined) updatePayload.denomination_breakdown = fields.denomination_breakdown;
   if (fields.is_summarized !== undefined) updatePayload.is_summarized = fields.is_summarized;
 
-  if (driver === 'mongodb') {
-    if (Object.keys(updatePayload).length > 0) {
-      try {
-        const { dbUpdateEmailFields: mongoUpdateEmailFields } = await import('./services/dbManager');
-        await mongoUpdateEmailFields(message_id, updatePayload);
-      } catch (err) {
-        console.error('[MongoDB Update Email Fields Exception]:', err);
+  if (Object.keys(updatePayload).length > 0) {
+    try {
+      const { dbUpdateEmailFields: managerUpdateEmailFields } = await import('./services/dbManager');
+      const updateSuccess = await managerUpdateEmailFields(message_id, updatePayload);
+      if (!updateSuccess) {
+          throw new Error(`[DB Error] Gagal melakukan UPDATE ke database untuk email ${message_id}`);
       }
-    }
-  } else {
-    // Supabase update
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        if (Object.keys(updatePayload).length > 0) {
-          const { error } = await supabase
-            .from('emails')
-            .update(updatePayload)
-            .eq('message_id', message_id);
-          if (error) {
-            console.error('[Supabase Update Email Error]:', error);
-          }
-        }
-      } catch (err) {
-        console.error('[Supabase Update Email Exception]:', err);
-      }
+      console.log(`[dbManager] ✅ Updated email fields in PostgreSQL: ${message_id}`);
+    } catch (err) {
+      console.error('[Remote Update Email Fields Exception]:', err);
+      throw err;
     }
   }
+  return true;
 }
 
 // Historical Data Backfill for unsummarized emails

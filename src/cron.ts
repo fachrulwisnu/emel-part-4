@@ -29,7 +29,7 @@ import {
 } from './database-service';
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant, DailySummary } from './services/dbManager';
-import { generateBulkSummary } from './services/aiProcessingService';
+import { generateDailySummary } from './services/aiProcessingService';
 import { emailQueue } from './config/queue';
 import { detectClientFromEmail } from './services/clientDetector';
 
@@ -71,65 +71,15 @@ export async function performBulkSummaryForTenants(targetTenantId?: number): Pro
     console.log(`[Bulk Summary Cron] Processing daily bulk summary for ${bulkTenants.length} tenants (Target ID: ${targetTenantId || 'ALL'})...`);
 
     for (const tenant of bulkTenants) {
-      const emails = await dbGetAllEmails(tenant.id);
-      
-      const targetDate = new Date();
-      const targetDateStr = targetDate.toISOString().split('T')[0];
-
-      let filteredEmails = emails.filter(e => {
-        const eDateRaw = (e as any).received_at || e.date;
-        if (!eDateRaw) return false;
-        const eDateStr = new Date(eDateRaw).toISOString().split('T')[0];
-        return eDateStr === targetDateStr;
-      });
-
-      // Fallback 1: unsummarized or unread or important emails
-      if (filteredEmails.length === 0) {
-        filteredEmails = emails.filter(e => (!e.is_summarized || !e.is_read || e.is_important));
+      try {
+        console.log(`[Bulk Summary Cron] Generating Bulk Summary for Tenant "${tenant.name}" (ID: ${tenant.id})...`);
+        const saved = await generateDailySummary(tenant.id);
+        
+        createdSummaries.push(saved);
+        console.log(`[Bulk Summary Cron] Daily Bulk Summary created for Tenant "${tenant.name}"!`);
+      } catch (err: any) {
+        console.log(`[Bulk Summary Cron] Skipped Tenant "${tenant.name}" (ID: ${tenant.id}): ${err.message}`);
       }
-
-      // Fallback 2: if still no emails, take any available emails for this tenant
-      if (filteredEmails.length === 0 && emails.length > 0) {
-        filteredEmails = emails.slice(0, 20);
-      }
-
-      if (filteredEmails.length === 0) {
-        console.log(`[Bulk Summary Cron] Tenant "${tenant.name}" (ID: ${tenant.id}) has no source emails for bulk summary.`);
-        continue;
-      }
-
-      console.log(`[Bulk Summary Cron] Generating Bulk Summary for Tenant "${tenant.name}" (${filteredEmails.length} source emails)...`);
-      const summaryContent = await generateBulkSummary(tenant.name, filteredEmails, tenant.ai_primary_model);
-
-      // Collect source email IDs
-      const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
-
-      const summaryDate = targetDateStr;
-      const saved = await dbSaveDailySummary({
-        tenant_id: tenant.id,
-        summary_date: summaryDate,
-        content_text: summaryContent,
-        is_sent_to_wa: false,
-        source_email_ids: sourceEmailIds
-      });
-
-      const fullSummaryObj = {
-        ...saved,
-        source_emails: filteredEmails
-      };
-
-      createdSummaries.push(fullSummaryObj);
-
-      // Mark emails as summarized in database
-      for (const email of filteredEmails) {
-        await dbSaveEmail(email.message_id, {
-          ...email,
-          tenant_id: tenant.id,
-          is_summarized: true
-        });
-      }
-
-      console.log(`[Bulk Summary Cron] Daily Bulk Summary created for Tenant "${tenant.name}" with ${sourceEmailIds.length} source emails!`);
     }
   } catch (err) {
     console.error('[Bulk Summary Cron] Error running bulk summary generator:', err);
@@ -345,6 +295,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
         const batch = fetchedEmails.slice(i, i + PROCESS_BATCH_SIZE);
         console.log(`[Cron Sync] Processing AI batch ${Math.floor(i / PROCESS_BATCH_SIZE) + 1}/${Math.ceil(fetchedEmails.length / PROCESS_BATCH_SIZE)} (Items ${i + 1} to ${Math.min(i + PROCESS_BATCH_SIZE, fetchedEmails.length)} of ${fetchedEmails.length})...`);
 
+        const queueJobs = [];
         await Promise.all(batch.map(async (emailJob) => {
           const { item, parsed, subject, dateStr, senderStr, receiverStr, bodyText, htmlBody, parsedAttachments } = emailJob;
           try {
@@ -464,24 +415,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
                 ai_status: 'PENDING'
               });
 
-              try {
-                await emailQueue.add('process-email', {
-                  messageId: item.uid,
-                  tenantId: targetTenantId,
-                  email_id: item.uid,
-                  tenant_id: targetTenantId
-                }, {
-                  delay: 1500, // Berikan jeda 1.5 detik agar PostgreSQL selesai commit
-                  attempts: 5,  // Coba ulang sampai 5 kali jika gagal
-                  backoff: {
-                    type: 'fixed',
-                    delay: 2000 // Jeda retry 2 detik
-                  }
-                });
-                console.log(`[Queue: Added] Email messageId ${item.uid} masuk antrean dengan delay 1.5s (Tenant ID: ${targetTenantId}).`);
-              } catch (queueErr: any) {
-                console.error(`[Queue Error] Failed to enqueue Email ID ${item.uid}:`, queueErr.message || queueErr);
-              }
+              queueJobs.push({ uid: item.uid, tenantId: targetTenantId });
 
               accountAddedCount++;
             } catch (apiOrDbErr: any) {
@@ -508,6 +442,27 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
             console.error(`[Cron Sync] Error processing AI/DB job for message #${item.msgNum} (UID: ${item.uid}):`, jobErr);
           }
         }));
+
+        // Wait for DB commit
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        for (const qJob of queueJobs) {
+            try {
+                await emailQueue.add('process-email', {
+                  messageId: qJob.uid,
+                  tenantId: qJob.tenantId,
+                  email_id: qJob.uid,
+                  tenant_id: qJob.tenantId
+                }, {
+                  delay: 1500,
+                  attempts: 5,
+                  backoff: { type: 'fixed', delay: 2000 }
+                });
+                console.log(`[Queue: Added] Email messageId ${qJob.uid} masuk antrean dengan delay 1.5s (Tenant ID: ${qJob.tenantId}).`);
+            } catch (queueErr) {
+                console.error(`[Queue Error] Failed to enqueue Email ID ${qJob.uid}:`, queueErr.message || queueErr);
+            }
+        }
 
         // Memory cleanup: trigger GC if available
         if (typeof global !== 'undefined' && (global as any).gc) {

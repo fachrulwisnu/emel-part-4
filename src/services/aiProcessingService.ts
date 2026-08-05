@@ -163,13 +163,23 @@ export async function analyzeEmailContent(emailPayload: EmailPayload): Promise<a
   const routingContextStr = emailPayload.routingPromptContext ? `\n${emailPayload.routingPromptContext}\n` : '';
 
   const systemPrompt = `Anda adalah asisten data operasional cerdas. Ekstrak data operasional penting dari email dan lampirannya ke dalam format JSON murni tanpa markdown block, tanpa penjelasan apa pun di luar JSON.
+
+ATURAN MERANGKUM (summary & summary_text): DILARANG KERAS menggunakan kalimat pembuka basa-basi seperti 'Email ini berisi...' atau 'Pesan dari pengirim mengenai...'. Langsung tuliskan inti instruksi secara profesional (Siapa, Melakukan Apa, Berapa Nominal, Kapan, Dimana). Contoh summary yang benar: 'Penukaran fisik valas USD 200,000 dari Bank CIMB Niaga ke Maybank, pecahan @100, jadwal Rabu 05 Agustus 2026.'
+
+ATURAN SPESIFIK EMAIL LAMPIRAN (CIT/RUNSHEET): Jika email menyatakan pengiriman data, lampiran, atau instruksi operasional (seperti 'Terlampir data CIT Permata' atau konfirmasi penugasan) meskipun tidak ada nominal uang di dalam teks body, DILARANG KERAS menggunakan ringkasan generik seperti 'Berisi informasi operasional rutin'. WAJIB rangkum spesifik jenis datanya, siapa pengirimnya, dan tujuannya.
+Contoh ringkasan yang benar: 'Pengiriman data CIT Permata untuk Advantage Batam dari Bank Permata (Sri Purwati) tanggal 06 Agustus 2026.'
+
+ATURAN ANGKA: Untuk field total_amount, denomination_suggestion, atau key/value di dalam denomination_breakdown, JANGAN menyertakan mata uang (seperti USD, Rp, $). Berikan ANGKA MURNI saja.
+
+Jika di dalam email terdapat rincian pecahan uang (denomination breakdown), WAJIB ekstrak data tersebut ke dalam key JSON denomination_breakdown dengan format Key-Value Pair murni. Contoh: {"50000": 350000000, "100000": 100000000}. Jangan campurkan teks lain di dalamnya. Jika tidak ada pecahan, kembalikan objek kosong {}.
 ${routingContextStr}
 JSON Schema yang HARUS dikembalikan:
 {
-  "summary": "Ringkasan email utama dan tindakan yang harus diambil dalam Bahasa Indonesia",
+  "summary": "Ringkasan email utama dan tindakan secara langsung dan profesional tanpa kata pembuka basa-basi",
   "currency": "IDR",
   "total_amount": null,
   "denomination_suggestion": null,
+  "denomination_breakdown": {},
   "suggested_bank": "${emailPayload.action_parent || 'BCA'}",
   "suggested_folder_parent": "${emailPayload.action_parent || 'Operation'}",
   "suggested_folder_child": "${emailPayload.action_child || 'General'}",
@@ -963,62 +973,43 @@ ${email.body_text || '(No Body Content)'}
  */
 export async function executeControlledBulkProcess(
   pendingEmails: any[],
-  analyzeSingleEmailFn: (messageId: string) => Promise<any>,
+  analyzeSingleEmailFn?: (messageId: string, tenantId?: number) => Promise<any>,
   onProgress?: (data: { current: number; total: number; percentage: number; log: string; status: string }) => void
 ): Promise<void> {
-  const BATCH_SIZE = 2;
-  const DELAY_MS = 15000;
+  const { emailQueue, aiQueue } = await import('../config/queue');
+  const activeQueue = aiQueue || emailQueue;
   const total = pendingEmails.length;
 
-  for (let i = 0; i < total; i += BATCH_SIZE) {
-    const batch = pendingEmails.slice(i, i + BATCH_SIZE);
-    
-    if (onProgress) {
-      onProgress({
-        status: 'processing',
-        current: i,
-        total,
-        percentage: Math.round((i / total) * 100),
-        log: `Memproses batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(total / BATCH_SIZE)} (jumlah: ${batch.length} email)...`
+  for (let i = 0; i < total; i++) {
+    const email = pendingEmails[i];
+    const messageId = String(email.message_id || email.id || '').trim();
+    if (!messageId) continue;
+
+    try {
+      await activeQueue.add('process-email', {
+        message_id: messageId,
+        tenant_id: email.tenant_id || 1,
+        subject: email.subject || '',
+        body: email.body || email.body_text || email.html_body || '',
+        sender: email.sender || email.sender_email || '',
+        received_at: email.received_at || email.date || new Date().toISOString()
+      }, {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 }
       });
+      console.log(`[Queue Enqueue] Added email ${messageId} to Redis queue.`);
+    } catch (qErr) {
+      console.error(`[Queue Add Error] Failed to enqueue email ${messageId}:`, qErr);
     }
 
-    const tasks = batch.map(async (email) => {
-      try {
-        await analyzeSingleEmailFn(email.message_id);
-        console.log(`[Controlled Concurrency] Selesai memproses email: ${email.message_id}`);
-      } catch (err: any) {
-        console.error(`[Controlled Concurrency] Gagal memproses email ${email.message_id}:`, err);
-      }
-    });
-
-    await Promise.allSettled(tasks); // Tunggu batch pararel selesai
-
-    const currentProcessed = Math.min(i + BATCH_SIZE, total);
     if (onProgress) {
       onProgress({
-        status: 'processing',
-        current: currentProcessed,
+        status: i === total - 1 ? 'complete' : 'processing',
+        current: i + 1,
         total,
-        percentage: Math.round((currentProcessed / total) * 100),
-        log: `Batch ${Math.floor(i / BATCH_SIZE) + 1} selesai diproses (${currentProcessed}/${total}).`
+        percentage: Math.round(((i + 1) / total) * 100),
+        log: `Email ${i + 1}/${total} (${email.subject || messageId}) berhasil dimasukkan ke antrean Redis AI.`
       });
-    }
-
-    console.log(`[Batch] Selesai memproses ${currentProcessed} dari ${total}`);
-
-    if (i + BATCH_SIZE < total) {
-      if (onProgress) {
-        onProgress({
-          status: 'delaying',
-          current: currentProcessed,
-          total,
-          percentage: Math.round((currentProcessed / total) * 100),
-          log: `Menunggu jeda wajib ${DELAY_MS / 1000} detik sebelum batch berikutnya...`
-        });
-      }
-      console.log(`[Batch] Menunggu ${DELAY_MS}ms sebelum batch berikutnya...`);
-      await new Promise(resolve => setTimeout(resolve, DELAY_MS));
     }
   }
 }
@@ -1026,60 +1017,281 @@ export async function executeControlledBulkProcess(
 /**
  * Generates a Consolidated Daily Bulk Summary for Non-COS Divisions (e.g. RH, BM)
  */
-export async function generateBulkSummary(tenantName: string, emails: any[], modelName: string = 'Core'): Promise<string> {
-  if (!emails || emails.length === 0) {
-    return `Tidak ada email baru atau penting untuk dikaji pada divisi ${tenantName}.`;
+export async function generateDailySummary(tenantId: number, targetDate?: string): Promise<any> {
+  const { dbGetTenants, getDbService } = await import('./dbManager');
+  const tenants = await dbGetTenants();
+  const tenant = tenants.find(t => t.id === tenantId);
+  if (!tenant) {
+    throw new Error(`Tenant dengan ID ${tenantId} tidak ditemukan.`);
   }
 
-  const emailListStr = emails.map((e, idx) => {
+  const dbService = await getDbService();
+  let filteredEmails: any[] = [];
+  let summaryDateStr = targetDate || new Date().toISOString().split('T')[0];
+  let stats = {
+    total_emails: 0,
+    unread_count: 0,
+    action_required_count: 0,
+    urgent_count: 0,
+    total_amount_sum: 0
+  };
+
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    // 1. INSTRUKSI 1: Query SQL Agregasi untuk mengambil statistik tanpa payload body mentah
+    let statsRes = await dbService.pgPool.query(
+      `SELECT 
+          COUNT(*) as total_emails,
+          COUNT(CASE WHEN is_read = false THEN 1 END) as unread_count,
+          COUNT(CASE WHEN action_required = true THEN 1 END) as action_required_count,
+          COUNT(CASE WHEN urgency_level = 'High' OR is_important = true THEN 1 END) as urgent_count,
+          COALESCE(SUM(total_amount), 0) as total_amount_sum
+       FROM public.emails 
+       WHERE tenant_id = $1 AND DATE("date") = $2`,
+      [tenantId, summaryDateStr]
+    );
+
+    let count = Number(statsRes.rows[0]?.total_emails || 0);
+
+    // Fallback ke MAX(DATE("date")) jika targetDate kosong / default hari ini dan tidak ada email
+    if (count === 0 && !targetDate) {
+      console.log(`[Daily Summary] Tidak ada email hari ini (${summaryDateStr}) untuk tenant ${tenantId}. Fallback ke MAX DATE...`);
+      const maxDateRes = await dbService.pgPool.query(
+        `SELECT MAX(DATE("date"))::text as max_date FROM public.emails WHERE tenant_id = $1`,
+        [tenantId]
+      );
+      if (maxDateRes.rows[0]?.max_date) {
+        summaryDateStr = maxDateRes.rows[0].max_date.split('T')[0];
+        statsRes = await dbService.pgPool.query(
+          `SELECT 
+              COUNT(*) as total_emails,
+              COUNT(CASE WHEN is_read = false THEN 1 END) as unread_count,
+              COUNT(CASE WHEN action_required = true THEN 1 END) as action_required_count,
+              COUNT(CASE WHEN urgency_level = 'High' OR is_important = true THEN 1 END) as urgent_count,
+              COALESCE(SUM(total_amount), 0) as total_amount_sum
+           FROM public.emails 
+           WHERE tenant_id = $1 AND DATE("date") = $2`,
+          [tenantId, summaryDateStr]
+        );
+      }
+    }
+
+    if (statsRes.rows[0]) {
+      stats = {
+        total_emails: Number(statsRes.rows[0].total_emails || 0),
+        unread_count: Number(statsRes.rows[0].unread_count || 0),
+        action_required_count: Number(statsRes.rows[0].action_required_count || 0),
+        urgent_count: Number(statsRes.rows[0].urgent_count || 0),
+        total_amount_sum: Number(statsRes.rows[0].total_amount_sum || 0)
+      };
+    }
+
+    // 2. Ambil daftar email teragregasi (hanya kolom penting, TANPA body_text mentah)
+    const emailRes = await dbService.pgPool.query(
+      `SELECT id, message_id, subject, sender, date, summary, total_amount, currency, is_important, urgency_level, action_required, tag_type, suggested_bank, cit_type 
+       FROM public.emails 
+       WHERE tenant_id = $1 AND DATE("date") = $2
+       ORDER BY date DESC LIMIT 100`,
+      [tenantId, summaryDateStr]
+    );
+    filteredEmails = emailRes.rows;
+
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('emails');
+    const startOfDay = new Date(summaryDateStr);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(summaryDateStr);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    filteredEmails = await col.find({
+      tenant_id: tenantId,
+      $or: [
+        { received_at: { $gte: startOfDay, $lte: endOfDay } },
+        { date: { $gte: startOfDay, $lte: endOfDay } }
+      ]
+    }).limit(100).toArray();
+
+    if (filteredEmails.length === 0 && !targetDate) {
+      const latestEmail = await col.find({ tenant_id: tenantId }).sort({ date: -1, received_at: -1 }).limit(1).toArray();
+      if (latestEmail.length > 0) {
+        const latestDate = latestEmail[0].date || latestEmail[0].received_at;
+        if (latestDate) {
+          summaryDateStr = new Date(latestDate).toISOString().split('T')[0];
+          const maxDate = new Date(summaryDateStr);
+          maxDate.setHours(0, 0, 0, 0);
+          const endMaxDate = new Date(summaryDateStr);
+          endMaxDate.setHours(23, 59, 59, 999);
+          filteredEmails = await col.find({
+            tenant_id: tenantId,
+            $or: [
+              { received_at: { $gte: maxDate, $lte: endMaxDate } },
+              { date: { $gte: maxDate, $lte: endMaxDate } }
+            ]
+          }).limit(100).toArray();
+        }
+      }
+    }
+
+    stats.total_emails = filteredEmails.length;
+    stats.unread_count = filteredEmails.filter(e => e.is_read === false).length;
+    stats.action_required_count = filteredEmails.filter(e => e.action_required === true).length;
+    stats.urgent_count = filteredEmails.filter(e => e.urgency_level === 'High' || e.is_important === true).length;
+    stats.total_amount_sum = filteredEmails.reduce((acc, e) => acc + (Number(e.total_amount) || 0), 0);
+  }
+
+  // Format email ringkas
+  const emailListStr = filteredEmails.map((e, idx) => {
     const subject = e.subject || '(Tanpa Subjek)';
     const sender = e.sender || 'Pengirim Tidak Diketahui';
-    const date = e.date || '';
-    const bodySnippet = (e.body_text || e.summary || '').slice(0, 300);
-    return `[${idx + 1}] Tanggal: ${date}\nDari: ${sender}\nSubjek: ${subject}\nRingkasan/Isi: ${bodySnippet}`;
-  }).join('\n\n---\n\n');
+    const tag = e.tag_type || 'Lainnya';
+    const urgency = e.urgency_level || 'Normal';
+    const amountStr = e.total_amount ? `${e.currency || 'IDR'} ${Number(e.total_amount).toLocaleString('id-ID')}` : '-';
+    const summary = e.summary || e.extracted_notes || 'Tidak ada ringkasan';
+    return `[${idx + 1}] Dari: ${sender} | Subjek: ${subject} | Tag: ${tag} | Urgensi: ${urgency} | Nominal: ${amountStr}\n   Ringkasan: ${summary}`;
+  }).join('\n\n');
 
-  const systemPrompt = `Anda adalah Asisten Eksekutif AI SaaS untuk Divisi ${tenantName}.
-Tugas Anda adalah membuat Bulk Summary (Rangkuman Harian Konsolidasi) yang ringkas, profesional, dan terstruktur dari kumpulan email belum dibaca/penting untuk dikirim via WhatsApp ke tim Divisi ${tenantName}.
+  const formattedAmountSum = `Rp ${stats.total_amount_sum.toLocaleString('id-ID')}`;
 
-Format Output WhatsApp yang dianjurkan:
-*RANGKUMAN EMAIL HARIAN DIVISI ${tenantName.toUpperCase()}*
-Tanggal: ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+  // INSTRUKSI 2: CORE AI ENGINE UNTUK EXECUTIVE REPORT
+  const systemPrompt = `Anda adalah Asisten AI Executive untuk Rangkuman Harian (Daily Summary).
+DILARANG KERAS menggunakan kata pembuka basa-basi seperti 'Email ini berisi...' atau 'Pesan dari pengirim...'.
+WAJIB langsung merespons dalam format Markdown terstruktur yang presisi sesuai templat Executive Dashboard.`;
 
-*RINGKASAN UTAMA & HIGHLIGHTS:*
-• [Tuliskan 2-4 poin ringkasan utama]
+  const userPrompt = `Buatkan Daily AI Email Executive Summary untuk Divisi ${tenant.name} pada tanggal ${summaryDateStr}.
 
-*DAFTAR EMAIL PENTING / DIBUTUHKAN TINDAKAN:*
-• *[Nama Pengirim / Subjek]*: [Detail singkat tindakan]
+Data Statistik Teragregasi:
+- Total Email: ${stats.total_emails}
+- Email Belum Dibaca: ${stats.unread_count}
+- Email Perlu Dibalas: ${stats.action_required_count}
+- Email Sangat Mendesak: ${stats.urgent_count}
+- Total Potensi Revenue / Nominal: ${formattedAmountSum}
 
-*TINDAKAN LENGKAP BISA DILIHAT DI DASHBOARD SAAS.*`;
+Daftar Ringkasan Email Masuk:
+${emailListStr || 'Tidak ada daftar ringkasan email.'}
 
-  const userPrompt = `Berikut adalah ${emails.length} email belum terbaca/penting untuk Divisi ${tenantName}:\n\n${emailListStr}`;
+Gunakan format Markdown berikut secara eksak:
 
+# Daily AI Email Executive Summary
+**Tanggal** : ${summaryDateStr}
+**Periode Analisa** : ${summaryDateStr} 00:00 - 23:59 WIB
+**Total Email Masuk** : ${stats.total_emails} Email
+
+## Executive Dashboard
+- Total Email: ${stats.total_emails}
+- Email Belum Dibaca: ${stats.unread_count}
+- Email Perlu Dibalas: ${stats.action_required_count}
+- Email Sangat Mendesak: ${stats.urgent_count}
+- Total Potensi Revenue / Nominal: ${formattedAmountSum}
+
+1. PRIORITAS HARI INI (Email penting / action required)
+2. ORDER MASUK & POTENSI REVENUE (Berdasarkan data email order / CIT)
+3. JADWAL MEETING & AGENDA PENTING
+4. TREND & KATEGORI UTAMA HARI INI`;
+
+  // INSTRUKSI 3: INTEGRASI MODEL CORE AI & FALLBACK AMAN
+  let summaryText = '';
   try {
     const response = await customAi.chat.completions.create({
-      model: modelName || 'Core',
+      model: tenant.ai_primary_model || 'Core',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
       temperature: 0.3,
-      max_tokens: 1500
+      max_tokens: 3000
     });
-
-    const summaryText = response.choices[0]?.message?.content || '';
-    if (summaryText.trim()) return summaryText.trim();
-  } catch (err) {
-    console.warn(`Primary AI error for bulk summary (${modelName}), trying fallback Gemini:`, err);
+    summaryText = response.choices[0]?.message?.content || '';
+  } catch (err: any) {
+    console.warn(`Primary AI error/403 for generateDailySummary, trying Gemini fallback:`, err?.message || err);
+    try {
+      summaryText = await getAiCompletion(`${systemPrompt}\n\n${userPrompt}`);
+    } catch (err2: any) {
+      console.warn(`Gemini fallback error as well: ${err2?.message || err2}. Executing Rule-Based Fallback.`);
+    }
   }
 
-  try {
-    const fallbackText = await getAiCompletion(`${systemPrompt}\n\n${userPrompt}`);
-    return fallbackText || `Rangkuman ${emails.length} email untuk Divisi ${tenantName} berhasil dibuat.`;
-  } catch (err2) {
-    console.error('Fallback AI also failed for bulk summary:', err2);
-    return `*RANGKUMAN HARIAN DIVISI ${tenantName}*\nTotal ${emails.length} email baru diterima. Silakan cek dashboard untuk detail.`;
+  // Rule-Based Fallback (Mencegah UI Blank atau Error 403)
+  if (!summaryText || !summaryText.trim()) {
+    summaryText = `# Daily AI Email Executive Summary
+**Tanggal** : ${summaryDateStr}
+**Periode Analisa** : ${summaryDateStr} 00:00 - 23:59 WIB
+**Total Email Masuk** : ${stats.total_emails} Email
+
+## Executive Dashboard
+- Total Email: ${stats.total_emails}
+- Email Belum Dibaca: ${stats.unread_count}
+- Email Perlu Dibalas: ${stats.action_required_count}
+- Email Sangat Mendesak: ${stats.urgent_count}
+- Total Potensi Revenue / Nominal: ${formattedAmountSum}
+
+1. PRIORITAS HARI INI (Email penting / action required)
+- Terdeteksi ${stats.action_required_count} email yang memerlukan tindak lanjut/balasan operasional.
+- Terdeteksi ${stats.urgent_count} email dengan tingkat urgensi tinggi atau ditandai penting.
+
+2. ORDER MASUK & POTENSI REVENUE (Berdasarkan data email order / CIT)
+- Akumulasi total potensi nominal transaksi/order: ${formattedAmountSum}.
+
+3. JADWAL MEETING & AGENDA PENTING
+- Mengikuti jadwal dan instruksi kerja operasional harian terlampir pada email.
+
+4. TREND & KATEGORI UTAMA HARI INI
+- Rangkuman dikompilasi secara otomatis melalui Rule-Based Aggregation Engine.`;
   }
+
+  const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
+  const maxEmailId = filteredEmails.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0);
+  
+  let savedSummary = null;
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    await dbService.pgPool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'unique_tenant_date'
+        ) AND NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'daily_summaries_tenant_id_summary_date_key'
+        ) THEN
+          ALTER TABLE public.daily_summaries ADD CONSTRAINT unique_tenant_date UNIQUE (tenant_id, summary_date);
+        END IF;
+      END $$;
+    `);
+
+    const q = `
+      INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids, total_emails_processed, last_email_id_processed, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (tenant_id, summary_date) DO UPDATE 
+      SET content_text = EXCLUDED.content_text,
+          source_email_ids = EXCLUDED.source_email_ids,
+          total_emails_processed = EXCLUDED.total_emails_processed,
+          last_email_id_processed = EXCLUDED.last_email_id_processed,
+          updated_at = CURRENT_TIMESTAMP
+      RETURNING *;
+    `;
+    const res = await dbService.pgPool.query(q, [
+      tenantId, summaryDateStr, summaryText, false, JSON.stringify(sourceEmailIds), stats.total_emails, maxEmailId
+    ]);
+    savedSummary = res.rows[0];
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    const col = dbService.mongoDb.collection('daily_summaries');
+    const filter = { tenant_id: tenantId, summary_date: summaryDateStr };
+    const update = {
+      $set: {
+        content_text: summaryText,
+        source_email_ids: sourceEmailIds,
+        total_emails_processed: stats.total_emails,
+        last_email_id_processed: maxEmailId,
+        updated_at: new Date()
+      }
+    };
+    const res = await col.findOneAndUpdate(filter, update, { upsert: true, returnDocument: 'after' });
+    savedSummary = res;
+  }
+
+  return {
+    ...savedSummary,
+    summary_date: summaryDateStr,
+    generated_at: savedSummary?.created_at,
+    source_emails: filteredEmails
+  };
 }
 
 /**

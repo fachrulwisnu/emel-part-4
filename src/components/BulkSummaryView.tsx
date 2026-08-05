@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   FileText, 
   Send, 
@@ -56,11 +56,36 @@ interface BulkSummaryViewProps {
 }
 
 export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantId, tenantName }) => {
+  const getYYYYMMDD = (d: Date = new Date()) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayStr = useMemo(() => getYYYYMMDD(new Date()), []);
+  const h2Str = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 2);
+    return getYYYYMMDD(d);
+  }, []);
+
   const [summaries, setSummaries] = useState<DailySummary[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [isLoading, setIsLoading] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [blastingId, setBlastingId] = useState<number | null>(null);
+
+  // Cache & Incremental Detection States
+  const [isCached, setIsCached] = useState<boolean>(false);
+  const [hasNewEmails, setHasNewEmails] = useState<boolean>(false);
+  const [newEmailsCount, setNewEmailsCount] = useState<number>(0);
+
+  // Progress Bar & Step Status & Estimated Time States
+  const [progressPercent, setProgressPercent] = useState<number>(0);
+  const [currentStepText, setCurrentStepText] = useState<string>('');
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
 
   // Accordion state per summary ID
   const [expandedSummaryIds, setExpandedSummaryIds] = useState<Record<number, boolean>>({});
@@ -72,18 +97,50 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   const [selectedEmailDetail, setSelectedEmailDetail] = useState<EmailSource | null>(null);
   const [viewBodyFormat, setViewBodyFormat] = useState<'text' | 'html'>('text');
 
-  const loadSummaries = async () => {
+  const validateDateRange = (dateStr: string): boolean => {
+    if (dateStr > todayStr) {
+      setMessage("Tidak dapat merangkum tanggal di masa depan.");
+      return false;
+    }
+    if (dateStr < h2Str) {
+      setMessage(`Peringatan: Rentang tanggal melebihi batas maksimal 2 hari ke belakang. Silakan pilih tanggal antara ${h2Str} sampai ${todayStr}.`);
+      return false;
+    }
+    return true;
+  };
+
+  const loadSummaries = async (overrideDate?: string) => {
+    const targetDateStr = overrideDate || selectedDate;
+    if (!validateDateRange(targetDateStr)) {
+      setSummaries([]);
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const url = currentTenantId ? `/api/daily-summaries?tenant_id=${currentTenantId}` : '/api/daily-summaries';
+      let url = `/api/bulk-summary/today?target_date=${targetDateStr}`;
+      if (currentTenantId) url += `&tenant_id=${currentTenantId}`;
       const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.summaries) {
-        setSummaries(data.summaries);
-        // Expand first summary by default
-        if (data.summaries.length > 0 && data.summaries[0].id) {
-          setExpandedSummaryIds(prev => ({ ...prev, [data.summaries[0].id]: true }));
+      
+      setIsCached(Boolean(data.cached));
+      setHasNewEmails(Boolean(data.has_new_emails));
+      setNewEmailsCount(Number(data.new_emails_count || 0));
+
+      if (data.success && data.data) {
+        const mappedData = {
+          ...data.data,
+          content_text: data.data.summary_text || data.data.content_text,
+          created_at: data.data.generated_at || data.data.created_at,
+          source_emails: data.data.referenced_emails || data.data.source_emails
+        };
+        setSummaries([mappedData]);
+        if (mappedData.id) {
+          setExpandedSummaryIds({ [mappedData.id]: true });
         }
+      } else {
+        // Auto-generate for this date if not found
+        handleTriggerBulkSummary(targetDateStr);
       }
     } catch (err) {
       console.error('Failed to load daily summaries:', err);
@@ -96,36 +153,92 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     loadSummaries();
   }, [currentTenantId]);
 
-  const handleTriggerBulkSummary = async () => {
+  const handleTriggerBulkSummary = async (overrideDate?: string, options?: { is_merge?: boolean; force_refresh?: boolean }) => {
+    const targetDateStr = overrideDate || selectedDate;
+    setMessage(null);
+
+    if (!validateDateRange(targetDateStr)) {
+      return;
+    }
+
     setIsTriggering(true);
     setIsLoading(true);
-    setMessage(null);
+    
+    // Setup Progress Bar Simulation & Step Tracking
+    const estSec = options?.is_merge ? 5 : 8;
+    setRemainingSeconds(estSec);
+    setProgressPercent(15);
+    setCurrentStepText('Step 1 (20%): Memeriksa cache & mendeteksi email baru...');
+
+    let currentSec = estSec;
+    const interval = setInterval(() => {
+      currentSec -= 1;
+      if (currentSec >= 0) {
+        setRemainingSeconds(currentSec);
+      }
+
+      setProgressPercent(prev => {
+        if (prev < 30) {
+          setCurrentStepText('Step 1 (20%): Memeriksa cache & mendeteksi email baru...');
+          return prev + 10;
+        } else if (prev < 65) {
+          setCurrentStepText('Step 2 (50%): Mengagregasi payload email...');
+          return prev + 12;
+        } else if (prev < 90) {
+          setCurrentStepText('Step 3 (85%): Core AI Engine menyusun Executive Dashboard...');
+          return prev + 8;
+        }
+        return prev;
+      });
+    }, 600);
+
     try {
-      const res = await fetch('/api/daily-summaries/trigger', {
+      const res = await fetch('/api/bulk-summary/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: currentTenantId })
+        body: JSON.stringify({
+          tenant_id: currentTenantId,
+          target_date: targetDateStr,
+          is_merge: Boolean(options?.is_merge),
+          force_refresh: Boolean(options?.force_refresh)
+        })
       });
       const data = await res.json();
-      if (data.success) {
-        setMessage('Proses pembuatan Daily Bulk Summary berhasil dipicu!');
-        if (data.summaries && data.summaries.length > 0) {
-          setSummaries(data.summaries);
-          if (data.summaries[0].id) {
-            setExpandedSummaryIds(prev => ({ ...prev, [data.summaries[0].id]: true }));
-          }
-        } else if (data.data) {
-          setSummaries(prev => [data.data, ...prev.filter(s => s.id !== data.data.id)]);
+      clearInterval(interval);
+      
+      setProgressPercent(100);
+      setCurrentStepText('Step 4 (100%): Menyimpan dan memfinalisasi laporan...');
+
+      if (data.success && data.data) {
+        setIsCached(Boolean(data.cached));
+        setHasNewEmails(Boolean(data.has_new_emails));
+        setNewEmailsCount(Number(data.new_emails_count || 0));
+
+        setMessage(data.message || `Rangkuman baru berhasil diproses untuk tanggal ${targetDateStr}!`);
+        const mappedData = {
+          ...data.data,
+          content_text: data.data.summary_text || data.data.content_text,
+          created_at: data.data.generated_at || data.data.created_at,
+          source_emails: data.data.referenced_emails || data.data.source_emails
+        };
+        setSummaries([mappedData]);
+        if (mappedData.id) {
+          setExpandedSummaryIds({ [mappedData.id]: true });
         }
-        await loadSummaries();
       } else {
-        setMessage('Gagal memicu bulk summary: ' + (data.message || 'Error'));
+        setMessage(data.message || 'Gagal memicu bulk summary');
+        setSummaries([]);
       }
     } catch (err: any) {
+      clearInterval(interval);
       setMessage('Gagal terhubung ke server.');
     } finally {
-      setIsTriggering(false);
-      setIsLoading(false);
+      setTimeout(() => {
+        setIsTriggering(false);
+        setIsLoading(false);
+        setProgressPercent(0);
+        setCurrentStepText('');
+      }, 500);
     }
   };
 
@@ -173,9 +286,27 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {/* Filter Tanggal (Date-Picker) untuk History */}
+          <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white shadow-inner">
+            <Calendar className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span className="font-semibold text-slate-300 shrink-0 text-[11px]">Tanggal:</span>
+            <input 
+              type="date"
+              min={h2Str}
+              max={todayStr}
+              value={selectedDate}
+              onChange={(e) => {
+                const newDate = e.target.value;
+                setSelectedDate(newDate);
+                loadSummaries(newDate);
+              }}
+              className="bg-transparent text-white focus:outline-none font-bold cursor-pointer text-xs"
+            />
+          </div>
+
           <button
-            onClick={loadSummaries}
+            onClick={() => loadSummaries(selectedDate)}
             disabled={isLoading}
             className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-medium border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
           >
@@ -184,7 +315,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
           </button>
 
           <button
-            onClick={handleTriggerBulkSummary}
+            onClick={() => handleTriggerBulkSummary(selectedDate)}
             disabled={isTriggering || isLoading}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
@@ -193,6 +324,91 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
           </button>
         </div>
       </div>
+
+      {/* INSTRUKSI 3: PROGRESS BAR & REALTIME STEP STATUS */}
+      {(isTriggering || (isLoading && progressPercent > 0)) && (
+        <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-5 text-white shadow-xl space-y-3 animate-fadeIn">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 font-bold text-indigo-300">
+              <Sparkles className="w-4 h-4 text-amber-300 animate-spin" />
+              <span>{currentStepText || 'Memproses AI Engine...'}</span>
+            </div>
+            <div className="flex items-center gap-3 font-mono text-[11px]">
+              {remainingSeconds > 0 && (
+                <span className="bg-indigo-950 px-3 py-1 rounded-full border border-indigo-700/60 text-indigo-200">
+                  Estimasi Sisa: {remainingSeconds} detik
+                </span>
+              )}
+              <span className="font-extrabold text-indigo-400 text-xs">{progressPercent}%</span>
+            </div>
+          </div>
+
+          {/* Dynamic Progress Bar */}
+          <div className="w-full bg-slate-800 rounded-full h-3.5 overflow-hidden p-0.5 border border-slate-700">
+            <div 
+              className="bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-400 h-full rounded-full transition-all duration-300 ease-out shadow-sm"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+
+          {/* Step Badges */}
+          <div className="grid grid-cols-4 gap-2 pt-1 text-[10px] font-medium text-slate-400 text-center">
+            <div className={`py-1.5 px-2 rounded-lg border transition-all ${progressPercent >= 20 ? 'bg-indigo-950 text-indigo-200 border-indigo-600 font-bold' : 'bg-slate-800/50 border-slate-700/50'}`}>
+              1. Cek Cache (20%)
+            </div>
+            <div className={`py-1.5 px-2 rounded-lg border transition-all ${progressPercent >= 50 ? 'bg-indigo-950 text-indigo-200 border-indigo-600 font-bold' : 'bg-slate-800/50 border-slate-700/50'}`}>
+              2. Agregasi Email (50%)
+            </div>
+            <div className={`py-1.5 px-2 rounded-lg border transition-all ${progressPercent >= 85 ? 'bg-indigo-950 text-indigo-200 border-indigo-600 font-bold' : 'bg-slate-800/50 border-slate-700/50'}`}>
+              3. Core AI Engine (85%)
+            </div>
+            <div className={`py-1.5 px-2 rounded-lg border transition-all ${progressPercent >= 100 ? 'bg-emerald-950 text-emerald-200 border-emerald-600 font-bold' : 'bg-slate-800/50 border-slate-700/50'}`}>
+              4. Finalisasi (100%)
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* INSTRUKSI 2: INCREMENTAL NEW EMAIL DETECTION & MERGE BANNER */}
+      {hasNewEmails && !isTriggering && (
+        <div className="p-5 bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border border-amber-500/40 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-amber-200 shadow-lg animate-fadeIn">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+              <Sparkles className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <div className="font-bold text-sm text-amber-300 flex items-center gap-2">
+                <span>Ready to Merge</span>
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 font-extrabold text-xs shadow-xs">
+                  +{newEmailsCount} Email Baru Ditemukan
+                </span>
+              </div>
+              <p className="text-xs text-amber-200/90 mt-1">
+                Terdapat email baru yang masuk sejak rangkuman terakhir. Gabungkan email baru ke dalam laporan harian tanpa membuang token untuk merangkum ulang email lama.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 self-end sm:self-auto shrink-0">
+            <button
+              onClick={() => handleTriggerBulkSummary(selectedDate, { is_merge: true })}
+              disabled={isTriggering || isLoading}
+              className="px-4 py-2.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className="w-4 h-4 fill-slate-950" />
+              <span>Merge New Emails (+{newEmailsCount})</span>
+            </button>
+
+            <button
+              onClick={() => handleTriggerBulkSummary(selectedDate, { force_refresh: true })}
+              disabled={isTriggering || isLoading}
+              className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-xl border border-slate-700 font-bold transition-all cursor-pointer"
+            >
+              Generate Ulang Semua
+            </button>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div className="p-4 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-xl text-xs font-medium flex items-center gap-2 shadow-xs animate-fadeIn">
@@ -240,11 +456,11 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                     <div>
                       <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                         <Calendar className="w-4 h-4 text-indigo-600" />
-                        <span>Rangkuman Tanggal: {s.summary_date}</span>
+                        <span>Rangkuman Tanggal: {String(s.summary_date || '')}</span>
                       </h3>
                       <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
                         <Clock className="w-3 h-3 text-slate-400" />
-                        <span>Dibuat: {s.created_at ? new Date(s.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
+                        <span>Terakhir Diperbarui: {s.created_at ? new Date(s.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
                         <span>•</span>
                         <span className="font-medium text-slate-600">Cut-off Time: 05:00 - 23:59</span>
                       </div>
@@ -252,7 +468,14 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                   </div>
 
                   {/* Strategic WA Blast Controls (INSTRUKSI 4) */}
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {isCached && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-sky-50 text-sky-700 border border-sky-300">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-sky-600" />
+                        <span>Cache Database Active</span>
+                      </span>
+                    )}
+
                     <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${
                       s.is_sent_to_wa 
                         ? 'bg-emerald-50 text-emerald-700 border-emerald-300' 
@@ -530,7 +753,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                   <span>Detail Daily Bulk Email Summary</span>
                 </div>
                 <h3 className="font-bold text-lg text-white">
-                  Rangkuman Tanggal: {selectedSummaryForDetail.summary_date}
+                  Rangkuman Tanggal: {String(selectedSummaryForDetail.summary_date || '')}
                 </h3>
                 <p className="text-xs text-slate-300 mt-0.5">
                   Tenant #{selectedSummaryForDetail.tenant_id} • Dibuat: {selectedSummaryForDetail.created_at ? new Date(selectedSummaryForDetail.created_at).toLocaleString('id-ID') : '-'}

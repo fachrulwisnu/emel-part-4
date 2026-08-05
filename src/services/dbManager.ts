@@ -18,6 +18,10 @@ export interface TenantPermissions {
   daily_summary: boolean;
   mail_wa_setup: boolean;
   dynamic_filters: boolean;
+  order_input_read?: boolean;
+  order_input_create?: boolean;
+  order_input_update?: boolean;
+  order_input_delete?: boolean;
 }
 
 export interface DynamicFilterRule {
@@ -341,8 +345,40 @@ export async function dbUpdateEmailReadStatus(messageId: string, isRead: boolean
 /**
  * Update other specific email fields
  */
-export async function dbUpdateEmailFields(messageId: string, updatePayload: any): Promise<void> {
+export async function dbUpdateEmailFields(messageId: string, updatePayload: any): Promise<boolean> {
   const dbService = await getDbService();
+
+  // Helper sanitasi angka murni untuk PostgreSQL BIGINT
+  const extractNumber = (val: any): number => {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === 'number') return isNaN(val) ? 0 : Math.floor(val);
+    const cleaned = String(val).replace(/[^0-9]/g, '');
+    return cleaned ? Number(cleaned) : 0;
+  };
+
+  if (updatePayload) {
+    if (updatePayload.total_amount !== undefined) {
+      updatePayload.total_amount = extractNumber(updatePayload.total_amount);
+    }
+    if (updatePayload.denomination_suggestion !== undefined) {
+      updatePayload.denomination_suggestion = extractNumber(updatePayload.denomination_suggestion);
+    }
+    if (updatePayload.denomination_breakdown !== undefined) {
+      let rawBreakdown = updatePayload.denomination_breakdown;
+      if (typeof rawBreakdown === 'string') {
+        try { rawBreakdown = JSON.parse(rawBreakdown); } catch { rawBreakdown = {}; }
+      }
+      if (typeof rawBreakdown === 'object' && rawBreakdown !== null) {
+        const cleanBreakdown: Record<string, number> = {};
+        for (const [k, v] of Object.entries(rawBreakdown)) {
+          const cleanK = extractNumber(k);
+          const cleanV = extractNumber(v);
+          if (cleanK > 0) cleanBreakdown[cleanK] = cleanV;
+        }
+        updatePayload.denomination_breakdown = cleanBreakdown;
+      }
+    }
+  }
 
   if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
@@ -351,32 +387,35 @@ export async function dbUpdateEmailFields(messageId: string, updatePayload: any)
         { message_id: messageId },
         { $set: { ...updatePayload, updated_at: new Date() } }
       );
-      console.log(`[dbManager] Updated email fields in MongoDB: ${messageId}`);
+      return true;
     } catch (err) {
       console.error(`[dbManager] Failed to update email fields in MongoDB:`, err);
+      return false;
     }
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const keys = Object.keys(updatePayload);
-      if (keys.length === 0) return;
+      if (keys.length === 0) return true;
 
       const setClause = keys.map((key, idx) => `"${key}" = $${idx + 1}`).join(', ');
       const values = keys.map(key => {
         const val = updatePayload[key];
-        if (typeof val === 'boolean') return val ? 1 : 0;
+        if (typeof val === 'boolean') return val;
         if (typeof val === 'object' && val !== null) return JSON.stringify(val);
         return val;
       });
 
       values.push(messageId);
-      const query = `UPDATE emails SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE message_id = $${keys.length + 1}`;
+      const query = `UPDATE emails SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE message_id = $${keys.length + 1} OR id::text = $${keys.length + 1}`;
 
       await dbService.pgPool.query(query, values);
-      console.log(`[dbManager] Updated email fields in PostgreSQL: ${messageId}`);
+      return true;
     } catch (err) {
       console.error(`[dbManager] Failed to update email fields in PostgreSQL:`, err);
+      return false;
     }
   }
+  return false;
 }
 
 /**
@@ -1185,13 +1224,22 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
     const { dbGetAllEmails } = await import('../database-service');
     for (const summary of rawSummaries) {
       const allTenantEmails = await dbGetAllEmails(summary.tenant_id);
+      let matchedEmails: any[] = [];
       if (summary.source_email_ids && summary.source_email_ids.length > 0) {
-        summary.source_emails = allTenantEmails.filter(e => 
+        matchedEmails = allTenantEmails.filter(e => 
           summary.source_email_ids.includes(e.message_id) || summary.source_email_ids.includes(String(e.id))
         );
-      } else {
-        summary.source_emails = allTenantEmails.filter(e => e.is_summarized || !e.is_read || e.is_important).slice(0, 10);
       }
+      
+      // Strict fallback: filter by summary_date if source_email_ids didn't yield matches
+      if (matchedEmails.length === 0 && summary.summary_date) {
+        matchedEmails = allTenantEmails.filter(e => {
+          const emailDateStr = e.date ? new Date(e.date).toISOString().split('T')[0] : ((e as any).received_at ? new Date((e as any).received_at).toISOString().split('T')[0] : '');
+          return emailDateStr === summary.summary_date;
+        });
+      }
+
+      summary.source_emails = matchedEmails;
     }
   } catch (popErr) {
     console.error('[dbManager] Error populating source emails:', popErr);
@@ -1548,5 +1596,54 @@ export async function dbDeleteDynamicFilter(id: number, tenantId?: number): Prom
     const col = dbService.mongoDb.collection('dynamic_filters');
     await col.deleteOne({ _id: id as any, tenant_id: targetTenantId });
   }
+}
+
+/**
+ * Fetch pending emails with essential full payload fields (message_id, tenant_id, subject, body, sender, received_at)
+ */
+export async function dbGetPendingEmails(tenantId?: number): Promise<any[]> {
+  const dbService = await getDbService();
+  if (dbService.type === 'postgres' && dbService.pgPool) {
+    try {
+      let query = `SELECT message_id, tenant_id, subject, COALESCE(body_text, html_body, '') as body, sender, date, created_at FROM emails WHERE (ai_status = 'PENDING' OR is_summarized = false OR summary IS NULL OR summary = '' OR summary = 'Belum dianalisis (Menunggu AI...)')`;
+      const params: any[] = [];
+      if (tenantId) {
+        query += ` AND (tenant_id = $1 OR tenant_id IS NULL)`;
+        params.push(tenantId);
+      }
+      query += ` ORDER BY date DESC`;
+      const res = await dbService.pgPool.query(query, params);
+      return res.rows.map(r => ({
+        message_id: r.message_id,
+        tenant_id: r.tenant_id || tenantId || 1,
+        subject: r.subject || '',
+        body: r.body || '',
+        body_text: r.body || '',
+        sender: r.sender || '',
+        received_at: r.date || r.created_at || new Date().toISOString()
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching pending emails from PostgreSQL:', err);
+    }
+  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
+    try {
+      const col = dbService.mongoDb.collection('emails');
+      const filter: any = { $or: [{ ai_status: 'PENDING' }, { is_summarized: false }, { summary: { $exists: false } }] };
+      if (tenantId) filter.tenant_id = tenantId;
+      const rows = await col.find(filter).sort({ date: -1 }).toArray();
+      return rows.map(r => ({
+        message_id: r.message_id,
+        tenant_id: r.tenant_id || tenantId || 1,
+        subject: r.subject || '',
+        body: r.body_text || r.body || r.html_body || '',
+        body_text: r.body_text || r.body || r.html_body || '',
+        sender: r.sender || '',
+        received_at: r.date || r.created_at || new Date().toISOString()
+      }));
+    } catch (err) {
+      console.error('[dbManager] Error fetching pending emails from MongoDB:', err);
+    }
+  }
+  return [];
 }
 

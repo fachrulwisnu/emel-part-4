@@ -89,52 +89,47 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
     }
   }, [bulkLog]);
 
-  const startBulkIntelligence = () => {
+  const startBulkIntelligence = async () => {
     setIsBulkProcessing(true);
     setBulkProgress(0);
-    setBulkStatusText('Starting bulk intelligence processing...');
-    setBulkLog(['Memulai proses bulk...']);
+    setBulkStatusText('Mengirim email ke antrean Redis Queue...');
+    setBulkLog(['Memulai pendaftaran ke Redis queue...']);
 
-    const eventSource = new EventSource('/api/emails/bulk-intelligence/stream');
+    try {
+      const response = await fetch('/api/ai/bulk-extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: currentUser?.tenantId || currentUser?.tenant_id || 1 })
+      });
+      const data = await response.json();
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.percentage !== undefined) {
-          setBulkProgress(data.percentage);
+      if (data.success) {
+        setBulkProgress(100);
+        setBulkStatusText(data.message || 'Email berhasil dimasukkan ke antrean AI.');
+        setBulkLog(prev => [...prev, data.message || 'Semua email berhasil dimasukkan ke antrean Redis.']);
+        setIsBulkProcessing(false);
+        if (onAddToast) {
+          onAddToast('Bulk AI Enqueued', data.message, 'success');
         }
-        if (data.log) {
-          setBulkStatusText(data.log);
-          setBulkLog(prev => [...prev, data.log]);
+        fetchGroupedData();
+        fetchPendingQueue();
+      } else {
+        setIsBulkProcessing(false);
+        setBulkStatusText(`Error: ${data.message}`);
+        if (onAddToast) {
+          onAddToast('Bulk Error', data.message || 'Terjadi kesalahan saat memproses bulk', 'error');
         }
-
-        if (data.status === 'complete') {
-          eventSource.close();
-          setIsBulkProcessing(false);
-          if (onAddToast) {
-            onAddToast('Bulk Complete', 'Semua email berhasil dianalisis!', 'success');
-          }
-          fetchGroupedData();
-          fetchPendingQueue();
-        } else if (data.status === 'error') {
-          eventSource.close();
-          setIsBulkProcessing(false);
-          if (onAddToast) {
-            onAddToast('Bulk Error', data.log || 'Terjadi kesalahan saat memproses bulk', 'error');
-          }
-        }
-      } catch (err: any) {
-        console.error('SSE JSON parse error:', err);
       }
-    };
-
-    eventSource.onerror = (err) => {
-      console.error('SSE stream error:', err);
-      eventSource.close();
+    } catch (err: any) {
+      console.error('Bulk extract request error:', err);
       setIsBulkProcessing(false);
-      setBulkStatusText('Terjadi gangguan koneksi pada stream.');
-    };
+      setBulkStatusText('Gagal mengirim permintaan bulk extract.');
+      if (onAddToast) {
+        onAddToast('Bulk Error', err.message || 'Gagal terhubung ke server.', 'error');
+      }
+    }
   };
+
 
   const toggleNode = (nodePath: string) => {
     setExpandedNodes(prev => ({

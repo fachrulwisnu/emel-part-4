@@ -276,8 +276,12 @@ export const SuperAdminTenantsView: React.FC = () => {
                     cit_dispatch: true,
                     daily_summary: true,
                     mail_wa_setup: true,
-                    dynamic_filters: true
-                  }
+                                              dynamic_filters: true,
+                          order_input_read: true,
+                          order_input_create: true,
+                          order_input_update: true,
+                          order_input_delete: true
+                        }
                 });
               }}
               className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
@@ -613,14 +617,22 @@ export const SuperAdminTenantsView: React.FC = () => {
                         { key: 'cit_dispatch', label: 'CIT Dispatch Management', desc: 'Akses menu CIT Order Tracking & Dispatch' },
                         { key: 'daily_summary', label: 'Daily Bulk Email Summary', desc: 'Akses menu Bulk Summary & Ringkasan WA' },
                         { key: 'mail_wa_setup', label: 'Mail & WA Setup', desc: 'Konfigurasi akun POP3 Mail & WhatsApp' },
-                        { key: 'dynamic_filters', label: 'Dynamic Filters', desc: 'Konfigurasi Aturan Filter Email Otomatis' },
+                                                { key: 'dynamic_filters', label: 'Dynamic Filters', desc: 'Konfigurasi Aturan Filter Email Otomatis' },
+                        { key: 'order_input_read', label: 'Order Input (Read)', desc: 'Melihat halaman list Pending Input' },
+                        { key: 'order_input_create', label: 'Order Input (Create)', desc: 'Generate & isi tiket CIT' },
+                        { key: 'order_input_update', label: 'Order Input (Update)', desc: 'Edit data tiket partial' },
+                        { key: 'order_input_delete', label: 'Order Input (Delete)', desc: 'Batal/hapus tiket' },
                       ].map((perm) => {
                         const currentPerms = editingTenant.permissions || {
                           dashboard: true,
                           cit_dispatch: true,
                           daily_summary: true,
                           mail_wa_setup: true,
-                          dynamic_filters: true
+                                                    dynamic_filters: true,
+                          order_input_read: true,
+                          order_input_create: true,
+                          order_input_update: true,
+                          order_input_delete: true
                         };
                         const isChecked = !!currentPerms[perm.key as keyof TenantPermissions];
 

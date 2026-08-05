@@ -83,8 +83,13 @@ export default async function handler(req: any, res: any) {
         ai_status: 'PENDING'
       });
 
+      // Queue will be added after delay
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    for (const email of fetchedEmails) {
       try {
-        await emailQueue.add('process-email', { email_id: email.uid, tenant_id: 1 });
+        await emailQueue.add('process-email', { email_id: email.uid, tenant_id: 1, messageId: email.uid, tenantId: 1 });
         console.log(`[Queue: Added] Email ID ${email.uid} masuk antrean. (Menunggu AI)`);
       } catch (qErr: any) {
         console.error(`[Queue Error] Failed to enqueue Email ID ${email.uid}:`, qErr.message || qErr);

@@ -84,6 +84,7 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           currency TEXT DEFAULT 'IDR',
           denomination_suggestion BIGINT,
           total_amount BIGINT,
+          denomination_breakdown JSONB DEFAULT '{}'::jsonb,
           ai_status TEXT DEFAULT 'PENDING',
           is_summarized BOOLEAN DEFAULT FALSE,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -93,6 +94,7 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
       ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS processed_tickets INTEGER DEFAULT 0;
       ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS order_status TEXT DEFAULT 'PENDING';
       ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS source_email TEXT DEFAULT '';
+      ALTER TABLE public.emails ADD COLUMN IF NOT EXISTS denomination_breakdown JSONB DEFAULT '{}'::jsonb;
 
       CREATE TABLE IF NOT EXISTS public.mail_configs (
           id SERIAL PRIMARY KEY,
@@ -165,10 +167,17 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
           summary_date DATE NOT NULL,
           content_text TEXT NOT NULL,
+          total_emails_processed INTEGER DEFAULT 0,
+          last_email_id_processed INTEGER DEFAULT 0,
           is_sent_to_wa BOOLEAN DEFAULT FALSE,
           source_email_ids JSONB DEFAULT '[]'::jsonb,
-          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT unique_tenant_date UNIQUE (tenant_id, summary_date)
       );
+      ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS total_emails_processed INTEGER DEFAULT 0;
+      ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS last_email_id_processed INTEGER DEFAULT 0;
+      ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
       ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS source_email_ids JSONB DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS public.dynamic_filters (
