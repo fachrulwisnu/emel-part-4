@@ -1027,7 +1027,18 @@ export async function generateDailySummary(tenantId: number, targetDate?: string
 
   const dbService = await getDbService();
   let filteredEmails: any[] = [];
-  let summaryDateStr = targetDate || new Date().toISOString().split('T')[0];
+  
+  const getYYYYMMDD = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  let summaryDateStr = (targetDate && typeof targetDate === 'string' && targetDate.trim())
+    ? targetDate.trim().split('T')[0]
+    : getYYYYMMDD(new Date());
+
   let stats = {
     total_emails: 0,
     unread_count: 0,
@@ -1046,7 +1057,7 @@ export async function generateDailySummary(tenantId: number, targetDate?: string
           COUNT(CASE WHEN urgency_level = 'High' OR is_important = true THEN 1 END) as urgent_count,
           COALESCE(SUM(total_amount), 0) as total_amount_sum
        FROM public.emails 
-       WHERE tenant_id = $1 AND DATE("date") = $2`,
+       WHERE tenant_id = $1 AND DATE("date") = $2::date`,
       [tenantId, summaryDateStr]
     );
 
@@ -1069,7 +1080,7 @@ export async function generateDailySummary(tenantId: number, targetDate?: string
               COUNT(CASE WHEN urgency_level = 'High' OR is_important = true THEN 1 END) as urgent_count,
               COALESCE(SUM(total_amount), 0) as total_amount_sum
            FROM public.emails 
-           WHERE tenant_id = $1 AND DATE("date") = $2`,
+           WHERE tenant_id = $1 AND DATE("date") = $2::date`,
           [tenantId, summaryDateStr]
         );
       }
@@ -1089,7 +1100,7 @@ export async function generateDailySummary(tenantId: number, targetDate?: string
     const emailRes = await dbService.pgPool.query(
       `SELECT id, message_id, subject, sender, date, summary, total_amount, currency, is_important, urgency_level, action_required, tag_type, suggested_bank, cit_type 
        FROM public.emails 
-       WHERE tenant_id = $1 AND DATE("date") = $2
+       WHERE tenant_id = $1 AND DATE("date") = $2::date
        ORDER BY date DESC LIMIT 100`,
       [tenantId, summaryDateStr]
     );
@@ -1257,13 +1268,13 @@ Gunakan format Markdown berikut secara eksak:
 
     const q = `
       INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
-      VALUES ($1, $2, $3, $4, $5)
+      VALUES ($1, $2::date, $3, $4, $5)
       ON CONFLICT (tenant_id, summary_date) DO UPDATE 
       SET content_text = EXCLUDED.content_text,
           is_sent_to_wa = EXCLUDED.is_sent_to_wa,
           source_email_ids = EXCLUDED.source_email_ids,
           created_at = CURRENT_TIMESTAMP
-      RETURNING *;
+      RETURNING id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at;
     `;
     const res = await dbService.pgPool.query(q, [
       tenantId, summaryDateStr, summaryText, false, JSON.stringify(sourceEmailIds)

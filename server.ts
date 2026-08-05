@@ -777,20 +777,16 @@ async function startServer() {
         });
       }
 
-      // Check cache in database first
-      const allSummaries = await dbGetDailySummaries(tenantIdNum);
-      const cachedSummary = allSummaries.find((s: any) => {
-        const sDate = String(s.summary_date || '');
-        const cDate = s.created_at ? (s.created_at instanceof Date ? s.created_at.toISOString() : String(s.created_at)) : '';
-        return sDate === target_date || (cDate.length > 0 && cDate.startsWith(target_date));
-      });
+      // Check cache in database first using explicit string query or dbGetDailySummaryByDate ($2::date)
+      const { dbGetDailySummaryByDate } = await import("./src/services/dbManager");
+      const cachedSummary = await dbGetDailySummaryByDate(tenantIdNum, target_date);
 
       // INSTRUKSI 2: LOGIKA BACKEND CACHE & INCREMENTAL DETECTION
       const dbService = await getDbService();
       let emailCountNow = 0;
       if (dbService.type === 'postgres' && dbService.pgPool) {
         const cntRes = await dbService.pgPool.query(
-          `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2`,
+          `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2::date`,
           [tenantIdNum, target_date]
         );
         emailCountNow = Number(cntRes.rows[0]?.cnt || 0);
@@ -968,11 +964,10 @@ async function startServer() {
 
   app.get("/api/bulk-summary/today", async (req, res) => {
     try {
-      const { dbGetDailySummaries, getDbService } = await import("./src/services/dbManager");
+      const { dbGetDailySummaries, dbGetDailySummaryByDate, getDbService } = await import("./src/services/dbManager");
       const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
       const target_date = req.query?.target_date || req.query?.date;
       const tenantId = tenant_id ? Number(tenant_id) : undefined;
-      const latestSummaries = await dbGetDailySummaries(tenantId);
       
       const now = new Date();
       const getYYYYMMDD = (d: Date) => {
@@ -982,13 +977,16 @@ async function startServer() {
         return `${year}-${month}-${day}`;
       };
       const todayStr = getYYYYMMDD(now);
-      const targetDateStr = typeof target_date === 'string' && target_date ? target_date : todayStr;
+      const targetDateStr = typeof target_date === 'string' && target_date ? target_date.trim().split('T')[0] : todayStr;
 
-      const matchedSummary = latestSummaries.find((s: any) => {
-        const sDate = String(s.summary_date || '');
-        const cDate = s.created_at ? (s.created_at instanceof Date ? s.created_at.toISOString() : String(s.created_at)) : '';
-        return sDate === targetDateStr || (cDate.length > 0 && cDate.startsWith(targetDateStr));
-      }) || (target_date ? null : latestSummaries[0]);
+      let matchedSummary = tenantId ? await dbGetDailySummaryByDate(tenantId, targetDateStr) : null;
+      const latestSummaries = await dbGetDailySummaries(tenantId);
+      if (!matchedSummary) {
+        matchedSummary = latestSummaries.find((s: any) => {
+          const sDate = String(s.summary_date || '').trim().split('T')[0];
+          return sDate === targetDateStr;
+        }) || (target_date ? null : latestSummaries[0]);
+      }
 
       let has_new_emails = false;
       let new_emails_count = 0;
@@ -998,7 +996,7 @@ async function startServer() {
         const dbService = await getDbService();
         if (dbService.type === 'postgres' && dbService.pgPool) {
           const cntRes = await dbService.pgPool.query(
-            `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2`,
+            `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2::date`,
             [tenantId, targetDateStr]
           );
           emailCountNow = Number(cntRes.rows[0]?.cnt || 0);

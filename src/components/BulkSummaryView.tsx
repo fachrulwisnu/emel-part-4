@@ -110,7 +110,8 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   };
 
   const loadSummaries = async (overrideDate?: string) => {
-    const targetDateStr = overrideDate || selectedDate;
+    const rawDate = overrideDate || selectedDate;
+    const targetDateStr = typeof rawDate === 'string' && rawDate.trim() ? rawDate.trim().split('T')[0] : todayStr;
     if (!validateDateRange(targetDateStr)) {
       setSummaries([]);
       return;
@@ -154,7 +155,8 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   }, [currentTenantId]);
 
   const handleTriggerBulkSummary = async (overrideDate?: string, options?: { is_merge?: boolean; force_refresh?: boolean }) => {
-    const targetDateStr = overrideDate || selectedDate;
+    const rawDate = overrideDate || selectedDate;
+    const targetDateStr = typeof rawDate === 'string' && rawDate.trim() ? rawDate.trim().split('T')[0] : todayStr;
     setMessage(null);
 
     if (!validateDateRange(targetDateStr)) {
