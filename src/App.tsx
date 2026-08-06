@@ -497,6 +497,7 @@ export default function App() {
 
   const [isCitOrderModalOpen, setIsCitOrderModalOpen] = useState(false);
   const [fullPageCitEmailId, setFullPageCitEmailId] = useState<string | null>(null);
+  const [fullPageCitEmail, setFullPageCitEmail] = useState<Email | null>(null);
   const [citOrderPrefillEmail, setCitOrderPrefillEmail] = useState<Email | null>(null);
   const [activeContextMenuId, setActiveContextMenuId] = useState<string | null>(null);
   const [isReSummarizing, setIsReSummarizing] = useState(false);
@@ -1995,6 +1996,7 @@ export default function App() {
                                   type="button"
                                   onClick={() => {
                                     setFullPageCitEmailId(email.message_id);
+                                    setFullPageCitEmail(email);
                                     setActiveContextMenuId(null);
                                   }}
                                   className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-slate-700 hover:text-blue-700 font-bold flex items-center gap-2 cursor-pointer transition-colors"
@@ -2002,7 +2004,7 @@ export default function App() {
                                   <Coins className="h-4 w-4 text-blue-600 shrink-0" />
                                   <span>Create CIT/ATM Order</span>
                                 </button>
-                                
+
                                 <div className="border-t border-slate-100 my-1" />
                                 
                                 <button
@@ -2474,6 +2476,7 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               setFullPageCitEmailId(selectedEmail.message_id);
+                              setFullPageCitEmail(selectedEmail);
                             }}
                             className="flex-1 py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl text-center cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-blue-500/10 transition-all text-xs"
                           >
@@ -4223,7 +4226,15 @@ export default function App() {
       {fullPageCitEmailId && (
         <CitDispatchFullPage
           emailId={fullPageCitEmailId}
-          onClose={() => setFullPageCitEmailId(null)}
+          prefillEmail={
+            fullPageCitEmail ||
+            tickets.find(email => email.message_id === fullPageCitEmailId) ||
+            (selectedEmail?.message_id === fullPageCitEmailId ? selectedEmail : null)
+          }
+          onClose={() => {
+            setFullPageCitEmailId(null);
+            setFullPageCitEmail(null);
+          }}
           onOrderCreated={async () => {
             await loadEmails();
           }}

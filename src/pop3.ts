@@ -25,9 +25,11 @@ export class Pop3Client {
 
       try {
         if (isSsl) {
-          const options = {
+          const options: tls.ConnectionOptions = {
             host,
             port,
+            servername: host,
+            minVersion: 'TLSv1.2',
             rejectUnauthorized: false // bypass SSL verification issues
           };
           this.socket = tls.connect(options, () => {
@@ -234,6 +236,9 @@ export async function testConnection(host: string, port: number, user: string, p
     console.error(`!!! [POP3 TEST CONNECTION FAILED] !!!`);
     console.error(`Error details:`, errorMsg);
     console.error(`======================================\n`);
+    if (/Server greeting error:\s*550\s+authorization failed/i.test(errorMsg)) {
+      return 'FAILED: POP3 server rejected the connection before USER/PASS (550 authorization failed). Check MailEnable IP/country restriction or temporary authentication block.';
+    }
     return `FAILED: ${errorMsg}`;
   } finally {
     client.close();

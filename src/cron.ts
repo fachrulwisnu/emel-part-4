@@ -41,6 +41,8 @@ export function registerBroadcaster(fn: (event: string, data: any) => void) {
 }
 
 let isSyncing = false;
+const pop3RetryAfter = new Map<string, number>();
+const POP3_AUTH_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 
 /**
  * FLOW: Generates executive daily bulk summaries for RH/BM management divisions.
@@ -157,6 +159,13 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
     let totalAddedCount = 0;
 
     for (const config of mailConfigs) {
+      const accountKey = `${config.host}:${config.port || 995}:${config.username}`;
+      const retryAfter = pop3RetryAfter.get(accountKey) || 0;
+      if (retryAfter > Date.now()) {
+        const retryMinutes = Math.max(1, Math.ceil((retryAfter - Date.now()) / 60000));
+        console.warn(`[POP3 Fetcher] Skipping ${config.email_address}; authentication retry available in ${retryMinutes} minute(s).`);
+        continue;
+      }
       console.log(`[POP3 Fetcher] 🔄 Memulai sinkronisasi untuk akun: ${config.email_address} (Tenant ID: ${config.tenant_id || 1})`);
       const client = new Pop3Client();
       let accountAddedCount = 0;
@@ -172,6 +181,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
           throw new Error(`POP3 Authentication failed: ${authRes.trim()}`);
         }
       console.log('[Cron Sync] POP3 Authentication successful.');
+      pop3RetryAfter.delete(accountKey);
 
       // UIDL Command to get message IDs
       const uidlRes = await client.sendCommand('UIDL', true);
@@ -478,6 +488,10 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       try { client.close(); } catch (e) {}
 
     } catch (syncErr: any) {
+      const syncErrorMessage = syncErr.message || String(syncErr);
+      if (/authorization failed|authentication failed|USER command rejected|PASS command rejected/i.test(syncErrorMessage)) {
+        pop3RetryAfter.set(accountKey, Date.now() + POP3_AUTH_RETRY_COOLDOWN_MS);
+      }
       console.warn(`[POP3 Fetcher] ⚠️ Connection/Authentication warning for ${config.email_address}: ${syncErr.message || String(syncErr)}`);
       try { client.close(); } catch (e) {}
     }

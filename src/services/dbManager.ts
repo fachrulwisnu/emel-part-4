@@ -232,7 +232,7 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
           $25, $26, $27, $28, $29,
           $30, $31, $32, $33, CURRENT_TIMESTAMP
         )
-        ON CONFLICT(message_id) DO UPDATE SET
+        ON CONFLICT(tenant_id, message_id) DO UPDATE SET
           tenant_id = EXCLUDED.tenant_id,
           subject = EXCLUDED.subject,
           sender = EXCLUDED.sender,
@@ -308,6 +308,7 @@ export async function dbSaveEmail(messageId: string, payload: any): Promise<void
       console.log(`[dbManager] Saved email to PostgreSQL: ${messageId} (Tenant ID: ${tenantId})`);
     } catch (err) {
       console.error(`[dbManager] Failed to save email to PostgreSQL:`, err);
+      throw err;
     }
   }
 }

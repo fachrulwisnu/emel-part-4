@@ -2383,28 +2383,79 @@ async function startServer() {
 
   // CIT Master Data Endpoints
   app.get("/api/cit/currencies", async (req, res) => {
-    res.json({
-      success: true,
-      data: ["IDR", "USD", "EUR", "SGD", "JPY", "AUD", "MYR"]
-    });
+    const baseUrl = (process.env.CIT_API_BASE_URL || "https://api-activeatm.adv.my.id").replace(/\/+$/, "");
+    const token = getAppSettings().citApiToken || process.env.CIT_API_TOKEN || "";
+
+    try {
+      const upstream = await axios.get(`${baseUrl}/api/v1/cit/currencies`, {
+        timeout: 15_000,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+
+      if (!upstream.data?.success || !Array.isArray(upstream.data?.data)) {
+        console.error("[CIT API] Invalid currencies response:", upstream.data);
+        return res.status(502).json({
+          success: false,
+          message: "Format respons master currency dari CIT API tidak valid",
+          data: []
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: upstream.data.message || "success",
+        data: upstream.data.data,
+        source: "activeatm"
+      });
+    } catch (err: any) {
+      const upstreamStatus = err.response?.status;
+      console.error(`[CIT API] Failed to fetch currencies${upstreamStatus ? ` (HTTP ${upstreamStatus})` : ""}:`, err.message);
+      return res.status(502).json({
+        success: false,
+        message: upstreamStatus
+          ? `CIT API menolak permintaan master currency (HTTP ${upstreamStatus})`
+          : "Tidak dapat terhubung ke CIT API untuk mengambil master currency",
+        data: []
+      });
+    }
   });
 
   app.get("/api/cit/scitems", async (req, res) => {
-    res.json({
-      success: true,
-      data: [
-        { id: "IDR_100K", code: "IDR_100K", name: "IDR 100.000 (Lembar)", denomination: 100000, currency: "IDR" },
-        { id: "IDR_50K", code: "IDR_50K", name: "IDR 50.000 (Lembar)", denomination: 50000, currency: "IDR" },
-        { id: "IDR_20K", code: "IDR_20K", name: "IDR 20.000 (Lembar)", denomination: 20000, currency: "IDR" },
-        { id: "IDR_10K", code: "IDR_10K", name: "IDR 10.000 (Lembar)", denomination: 10000, currency: "IDR" },
-        { id: "IDR_5K", code: "IDR_5K", name: "IDR 5.000 (Lembar)", denomination: 5000, currency: "IDR" },
-        { id: "IDR_2K", code: "IDR_2K", name: "IDR 2.000 (Lembar)", denomination: 2000, currency: "IDR" },
-        { id: "IDR_1K", code: "IDR_1K", name: "IDR 1.000 (Lembar)", denomination: 1000, currency: "IDR" },
-        { id: "USD_100", code: "USD_100", name: "USD 100 (Bill)", denomination: 100, currency: "USD" },
-        { id: "USD_50", code: "USD_50", name: "USD 50 (Bill)", denomination: 50, currency: "USD" },
-        { id: "USD_20", code: "USD_20", name: "USD 20 (Bill)", denomination: 20, currency: "USD" }
-      ]
-    });
+    const baseUrl = (process.env.CIT_API_BASE_URL || "https://api-activeatm.adv.my.id").replace(/\/+$/, "");
+    const token = getAppSettings().citApiToken || process.env.CIT_API_TOKEN || "";
+
+    try {
+      const upstream = await axios.get(`${baseUrl}/api/v1/cit/scitems`, {
+        timeout: 15_000,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+
+      if (!upstream.data?.success || !Array.isArray(upstream.data?.data)) {
+        console.error("[CIT API] Invalid scitems response:", upstream.data);
+        return res.status(502).json({
+          success: false,
+          message: "Format respons master scitems dari CIT API tidak valid",
+          data: []
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: upstream.data.message || "success",
+        data: upstream.data.data,
+        source: "activeatm"
+      });
+    } catch (err: any) {
+      const upstreamStatus = err.response?.status;
+      console.error(`[CIT API] Failed to fetch scitems${upstreamStatus ? ` (HTTP ${upstreamStatus})` : ""}:`, err.message);
+      return res.status(502).json({
+        success: false,
+        message: upstreamStatus
+          ? `CIT API menolak permintaan master scitems (HTTP ${upstreamStatus})`
+          : "Tidak dapat terhubung ke CIT API untuk mengambil master scitems",
+        data: []
+      });
+    }
   });
 
   // POST Submit CIT Order (Multi-Order Partial Fulfillment)
@@ -2430,6 +2481,9 @@ async function startServer() {
       }
 
       const email = await dbGetEmailByMessageId(message_id);
+      if (!email) {
+        return res.status(404).json({ success: false, message: "Email not found" });
+      }
       const currentProcessed = email?.processed_tickets || 0;
       const newProcessed = currentProcessed + 1;
       const finalTarget = Number(target_tickets) || email?.target_tickets || 1;
@@ -2461,18 +2515,88 @@ async function startServer() {
   });
 
   app.get("/api/cit/entity-master-details", async (req, res) => {
-    res.json({ success: true, data: [], note: "CIT API Disabled" });
+    const baseUrl = (process.env.CIT_API_BASE_URL || "https://api-activeatm.adv.my.id").replace(/\/+$/, "");
+    const token = getAppSettings().citApiToken || process.env.CIT_API_TOKEN || "";
+
+    try {
+      const allowedParams = ["branch_code", "entity_code", "entity_name", "page", "size"] as const;
+      const params = Object.fromEntries(
+        allowedParams
+          .filter((key) => req.query[key] !== undefined && req.query[key] !== "")
+          .map((key) => [key, req.query[key]])
+      );
+
+      const upstream = await axios.get(`${baseUrl}/api/v1/cit/entity-master-details`, {
+        timeout: 30_000,
+        params,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+
+      const pageData = upstream.data?.data;
+      if (!upstream.data?.success || !pageData || !Array.isArray(pageData.data)) {
+        console.error("[CIT API] Invalid entity-master-details response:", upstream.data);
+        return res.status(502).json({
+          success: false,
+          message: "Format respons entity master dari CIT API tidak valid",
+          data: null
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: upstream.data.message || "success",
+        data: pageData,
+        source: "activeatm"
+      });
+    } catch (err: any) {
+      const upstreamStatus = err.response?.status;
+      console.error(`[CIT API] Failed to fetch entity-master-details${upstreamStatus ? ` (HTTP ${upstreamStatus})` : ""}:`, err.message);
+      return res.status(502).json({
+        success: false,
+        message: upstreamStatus
+          ? `CIT API menolak permintaan entity master (HTTP ${upstreamStatus})`
+          : "Tidak dapat terhubung ke CIT API untuk mengambil entity master",
+        data: null
+      });
+    }
   });
 
   app.get("/api/cit/vault-trips", async (req, res) => {
-    res.json({
-      success: true,
-      data: [
-        { id: 1, order_id: "ORD-1002", ticket_id: "TKT-0412", branch_name: "MEDAN", location: "Bank Maybank KCP Medan", status: "In Progress" },
-        { id: 2, order_id: "ORD-1003", ticket_id: "TKT-0413", branch_name: "PURWOKERTO", location: "Bank Mandiri Purwokerto", status: "Idle" },
-        { id: 3, order_id: "ORD-1004", ticket_id: "TKT-0414", branch_name: "SURABAYA", location: "BCA Surabaya", status: "Completed" }
-      ]
-    });
+    const baseUrl = (process.env.CIT_API_BASE_URL || "https://api-activeatm.adv.my.id").replace(/\/+$/, "");
+    const token = getAppSettings().citApiToken || process.env.CIT_API_TOKEN || "";
+
+    try {
+      const upstream = await axios.get(`${baseUrl}/api/v1/cit/vault-trips`, {
+        timeout: 15_000,
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+
+      if (!upstream.data?.success || !Array.isArray(upstream.data?.data)) {
+        console.error("[CIT API] Invalid vault-trips response:", upstream.data);
+        return res.status(502).json({
+          success: false,
+          message: "Format respons vault trips dari CIT API tidak valid",
+          data: []
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: upstream.data.message || "success",
+        data: upstream.data.data,
+        source: "activeatm"
+      });
+    } catch (err: any) {
+      const upstreamStatus = err.response?.status;
+      console.error(`[CIT API] Failed to fetch vault-trips${upstreamStatus ? ` (HTTP ${upstreamStatus})` : ""}:`, err.message);
+      return res.status(502).json({
+        success: false,
+        message: upstreamStatus
+          ? `CIT API menolak permintaan vault trips (HTTP ${upstreamStatus})`
+          : "Tidak dapat terhubung ke CIT API untuk mengambil vault trips",
+        data: []
+      });
+    }
   });
 
   app.get("/api/cit/test-connection", async (req, res) => {
