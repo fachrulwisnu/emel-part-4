@@ -18,9 +18,10 @@ import {
 
 interface EmailIntelligenceSectionProps {
   onAddToast?: (title: string, message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
+  currentUser?: any;
 }
 
-export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligenceSectionProps) {
+export default function EmailIntelligenceSection({ onAddToast, currentUser }: EmailIntelligenceSectionProps) {
   const [groupedEmails, setGroupedEmails] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedEmail, setSelectedEmail] = useState<any | null>(null);

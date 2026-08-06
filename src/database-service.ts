@@ -22,6 +22,7 @@ export interface Email {
   sender: string;
   receiver: string;
   date: string;
+  body?: string;
   body_text: string;
   html_body: string;
   tags: string[];
@@ -48,6 +49,7 @@ export interface Email {
   extracted_notes?: string;
   currency?: string;
   denomination_suggestion?: number;
+  denomination_breakdown?: any;
   total_amount?: number;
   ai_status?: string;
   is_summarized?: boolean;
@@ -2397,6 +2399,7 @@ export async function dbUpdateEmailFields(
     tags?: string[];
     is_important?: boolean;
     urgency_level?: string;
+    tag_type?: string;
     suggested_tag?: string;
     summary?: string;
     action_required?: boolean;
@@ -2407,6 +2410,7 @@ export async function dbUpdateEmailFields(
     ai_status?: string;
     currency?: string;
     denomination_suggestion?: number;
+    denomination_breakdown?: any;
     total_amount?: number;
     is_summarized?: boolean;
   }

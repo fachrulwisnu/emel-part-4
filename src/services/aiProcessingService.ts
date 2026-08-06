@@ -1202,7 +1202,7 @@ Gunakan format Markdown berikut secara eksak:
   let summaryText = '';
   try {
     const response = await customAi.chat.completions.create({
-      model: tenant.ai_primary_model || 'Core',
+      model: 'Custom AI Core',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -1212,7 +1212,7 @@ Gunakan format Markdown berikut secara eksak:
     });
     summaryText = response.choices[0]?.message?.content || '';
   } catch (err: any) {
-    console.warn(`Primary AI error/403 for generateDailySummary, trying Gemini fallback:`, err?.message || err);
+    console.warn(`Primary Custom AI Core error for generateDailySummary, trying Gemini fallback:`, err?.message || err);
     try {
       summaryText = await getAiCompletion(`${systemPrompt}\n\n${userPrompt}`);
     } catch (err2: any) {
@@ -1248,56 +1248,43 @@ Gunakan format Markdown berikut secara eksak:
 - Rangkuman dikompilasi secara otomatis melalui Rule-Based Aggregation Engine.`;
   }
 
-  const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
-  const maxEmailId = filteredEmails.reduce((max, e) => Math.max(max, Number(e.id) || 0), 0);
-  
-  let savedSummary = null;
-  if (dbService.type === 'postgres' && dbService.pgPool) {
-    await dbService.pgPool.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'unique_tenant_date'
-        ) AND NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'daily_summaries_tenant_id_summary_date_key'
-        ) THEN
-          ALTER TABLE public.daily_summaries ADD CONSTRAINT unique_tenant_date UNIQUE (tenant_id, summary_date);
-        END IF;
-      END $$;
-    `);
+  // Buat Rangkuman Ringkas (Telegram / WA)
+  const topEmailsPreview = filteredEmails.slice(0, 5).map(e => 
+    `• [${e.urgency_level || 'Normal'}] ${e.sender || 'Pengirim'}: "${(e.subject || 'Tanpa Subjek').slice(0, 50)}"`
+  ).join('\n');
 
-    const q = `
-      INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
-      VALUES ($1, $2::date, $3, $4, $5)
-      ON CONFLICT (tenant_id, summary_date) DO UPDATE 
-      SET content_text = EXCLUDED.content_text,
-          is_sent_to_wa = EXCLUDED.is_sent_to_wa,
-          source_email_ids = EXCLUDED.source_email_ids,
-          created_at = CURRENT_TIMESTAMP
-      RETURNING id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at;
-    `;
-    const res = await dbService.pgPool.query(q, [
-      tenantId, summaryDateStr, summaryText, false, JSON.stringify(sourceEmailIds)
-    ]);
-    savedSummary = res.rows[0];
-  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-    const col = dbService.mongoDb.collection('daily_summaries');
-    const filter = { tenant_id: tenantId, summary_date: summaryDateStr };
-    const update = {
-      $set: {
-        content_text: summaryText,
-        is_sent_to_wa: false,
-        source_email_ids: sourceEmailIds,
-        created_at: new Date()
-      }
-    };
-    const res = await col.findOneAndUpdate(filter, update, { upsert: true, returnDocument: 'after' });
-    savedSummary = res;
-  }
+  const summaryTextShort = `📊 *RANGKUMAN HARIAN DIVISI ${tenant.name.toUpperCase()}* (${summaryDateStr})
+
+📈 *Statistik Utama:*
+• Total Email Masuk: ${stats.total_emails}
+• Unread: ${stats.unread_count} | Perlu Tindakan: ${stats.action_required_count} | Urgen: ${stats.urgent_count}
+• Potensi Nominal / Order: ${formattedAmountSum}
+
+🔴 *Prioritas & Tindakan:*
+${stats.action_required_count > 0 ? `• Terdeteksi ${stats.action_required_count} email yang memerlukan balasan/tindak lanjut operasional.` : '• Tidak ada email yang memerlukan tindakan mendesak.'}
+${stats.urgent_count > 0 ? `• Terdeteksi ${stats.urgent_count} email tingkat urgensi tinggi.` : '• Status operasional stabil.'}
+
+📝 *Garis Besar Email Masuk:*
+${topEmailsPreview || '• Tidak ada email.'}`;
+
+  const sourceEmailIds = filteredEmails.map(e => e.message_id || String(e.id));
+  
+  // Phase 4: Append-Only DB Save (Tanpa ON CONFLICT DO UPDATE)
+  const { dbSaveDailySummary } = await import('./dbManager');
+  const savedSummary = await dbSaveDailySummary({
+    tenant_id: tenantId,
+    summary_date: summaryDateStr,
+    content_text: summaryText,
+    content_text_short: summaryTextShort,
+    is_sent_to_wa: false,
+    source_email_ids: sourceEmailIds
+  });
 
   return {
     ...savedSummary,
     summary_date: summaryDateStr,
+    summary_text: summaryText,
+    summary_text_short: summaryTextShort,
     generated_at: savedSummary?.created_at,
     source_emails: filteredEmails
   };

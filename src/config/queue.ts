@@ -60,6 +60,12 @@ export const emailQueue = new Queue(QUEUE_NAME, {
 
 emailQueue.on('error', (err) => {
   if ((err as any)?.code !== 'ECONNREFUSED') {
+    console.warn('[BullMQ Queue Warning]', err.message);
+  }
+});
+
+emailQueue.on('error', (err) => {
+  if ((err as any)?.code !== 'ECONNREFUSED') {
     console.warn('[Redis Queue Warning]', err.message);
   }
 });

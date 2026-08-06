@@ -131,10 +131,12 @@ export interface DailySummary {
   tenant_id: number;
   summary_date: string;
   content_text: string;
+  content_text_short?: string;
   is_sent_to_wa?: boolean;
   source_email_ids?: string[];
   source_emails?: any[];
   created_at?: Date | string;
+  history?: DailySummary[];
 }
 
 let lastActiveDriver: 'mongodb' | 'postgres' | null = null;
@@ -1109,12 +1111,14 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
       const now = new Date();
       const res = await col.insertOne({
         ...summary,
+        content_text_short: summary.content_text_short || '',
         source_email_ids: sourceIds,
         created_at: now
       });
       savedSummary = {
         id: res.insertedId as any,
         ...summary,
+        content_text_short: summary.content_text_short || '',
         created_at: now.toISOString()
       };
       console.log(`[dbManager] Saved Daily Summary in MongoDB for Tenant ID: ${summary.tenant_id}`);
@@ -1124,14 +1128,15 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = `
-        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids)
+        VALUES ($1, $2::date, $3, $4, $5, $6)
         RETURNING *;
       `;
       const res = await dbService.pgPool.query(query, [
         summary.tenant_id,
         summary.summary_date,
         summary.content_text,
+        summary.content_text_short || '',
         !!summary.is_sent_to_wa,
         JSON.stringify(sourceIds)
       ]);
@@ -1140,8 +1145,9 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
         savedSummary = {
           id: row.id,
           tenant_id: row.tenant_id,
-          summary_date: row.summary_date,
+          summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
@@ -1189,6 +1195,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
         tenant_id: r.tenant_id,
         summary_date: formatYYYYMMDD(r.summary_date),
         content_text: r.content_text,
+        content_text_short: r.content_text_short || '',
         is_sent_to_wa: !!r.is_sent_to_wa,
         source_email_ids: Array.isArray(r.source_email_ids) ? r.source_email_ids : [],
         created_at: r.created_at
@@ -1199,8 +1206,8 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = tenantId
-        ? 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries WHERE tenant_id = $1 ORDER BY created_at DESC'
-        : 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries ORDER BY created_at DESC';
+        ? 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries WHERE tenant_id = $1 ORDER BY created_at DESC'
+        : 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries ORDER BY created_at DESC';
       const values = tenantId ? [tenantId] : [];
       const res = await dbService.pgPool.query(query, values);
       rawSummaries = res.rows.map((row: any) => {
@@ -1215,6 +1222,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
           tenant_id: row.tenant_id,
           summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
@@ -1264,81 +1272,85 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
 
 /**
  * Get Daily Summary specifically by tenant_id and summary_date ($2::date)
+ * Returns the latest summary and includes all historical versions for that date.
  */
 export async function dbGetDailySummaryByDate(tenantId: number, targetDate: string): Promise<DailySummary | null> {
   const dbService = await getDbService();
   const cleanTargetDate = String(targetDate || '').trim().split('T')[0];
   if (!cleanTargetDate) return null;
 
-  let foundSummary: DailySummary | null = null;
+  let allVersions: DailySummary[] = [];
 
   if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const q = `
-        SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at 
+        SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at 
         FROM public.daily_summaries 
         WHERE tenant_id = $1 AND summary_date = $2::date
-        ORDER BY created_at DESC
-        LIMIT 1;
+        ORDER BY created_at DESC;
       `;
       const res = await dbService.pgPool.query(q, [tenantId, cleanTargetDate]);
-      if (res.rows.length > 0) {
-        const row = res.rows[0];
+      allVersions = res.rows.map((row: any) => {
         let sourceIds: string[] = [];
         if (Array.isArray(row.source_email_ids)) {
           sourceIds = row.source_email_ids;
         } else if (typeof row.source_email_ids === 'string') {
           try { sourceIds = JSON.parse(row.source_email_ids); } catch { sourceIds = []; }
         }
-        foundSummary = {
+        return {
           id: row.id,
           tenant_id: row.tenant_id,
           summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
         };
-      }
+      });
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summary by Date from PostgreSQL:', err);
     }
   } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('daily_summaries');
-      const res = await col.findOne({
+      const resList = await col.find({
         tenant_id: Number(tenantId),
         $or: [{ summary_date: cleanTargetDate }, { summary_date: new Date(cleanTargetDate) }]
-      }, { sort: { created_at: -1 } });
-      if (res) {
-        foundSummary = {
-          id: res._id as any,
-          tenant_id: res.tenant_id,
-          summary_date: formatYYYYMMDD(res.summary_date),
-          content_text: res.content_text,
-          is_sent_to_wa: !!res.is_sent_to_wa,
-          source_email_ids: Array.isArray(res.source_email_ids) ? res.source_email_ids : [],
-          created_at: res.created_at
-        };
-      }
+      }).sort({ created_at: -1 }).toArray();
+      allVersions = resList.map((res: any) => ({
+        id: res._id as any,
+        tenant_id: res.tenant_id,
+        summary_date: formatYYYYMMDD(res.summary_date),
+        content_text: res.content_text,
+        content_text_short: res.content_text_short || '',
+        is_sent_to_wa: !!res.is_sent_to_wa,
+        source_email_ids: Array.isArray(res.source_email_ids) ? res.source_email_ids : [],
+        created_at: res.created_at
+      }));
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summary by Date from MongoDB:', err);
     }
   }
 
-  if (!foundSummary) {
-    const mem = inMemoryDailySummaries.find(s => s.tenant_id === tenantId && formatYYYYMMDD(s.summary_date) === cleanTargetDate);
-    if (mem) {
-      foundSummary = { ...mem, summary_date: formatYYYYMMDD(mem.summary_date) };
-    }
+  // Fallback check memory
+  if (allVersions.length === 0) {
+    const memList = inMemoryDailySummaries.filter(s => s.tenant_id === tenantId && formatYYYYMMDD(s.summary_date) === cleanTargetDate);
+    allVersions = memList.map(s => ({ ...s, summary_date: formatYYYYMMDD(s.summary_date) }));
   }
 
-  if (foundSummary && foundSummary.source_email_ids && foundSummary.source_email_ids.length > 0) {
+  if (allVersions.length === 0) {
+    return null;
+  }
+
+  const foundSummary = { ...allVersions[0], history: allVersions };
+
+  if (foundSummary.source_email_ids && foundSummary.source_email_ids.length > 0) {
     try {
       const { dbGetAllEmails } = await import('../database-service');
       const allTenantEmails = await dbGetAllEmails(foundSummary.tenant_id);
       foundSummary.source_emails = allTenantEmails.filter(e => 
-        foundSummary!.source_email_ids.includes(e.message_id) || foundSummary!.source_email_ids.includes(String(e.id))
+        foundSummary!.source_email_ids!.includes(e.message_id) || foundSummary!.source_email_ids!.includes(String(e.id))
       );
     } catch (err) {
       console.error(`[dbManager] Failed to populate source_emails for summary ${foundSummary.id}:`, err);

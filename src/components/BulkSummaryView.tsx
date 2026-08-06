@@ -19,7 +19,9 @@ import {
   ShieldAlert,
   Tag,
   Paperclip,
-  Check
+  Check,
+  History,
+  Copy
 } from 'lucide-react';
 
 interface EmailSource {
@@ -40,14 +42,16 @@ interface EmailSource {
 }
 
 interface DailySummary {
-  id?: number;
+  id?: number | string;
   tenant_id: number;
   summary_date: string;
   content_text: string;
+  content_text_short?: string;
   is_sent_to_wa?: boolean;
   source_email_ids?: string[];
   source_emails?: EmailSource[];
   created_at?: string;
+  history?: DailySummary[];
 }
 
 interface BulkSummaryViewProps {
@@ -88,7 +92,16 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
 
   // Accordion state per summary ID
-  const [expandedSummaryIds, setExpandedSummaryIds] = useState<Record<number, boolean>>({});
+  const [expandedSummaryIds, setExpandedSummaryIds] = useState<Record<string | number, boolean>>({});
+
+  // Active Tab per summary card: 'full' (Laporan Lengkap Web/DCT) vs 'short' (Telegram/WA)
+  const [activeTabMap, setActiveTabMap] = useState<Record<string | number, 'full' | 'short'>>({});
+
+  // Selected Version per summary card
+  const [selectedVersionMap, setSelectedVersionMap] = useState<Record<string | number, number>>({});
+
+  // Copied indicator
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Modal summary detail state (INSTRUKSI 3)
   const [selectedSummaryForDetail, setSelectedSummaryForDetail] = useState<DailySummary | null>(null);
@@ -443,13 +456,30 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
           summaries.map((s, idx) => {
             const summaryId = s.id || idx;
             const isExpanded = !!expandedSummaryIds[summaryId];
-            const sourceEmails = s.source_emails || [];
+            
+            // Version History calculation
+            const historyList = (s.history && s.history.length > 0) ? s.history : [s];
+            const currentVersionIdx = selectedVersionMap[summaryId] ?? 0;
+            const activeSummary = historyList[currentVersionIdx] || s;
+
+            const sourceEmails = activeSummary.source_emails || s.source_emails || [];
             const sourceCount = sourceEmails.length;
+
+            const currentTab = activeTabMap[summaryId] || 'full';
+            const displayText = currentTab === 'short' 
+              ? (activeSummary.content_text_short || activeSummary.content_text)
+              : activeSummary.content_text;
+
+            const handleCopyText = (text: string) => {
+              navigator.clipboard.writeText(text);
+              setCopiedKey(`${summaryId}-${currentTab}`);
+              setTimeout(() => setCopiedKey(null), 2000);
+            };
 
             return (
               <div key={summaryId} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 transition-all overflow-hidden">
                 
-                {/* Header Card with Strategic WA Blast Button */}
+                {/* Header Card with Version Selector & Action Buttons */}
                 <div className="bg-slate-50/80 p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="p-2.5 bg-indigo-600 text-white rounded-xl font-extrabold text-xs shadow-xs">
@@ -460,21 +490,40 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                         <Calendar className="w-4 h-4 text-indigo-600" />
                         <span>Rangkuman Tanggal: {String(s.summary_date || '')}</span>
                       </h3>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
+                      <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 flex-wrap">
                         <Clock className="w-3 h-3 text-slate-400" />
-                        <span>Terakhir Diperbarui: {s.created_at ? new Date(s.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
+                        <span>Diperbarui: {activeSummary.created_at ? new Date(activeSummary.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
                         <span>•</span>
-                        <span className="font-medium text-slate-600">Cut-off Time: 05:00 - 23:59</span>
+                        <span className="font-medium text-slate-600">Cut-off: 05:00 - 23:59</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Strategic WA Blast Controls (INSTRUKSI 4) */}
+                  {/* Top Right Actions & Badges */}
                   <div className="flex items-center gap-2 flex-wrap">
+                    {/* Version History Dropdown / Switcher if multiple versions exist */}
+                    {historyList.length > 1 && (
+                      <div className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-200 rounded-xl px-2.5 py-1 text-xs">
+                        <History className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span className="font-bold text-indigo-900 text-[11px]">Versi:</span>
+                        <select
+                          value={currentVersionIdx}
+                          onChange={(e) => setSelectedVersionMap(prev => ({ ...prev, [summaryId]: Number(e.target.value) }))}
+                          className="bg-transparent font-bold text-indigo-700 focus:outline-none cursor-pointer text-xs"
+                        >
+                          {historyList.map((h, hIdx) => (
+                            <option key={hIdx} value={hIdx}>
+                              Versi #{historyList.length - hIdx} ({h.created_at ? new Date(h.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : 'Terbaru'}) {hIdx === 0 ? '• Terbaru' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
                     {isCached && (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-sky-50 text-sky-700 border border-sky-300">
                         <CheckCircle2 className="w-3.5 h-3.5 text-sky-600" />
-                        <span>Cache Database Active</span>
+                        <span>Cached</span>
                       </span>
                     )}
 
@@ -484,13 +533,13 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                         : 'bg-amber-50 text-amber-800 border-amber-300'
                     }`}>
                       <MessageSquare className="w-3.5 h-3.5" />
-                      <span>{s.is_sent_to_wa ? 'Sent via WhatsApp' : 'Ready for Blast'}</span>
+                      <span>{s.is_sent_to_wa ? 'Sent via WA' : 'Ready for Blast'}</span>
                     </span>
 
                     <button
                       type="button"
-                      onClick={() => setSelectedSummaryForDetail(s)}
-                      className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                      onClick={() => setSelectedSummaryForDetail(activeSummary)}
+                      className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                     >
                       <Eye className="w-3.5 h-3.5" />
                       <span>Lihat Detail</span>
@@ -498,33 +547,81 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
                     <button
                       type="button"
-                      onClick={() => handleWaBlast(summaryId)}
+                      onClick={() => handleWaBlast(summaryId as number)}
                       disabled={blastingId === summaryId}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-2 cursor-pointer ${
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer ${
                         s.is_sent_to_wa
                           ? 'bg-slate-800 hover:bg-slate-900 text-white'
                           : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                       }`}
-                      title="Kirim hasil rangkuman AI ke nomor WhatsApp divisi"
                     >
                       <Send className={`w-3.5 h-3.5 ${blastingId === summaryId ? 'animate-pulse' : ''}`} />
-                      <span>{blastingId === summaryId ? 'Mengirim...' : s.is_sent_to_wa ? 'Blast Ulang WA' : 'Blast WA Sekarang'}</span>
+                      <span>{blastingId === summaryId ? 'Mengirim...' : s.is_sent_to_wa ? 'Blast Ulang WA' : 'Blast WA'}</span>
                     </button>
                   </div>
                 </div>
 
-                {/* AI Summary Content Text Box */}
+                {/* AI Summary Content & Format Switcher Tabs */}
                 <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>Teks Hasil Summary AI (WhatsApp Ready)</span>
-                    </h4>
+                  {/* Format Tabs & Copy Action */}
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-3 flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTabMap(prev => ({ ...prev, [summaryId]: 'full' }))}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          currentTab === 'full'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Laporan Lengkap (Web / DCT)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTabMap(prev => ({ ...prev, [summaryId]: 'short' }))}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          currentTab === 'short'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Format Ringkas (Telegram / WA)</span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(displayText)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedKey === `${summaryId}-${currentTab}` ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-emerald-700">Teks Disalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Salin Teks {currentTab === 'short' ? 'Telegram/WA' : 'Laporan'}</span>
+                        </>
+                      )}
+                    </button>
                   </div>
 
-                  <div className="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
-                    {s.content_text}
-                  </div>
+                  {/* Summary Text Content Rendering */}
+                  {currentTab === 'full' ? (
+                    <div className="bg-slate-50 text-slate-900 rounded-xl p-5 text-xs leading-relaxed border border-slate-200 whitespace-pre-wrap font-sans shadow-inner">
+                      {displayText}
+                    </div>
+                  ) : (
+                    <div className="bg-slate-900 text-slate-100 rounded-xl p-5 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
+                      {displayText}
+                    </div>
+                  )}
 
                   {/* INSTRUKSI 3: DATA TRANSPARENCY & AWARENESS SECTION */}
                   <div className="mt-6 border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
@@ -784,16 +881,57 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
             {/* Modal Body */}
             <div className="p-6 overflow-y-auto flex-1 space-y-6">
-              {/* WhatsApp Text Summary */}
+              {/* Laporan Lengkap (Web / DCT) */}
               <div>
-                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-indigo-600" />
-                  Teks Rangkuman AI
-                </h4>
-                <div className="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-600" />
+                    Laporan Lengkap (Web / DCT)
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedSummaryForDetail.content_text);
+                      setCopiedKey('modal-full');
+                      setTimeout(() => setCopiedKey(null), 2000);
+                    }}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                  >
+                    {copiedKey === 'modal-full' ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
+                    <span>{copiedKey === 'modal-full' ? 'Disalin!' : 'Salin Laporan'}</span>
+                  </button>
+                </div>
+                <div className="bg-slate-50 text-slate-900 rounded-xl p-4 text-xs font-sans whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-200">
                   {selectedSummaryForDetail.content_text}
                 </div>
               </div>
+
+              {/* Format Ringkas (Telegram / WA) */}
+              {selectedSummaryForDetail.content_text_short && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-emerald-600" />
+                      Format Ringkas (Telegram / WhatsApp)
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedSummaryForDetail.content_text_short || '');
+                        setCopiedKey('modal-short');
+                        setTimeout(() => setCopiedKey(null), 2000);
+                      }}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedKey === 'modal-short' ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
+                      <span>{copiedKey === 'modal-short' ? 'Disalin!' : 'Salin Telegram/WA'}</span>
+                    </button>
+                  </div>
+                  <div className="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
+                    {selectedSummaryForDetail.content_text_short}
+                  </div>
+                </div>
+              )}
 
               {/* Source Emails Accordion List */}
               <div>

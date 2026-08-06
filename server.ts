@@ -851,8 +851,10 @@ async function startServer() {
             data: {
                ...cachedSummary,
                summary_text: cachedSummary.content_text,
+               summary_text_short: cachedSummary.content_text_short || '',
                generated_at: cachedSummary.created_at,
-               referenced_emails: cachedSummary.source_emails
+               referenced_emails: cachedSummary.source_emails,
+               history: cachedSummary.history || []
             }
           });
         }
@@ -875,8 +877,10 @@ async function startServer() {
           data: {
              ...summary,
              summary_text: summary.content_text,
+             summary_text_short: summary.content_text_short || '',
              generated_at: summary.created_at,
-             referenced_emails: summary.source_emails
+             referenced_emails: summary.source_emails,
+             history: summary.history || []
           }
         });
       } catch (err: any) {
@@ -929,7 +933,8 @@ async function startServer() {
     try {
       const { getDbService } = await import("./src/services/dbManager");
       const dbService = await getDbService();
-      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const reqUser = (req as any).user;
+      const tenant_id = reqUser?.tenantId || reqUser?.tenant_id || req.query?.tenant_id;
       const tenantId = tenant_id ? Number(tenant_id) : undefined;
       
       let emails = [];
@@ -965,7 +970,8 @@ async function startServer() {
   app.get("/api/bulk-summary/today", async (req, res) => {
     try {
       const { dbGetDailySummaries, dbGetDailySummaryByDate, getDbService } = await import("./src/services/dbManager");
-      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const reqUser = (req as any).user;
+      const tenant_id = reqUser?.tenantId || reqUser?.tenant_id || req.query?.tenant_id;
       const target_date = req.query?.target_date || req.query?.date;
       const tenantId = tenant_id ? Number(tenant_id) : undefined;
       
@@ -1024,8 +1030,10 @@ async function startServer() {
         data: matchedSummary ? {
           ...matchedSummary,
           summary_text: matchedSummary.content_text,
+          summary_text_short: matchedSummary.content_text_short || '',
           generated_at: matchedSummary.created_at,
-          referenced_emails: matchedSummary.source_emails
+          referenced_emails: matchedSummary.source_emails,
+          history: (matchedSummary as any).history || []
         } : null,
         summaries: latestSummaries
       });
@@ -1565,7 +1573,8 @@ async function startServer() {
   app.post("/api/ai/resummary-tenant", async (req, res) => {
     try {
       const { tenant_id, account_email } = req.body || {};
-      const userTenantId = req.user?.tenantId || req.user?.tenant_id || tenant_id;
+      const reqUser = (req as any).user;
+      const userTenantId = reqUser?.tenantId || reqUser?.tenant_id || tenant_id;
       const tenantId = userTenantId ? Number(userTenantId) : 1;
       const accountEmail = account_email ? String(account_email).trim() : '';
 

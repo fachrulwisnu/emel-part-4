@@ -40,7 +40,9 @@ import {
   Send,
   Tag,
   FolderSync,
-  RotateCcw
+  RotateCcw,
+  HelpCircle,
+  Key
 } from 'lucide-react';
 import { PendingOrderInput } from './components/PendingOrderInput';
 import CitDashboard from './components/CitDashboard';
@@ -60,7 +62,7 @@ import { TenantIntegrationSettings } from './components/TenantIntegrationSetting
 import { DynamicFiltersManager } from './components/DynamicFiltersManager';
 import { HelpDrawer } from './components/HelpDrawer';
 import { RedisQueueDashboard } from './components/RedisQueueDashboard';
-import { Shield, Building2, Layers, LogOut, Key, BarChart3, Building, ShieldCheck, Filter, HelpCircle, Cpu } from 'lucide-react';
+import { Shield, Building2, Layers, LogOut, BarChart3, Building, ShieldCheck, Filter, Cpu } from 'lucide-react';
 
 interface UserPermissions {
   dashboard: boolean;
@@ -639,7 +641,7 @@ export default function App() {
     }
   };
 
-  const addToast = (title: string, message: string) => {
+  const addToast = (title: string, message: string, type?: string) => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, title, message }]);
     setTimeout(() => {
@@ -1626,139 +1628,153 @@ export default function App() {
       {/* 2. MAIN WORKSPACE */}
       <main className="flex flex-col flex-1 overflow-hidden" id="workspace_container">
         
-        {/* TOP SYSTEM & ACTIONS BAR */}
-        <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0" id="workspace_header">
-          <div className="flex items-center space-x-3">
-            <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans">
-              {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
-              {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
-                            {currentMenu === 'pending-input' && 'Pending Order Input'}
-              {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
-              {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
-              {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
-              {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
-              {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
-              {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
-              {currentMenu === 'redis-monitor' && 'AI Queue & Redis BullMQ Monitor'}
-            </h1>
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200">
-              <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
-              {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
-            </span>
-            <AiHealthIndicators />
+        {/* TOP SYSTEM & ACTIONS BAR (REVAMPED TWO-ROW LAYOUT) */}
+        <header className="border-b border-slate-200 bg-white flex flex-col shrink-0 shadow-2xs" id="workspace_header">
+          {/* BARIS 1: Header Info, Status Badges, Action Buttons & User Session */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between px-6 py-3 border-b border-slate-100 gap-3">
+            {/* Kiri: Title & Status Badges */}
+            <div className="flex items-center gap-3 flex-wrap min-w-0">
+              <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans truncate">
+                {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
+                {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
+                {currentMenu === 'pending-input' && 'Pending Order Input'}
+                {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
+                {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
+                {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
+                {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
+                {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
+                {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
+                {currentMenu === 'redis-monitor' && 'AI Queue & Redis BullMQ Monitor'}
+              </h1>
+              <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200 shrink-0">
+                <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
+                {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
+              </span>
+              <AiHealthIndicators />
+            </div>
 
-            {/* Global Contextual Help Button (INSTRUKSI 1) */}
-            <button
-              onClick={() => setIsHelpOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-xl font-bold text-xs shadow-2xs transition-all cursor-pointer active:scale-95"
-              title="Buka Panduan & Dokumentasi Fitur"
-            >
-              <HelpCircle className="w-4 h-4 text-indigo-600" />
-              <span>Panduan</span>
-            </button>
+            {/* Kanan: Action Buttons & User Session */}
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {currentMenu === 'inbox' && (
+                <>
+                  <button
+                    onClick={handleManualSync}
+                    disabled={isSyncing}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleRunFolderBackfill}
+                    disabled={isFolderBackfilling}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                    title="Run retroactive folder tagging for all historical emails"
+                  >
+                    <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
+                    <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleReSummaryTenant}
+                    disabled={isReSummarizing}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                    title="Reset & Re-Summary seluruh email untuk tenant ini via Redis Queue"
+                  >
+                    <RotateCcw className={`h-3.5 w-3.5 ${isReSummarizing ? 'animate-spin' : ''}`} />
+                    <span>{isReSummarizing ? 'Re-Summarizing...' : '🔄 Re-Summary Keseluruhan'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleClearDatabase}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-rose-600 font-medium rounded-lg text-xs transition-all duration-200 shadow-2xs cursor-pointer shrink-0"
+                    title="Flush cached inbox data"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Flush Inbox</span>
+                  </button>
+                </>
+              )}
+
+              {/* User Session & Login Button */}
+              <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+                {currentUser ? (
+                  <div className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 h-9 rounded-lg transition-all cursor-pointer" onClick={() => setIsLoginModalOpen(true)}>
+                    <div className="w-5 h-5 rounded bg-blue-600 text-white font-bold text-[10px] flex items-center justify-center">
+                      {currentUser.email[0].toUpperCase()}
+                    </div>
+                    <div className="text-left leading-tight">
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        <span className="truncate max-w-[120px]">{currentUser.email}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-blue-600 text-white rounded font-mono">
+                          {currentUser.role}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsLoginModalOpen(true)}
+                    className="h-9 flex items-center gap-1.5 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-all duration-200 shadow-sm cursor-pointer"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Login Tenant</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-2.5">
-            {currentMenu === 'inbox' && (
-              <>
-                {/* Account Switcher / Unified Inbox Selector */}
-                <div className="relative text-xs">
-                  <select
-                    value={selectedSourceEmail}
-                    onChange={(e) => {
-                      setSelectedSourceEmail(e.target.value);
-                      loadEmails(e.target.value);
-                    }}
-                    className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg font-bold text-xs focus:outline-none cursor-pointer"
-                  >
-                    <option value="">Semua Akun Email (Unified Inbox)</option>
-                    {mailConfigs.map((cfg) => (
-                      <option key={cfg.id} value={cfg.email_address}>
-                        ✉️ {cfg.email_address}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="relative w-64 text-xs">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search sender, subject..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-8.5 pr-3 py-1.5 bg-slate-100 hover:bg-slate-150 border border-transparent hover:border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg focus:outline-none transition-all leading-normal"
-                  />
-                </div>
-
-                <button
-                  onClick={handleManualSync}
-                  disabled={isSyncing}
-                  className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
-                </button>
-
-                <button
-                  onClick={handleRunFolderBackfill}
-                  disabled={isFolderBackfilling}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                  title="Run retroactive folder tagging for all historical emails"
-                >
-                  <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
-                  <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
-                </button>
-
-                <button
-                  onClick={handleReSummaryTenant}
-                  disabled={isReSummarizing}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                  title="Reset & Re-Summary seluruh email untuk tenant ini via Redis Queue"
-                >
-                  <RotateCcw className={`h-3.5 w-3.5 ${isReSummarizing ? 'animate-spin' : ''}`} />
-                  <span>{isReSummarizing ? 'Re-Summarizing...' : '🔄 Re-Summary Keseluruhan'}</span>
-                </button>
-
-                <button
-                  onClick={handleClearDatabase}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold rounded-lg text-xs transition-colors cursor-pointer"
-                  title="Flush cached inbox data"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  <span>Flush Inbox</span>
-                </button>
-              </>
-            )}
-
-            {/* User Session & Login Button */}
-            <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-              {currentUser ? (
-                <div className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 py-1.5 rounded-xl transition-all cursor-pointer" onClick={() => setIsLoginModalOpen(true)}>
-                  <div className="w-6 h-6 rounded-lg bg-blue-600 text-white font-bold text-xs flex items-center justify-center">
-                    {currentUser.email[0].toUpperCase()}
+          {/* BARIS 2: Control Toolbar (Account Selector, Search Bar & Panduan Help Button) */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between px-6 py-2 bg-slate-50/80 gap-3">
+            <div className="flex items-center gap-3 flex-wrap flex-1 min-w-0">
+              {currentMenu === 'inbox' && (
+                <>
+                  {/* Account Switcher / Unified Inbox Selector */}
+                  <div className="relative text-xs min-w-[220px]">
+                    <select
+                      value={selectedSourceEmail}
+                      onChange={(e) => {
+                        setSelectedSourceEmail(e.target.value);
+                        loadEmails(e.target.value);
+                      }}
+                      className="w-full h-9 px-3 bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 rounded-lg font-medium text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 shadow-2xs cursor-pointer transition-all"
+                    >
+                      <option value="">Semua Akun Email (Unified Inbox)</option>
+                      {mailConfigs.map((cfg) => (
+                        <option key={cfg.id} value={cfg.email_address}>
+                          ✉️ {cfg.email_address}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="text-left leading-tight">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
-                      <span>{currentUser.email}</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-blue-600 text-white rounded font-mono">
-                        {currentUser.role}
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-slate-500">
-                      {currentUser.role === 'SUPER_ADMIN' ? 'Super Admin' : `Divisi ${currentUser.tenant_name || currentUser.tenant_id}`}
-                    </span>
+
+                  {/* Search Bar */}
+                  <div className="relative flex-1 max-w-md text-xs">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search sender, subject..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full h-9 pl-9 pr-3 bg-white hover:bg-slate-50 border border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg text-xs font-medium focus:outline-none transition-all shadow-2xs leading-normal"
+                    />
                   </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setIsLoginModalOpen(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  <span>Login Tenant</span>
-                </button>
+                </>
               )}
+            </div>
+
+            {/* Global Contextual Help Button (Panduan) */}
+            <div className="flex items-center gap-2 shrink-0 justify-end">
+              <button
+                onClick={() => setIsHelpOpen(true)}
+                className="h-9 flex items-center gap-1.5 px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-lg font-medium text-xs shadow-2xs transition-all duration-200 hover:opacity-90 cursor-pointer active:scale-95 shrink-0"
+                title="Buka Panduan & Dokumentasi Fitur"
+              >
+                <HelpCircle className="w-4 h-4 text-indigo-600" />
+                <span>Panduan</span>
+              </button>
             </div>
           </div>
         </header>
@@ -3730,7 +3746,7 @@ export default function App() {
 
         {/* EMAIL INTELLIGENCE AI CATALOG SECTION */}
         {currentMenu === 'intelligence' && (
-          <EmailIntelligenceSection onAddToast={addToast} />
+          <EmailIntelligenceSection onAddToast={addToast} currentUser={currentUser} />
         )}
 
         {/* SUPER ADMIN DASHBOARD ANALYTICS SECTION */}
