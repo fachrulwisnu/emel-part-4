@@ -37,8 +37,21 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onLogin
       const data = await res.json();
 
       if (data.success && data.user) {
+        // 1. Bersihkan sisa data lama sebelum pasang yang baru
+        localStorage.clear();
+        sessionStorage.clear();
+
+        // 2. Pasang data baru
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
+        localStorage.setItem('user', JSON.stringify(data.user));
+
         onLoginSuccess(data.user);
         onClose();
+
+        // 3. HARD RELOAD ke dashboard/root untuk inisiasi state yang bersih
+        window.location.replace('/');
       } else {
         setError(data.message || 'Login gagal. Silakan periksa email dan password.');
       }

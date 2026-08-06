@@ -31,7 +31,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onBypassLo
       const data = await res.json();
 
       if (data.success && data.user) {
+        // 1. Bersihkan sisa data lama sebelum pasang yang baru
+        localStorage.clear();
+        sessionStorage.clear();
+
+        // 2. Pasang data baru
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
+        localStorage.setItem('user', JSON.stringify(data.user));
+
+        // 3. HARD RELOAD ke dashboard/root untuk inisiasi state yang bersih
         onLoginSuccess(data.user);
+        window.location.replace('/');
       } else {
         setErrorMsg(data.message || 'Email atau password yang Anda masukkan salah.');
       }

@@ -23,6 +23,21 @@ interface FailedJob {
   attemptsMade?: number;
 }
 
+interface TenantOption {
+  id: number;
+  name: string;
+  hasActiveLogs?: boolean;
+}
+
+interface TenantLogItem {
+  timestamp: string;
+  message: string;
+  status: 'INFO' | 'SUCCESS' | 'ERROR';
+  progress?: number;
+  jobType?: string;
+  tenantId?: number;
+}
+
 interface RedisQueueDashboardProps {
   currentUser: User | null;
 }
@@ -36,7 +51,66 @@ export const RedisQueueDashboard: React.FC<RedisQueueDashboardProps> = ({ curren
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Tenant Redis Log Namespacing States
+  const [tenants, setTenants] = useState<TenantOption[]>([]);
+  const [selectedTenantId, setSelectedTenantId] = useState<number>(1);
+  const [terminalLogs, setTerminalLogs] = useState<TenantLogItem[]>([]);
+  const [loadingTenants, setLoadingTenants] = useState<boolean>(false);
+  const [loadingLogs, setLoadingLogs] = useState<boolean>(false);
+  const [isLogPollingActive, setIsLogPollingActive] = useState<boolean>(true);
+
   const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+
+  const fetchActiveTenants = async () => {
+    setLoadingTenants(true);
+    try {
+      const res = await fetch('/api/admin/active-redis-tenants');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.tenants)) {
+        setTenants(data.tenants);
+        if (data.tenants.length > 0 && !data.tenants.some((t: any) => t.id === selectedTenantId)) {
+          setSelectedTenantId(data.tenants[0].id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load active tenants:", err);
+    } finally {
+      setLoadingTenants(false);
+    }
+  };
+
+  const fetchTenantLogs = async (tenantId: number) => {
+    setLoadingLogs(true);
+    try {
+      const res = await fetch(`/api/admin/redis-logs/${tenantId}`);
+      const data = await res.json();
+      if (data.success && Array.isArray(data.logs)) {
+        setTerminalLogs(data.logs);
+      }
+    } catch (err) {
+      console.error(`Failed to fetch logs for tenant ${tenantId}:`, err);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSuperAdmin) {
+      fetchActiveTenants();
+    }
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
+    if (!isSuperAdmin || !selectedTenantId || !isLogPollingActive) return;
+
+    fetchTenantLogs(selectedTenantId);
+
+    const interval = setInterval(() => {
+      fetchTenantLogs(selectedTenantId);
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [isSuperAdmin, selectedTenantId, isLogPollingActive]);
 
   const fetchQueueStatus = async () => {
     try {
@@ -232,6 +306,139 @@ export const RedisQueueDashboard: React.FC<RedisQueueDashboardProps> = ({ curren
           <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center shrink-0 border border-rose-100">
             <AlertTriangle className="w-6 h-6" />
           </div>
+        </div>
+      </div>
+
+      {/* SUPERADMIN TERMINAL LOG MONITORING VIEW */}
+      <div className="bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden font-mono text-xs">
+        {/* Terminal Header */}
+        <div className="bg-slate-900 border-b border-slate-800 px-5 py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            {/* Mac-style Window Controls */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="w-3 h-3 rounded-full bg-rose-500 inline-block"></span>
+              <span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
+              <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span>
+            </div>
+
+            <div className="flex items-center gap-2 text-slate-200 font-bold text-xs font-sans">
+              <Terminal className="w-4 h-4 text-emerald-400" />
+              <span>Tenant System Log Monitoring Terminal</span>
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-mono px-2 py-0.5 rounded border border-emerald-500/30">
+                system_logs:tenant:{selectedTenantId}
+              </span>
+            </div>
+          </div>
+
+          {/* Dropdown Tenant Selector & Controls */}
+          <div className="flex items-center gap-3 flex-wrap font-sans">
+            <div className="flex items-center gap-2">
+              <label htmlFor="tenant-log-select" className="text-slate-300 text-xs font-semibold">
+                Pilih Tenant untuk Dimonitor:
+              </label>
+              <select
+                id="tenant-log-select"
+                value={selectedTenantId}
+                onChange={(e) => setSelectedTenantId(Number(e.target.value))}
+                className="bg-slate-800 text-white text-xs font-bold rounded-xl border border-slate-700 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+              >
+                {tenants.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} (ID: {t.id}) {t.hasActiveLogs ? '🟢 Active' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsLogPollingActive(!isLogPollingActive)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                isLogPollingActive
+                  ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-amber-600/20 text-amber-300 border border-amber-500/30'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${isLogPollingActive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+              <span>{isLogPollingActive ? 'Live (2.5s Polling)' : 'Paused'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => fetchTenantLogs(selectedTenantId)}
+              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer"
+              title="Refresh Logs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Terminal Output Area */}
+        <div className="p-4 bg-slate-950 text-slate-300 h-80 overflow-y-auto space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800 font-mono text-[11px] leading-relaxed">
+          <div className="text-slate-500 mb-2 border-b border-slate-800/80 pb-2 flex items-center justify-between">
+            <div>
+              # Redis Key: <span className="text-emerald-400 font-bold">system_logs:tenant:{selectedTenantId}</span>
+              <span className="mx-2 text-slate-700">|</span>
+              TTL: 24 Jam (86400s)
+            </div>
+            <div className="text-[10px] text-slate-500">
+              {terminalLogs.length} Log Records
+            </div>
+          </div>
+
+          {terminalLogs.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 italic space-y-2">
+              <p className="text-slate-400">system_logs:tenant:{selectedTenantId} $ Belum ada log aktivitas untuk tenant ini dalam 24 jam terakhir.</p>
+              <p className="text-[10px] text-slate-600">Pemicuan task (SyncPOP3 / DailyBulkSummary / IndividualEmailParsing) akan otomatis mengirimkan log ke terminal ini.</p>
+            </div>
+          ) : (
+            terminalLogs.map((log, idx) => {
+              const timeStr = log.timestamp ? new Date(log.timestamp).toLocaleTimeString('id-ID') : '--:--:--';
+              const isSuccess = log.status === 'SUCCESS';
+              const isError = log.status === 'ERROR';
+
+              return (
+                <div key={idx} className="flex items-start gap-2 hover:bg-slate-900/60 p-1.5 rounded transition-colors group">
+                  <span className="text-slate-500 shrink-0 font-bold">[{timeStr}]</span>
+
+                  {/* Badge Status */}
+                  {isSuccess ? (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
+                      SUCCESS
+                    </span>
+                  ) : isError ? (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30 shrink-0">
+                      ERROR
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30 shrink-0">
+                      INFO
+                    </span>
+                  )}
+
+                  {/* Job Type Badge */}
+                  {log.jobType && (
+                    <span className="text-indigo-400 font-bold shrink-0">
+                      [{log.jobType}]
+                    </span>
+                  )}
+
+                  {/* Message Content */}
+                  <span className={`break-all ${isSuccess ? 'text-emerald-300 font-semibold' : isError ? 'text-rose-300 font-semibold' : 'text-slate-300'}`}>
+                    {log.message}
+                  </span>
+
+                  {/* Progress Indicator */}
+                  {log.progress !== undefined && log.progress > 0 && (
+                    <span className="ml-auto text-[9px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded shrink-0 font-bold">
+                      {log.progress}%
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 

@@ -416,8 +416,8 @@ export default function CitDashboard({
                 <tr>
                   <td colSpan={6} className="py-12 text-center text-slate-400">
                     <Database className="h-8 w-8 text-slate-200 mx-auto mb-2" />
-                    <p className="font-semibold text-xs">No active trips found</p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Please check API connection or configure CIT Token.</p>
+                    <p className="font-semibold text-xs">Belum ada data CIT order / active trips</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Silakan buat dispatch baru atau sinkronkan data email.</p>
                   </td>
                 </tr>
               ) : (

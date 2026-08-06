@@ -273,7 +273,7 @@ export default function EmailIntelligenceSection({ onAddToast, currentUser }: Em
             {Object.keys(groupedEmails).map((folderParent) => {
               const isFolderOpen = expandedNodes[folderParent];
               const subFolders = groupedEmails[folderParent];
-              const totalEmailsInFolder = Object.values(subFolders).reduce((acc: number, list: any) => acc + list.length, 0);
+              const totalEmailsInFolder = (Object.values(subFolders) as any[]).reduce((acc: number, list: any) => acc + (Array.isArray(list) ? list.length : 0), 0);
 
               return (
                 <div key={folderParent} className="space-y-1">

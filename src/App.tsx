@@ -62,7 +62,10 @@ import { TenantIntegrationSettings } from './components/TenantIntegrationSetting
 import { DynamicFiltersManager } from './components/DynamicFiltersManager';
 import { HelpDrawer } from './components/HelpDrawer';
 import { RedisQueueDashboard } from './components/RedisQueueDashboard';
-import { Shield, Building2, Layers, LogOut, BarChart3, Building, ShieldCheck, Filter, Cpu } from 'lucide-react';
+import { Shield, Building2, Layers, LogOut, BarChart3, Building, ShieldCheck, Filter, Cpu, Code2 } from 'lucide-react';
+import SwaggerUI from 'swagger-ui-react';
+import 'swagger-ui-react/swagger-ui.css';
+import apiDocsSchema from './utils/apiDocsSchema';
 
 interface UserPermissions {
   dashboard: boolean;
@@ -79,6 +82,7 @@ interface UserPermissions {
 interface UserSession {
   id: number;
   tenant_id: number | null;
+  tenantId?: number | null;
   email: string;
   role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
   tenant_name?: string;
@@ -102,6 +106,10 @@ interface Email {
   sub_category?: string;
   folder_parent?: string;
   folder_child?: string;
+  suggested_folder_parent?: string;
+  suggested_folder_child?: string;
+  source_email?: string;
+  attachments?: any[];
   api_workflow_status?: string;
   api_workflow_log?: string;
 
@@ -218,20 +226,24 @@ const getTagBadgeStyle = (str: string) => {
 };
 
 export default function App() {
-  // Authentication & Multi-Tenant User Session
-  const [currentUser, setCurrentUser] = useState<UserSession | null>({
-    id: 1,
-    tenant_id: null,
-    email: 'fachrul',
-    role: 'SUPER_ADMIN',
-    tenant_name: 'SUPER ADMIN'
+  // Authentication & Multi-Tenant User Session (Loaded cleanly from localStorage or null)
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
+    try {
+      const stored = localStorage.getItem('user');
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error("Failed to parse stored user session:", e);
+    }
+    return null;
   });
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Navigation
   const [currentMenu, setCurrentMenu] = useState<'inbox' | 'intelligence' | 'cit-dashboard' | 'bulk-summary' | 'dynamic-rules' | 'settings' | 'superadmin-analytics' | 'superadmin-tenants' | 'tenant-settings' | 'dynamic-filters' | 'redis-monitor' | 'pending-input'>('inbox');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor' | 'pending-input'>('mail');
+  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'api-docs' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor' | 'pending-input'>('mail');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Multi-Account Filter States
@@ -737,23 +749,39 @@ export default function App() {
     }
   };
 
+  const resetState = () => {
+    setTickets([]);
+    setSelectedEmail(null);
+    setMailConfigs([]);
+    setSelectedSourceEmail('');
+    setDynamicFolders([]);
+    setCustomFilters([]);
+    setFilterRules([]);
+    setConfiguredRules([]);
+  };
+
   // Fetch Mail Configs for multi-account selector
   const loadMailConfigs = async () => {
     try {
       const tenantId = currentUser?.tenant_id || '';
       const res = await fetch(`/api/mail-configs?tenant_id=${tenantId}`);
       const data = await res.json();
-      if (data.success && data.configs) {
+      if (data.success && Array.isArray(data.configs)) {
         setMailConfigs(data.configs);
+      } else {
+        setMailConfigs([]);
       }
     } catch (err) {
       console.error('Failed to load mail configs:', err);
+      setMailConfigs([]);
     }
   };
 
   // Fetch Emails
   const loadEmails = async (sourceEmailFilter?: string) => {
     try {
+      setTickets([]);
+      setSelectedEmail(null);
       const activeSource = sourceEmailFilter !== undefined ? sourceEmailFilter : selectedSourceEmail;
       let url = `/api/emails?tenant_id=${currentUser?.tenant_id || ''}`;
       if (activeSource) {
@@ -761,7 +789,7 @@ export default function App() {
       }
       const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.emails) {
+      if (data.success && Array.isArray(data.emails)) {
         // Map raw database emails to frontend schema (e.g. fromName, fromAddress)
         const mapped: Email[] = data.emails.map((email: any) => {
           let fromName = '';
@@ -795,6 +823,9 @@ export default function App() {
         } else {
           setSelectedEmail(null);
         }
+      } else {
+        setTickets([]);
+        setSelectedEmail(null);
       }
       await loadFolders();
     } catch (err) {
@@ -805,9 +836,14 @@ export default function App() {
   // Load dynamic folder list
   const loadFolders = async () => {
     try {
-      const res = await fetch('/api/folders');
+      const tenantId = currentUser?.tenant_id || currentUser?.tenantId;
+      let url = '/api/folders';
+      if (tenantId) {
+        url += `?tenant_id=${tenantId}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.folders) {
+      if (data.success && Array.isArray(data.folders)) {
         setDynamicFolders(data.folders);
         setExpandedParents(prev => {
           const next = { ...prev };
@@ -819,9 +855,12 @@ export default function App() {
           });
           return next;
         });
+      } else {
+        setDynamicFolders([]);
       }
     } catch (err) {
       console.error('Failed to load folders:', err);
+      setDynamicFolders([]);
     }
   };
 
@@ -914,6 +953,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    resetState();
     if (currentUser) {
       loadMailConfigs();
       loadEmails(selectedSourceEmail);
@@ -1399,48 +1439,70 @@ export default function App() {
     return clean.slice(0, 2).toUpperCase();
   };
 
+  const handleLogout = () => {
+    // 1. Sapu bersih semua storage (Nuclear Option)
+    localStorage.clear();
+    sessionStorage.clear();
+
+    // 2. Set state ke null
+    if (typeof setCurrentUser === 'function') setCurrentUser(null);
+
+    // 3. Paksa hard reload browser ke halaman root agar RAM dibuang & auth state terinisialisasi bersih
+    window.location.replace('/');
+  };
+
   const handleBypassLogin = (role: 'SUPER_ADMIN' | 'TENANT_ADMIN') => {
-    if (role === 'SUPER_ADMIN') {
-      setCurrentUser({
-        id: 1,
-        tenant_id: null,
-        email: 'fachrul',
-        role: 'SUPER_ADMIN',
-        tenant_name: 'SUPER ADMIN',
-        permissions: {
-          dashboard: true,
-          cit_dispatch: true,
-          daily_summary: true,
-          mail_wa_setup: true,
-          dynamic_filters: true
-        }
-      });
-      setCurrentMenu('inbox');
-    } else {
-      setCurrentUser({
-        id: 2,
-        tenant_id: 1,
-        email: 'cos',
-        role: 'TENANT_ADMIN',
-        tenant_name: 'COS',
-        permissions: {
-          dashboard: true,
-          cit_dispatch: true,
-          daily_summary: true,
-          mail_wa_setup: true,
-          dynamic_filters: true
-        }
-      });
-      setCurrentMenu('inbox');
-    }
+    // 1. Bersihkan sisa data lama sebelum pasang yang baru
+    localStorage.clear();
+    sessionStorage.clear();
+
+    const userObj: UserSession = role === 'SUPER_ADMIN' ? {
+      id: 1,
+      tenant_id: null,
+      email: 'fachrul',
+      role: 'SUPER_ADMIN',
+      tenant_name: 'SUPER ADMIN',
+      permissions: {
+        dashboard: true,
+        cit_dispatch: true,
+        daily_summary: true,
+        mail_wa_setup: true,
+        dynamic_filters: true
+      }
+    } : {
+      id: 2,
+      tenant_id: 1,
+      email: 'cos',
+      role: 'TENANT_ADMIN',
+      tenant_name: 'COS',
+      permissions: {
+        dashboard: true,
+        cit_dispatch: true,
+        daily_summary: true,
+        mail_wa_setup: true,
+        dynamic_filters: true
+      }
+    };
+
+    // 2. Pasang data baru
+    localStorage.setItem('user', JSON.stringify(userObj));
+    setCurrentUser(userObj);
+    setCurrentMenu('inbox');
+
+    // 3. HARD RELOAD ke root untuk inisiasi state yang bersih
+    window.location.replace('/');
   };
 
   if (!currentUser) {
     return (
       <LoginPage 
         onLoginSuccess={(user) => {
+          localStorage.clear();
+          sessionStorage.clear();
+          localStorage.setItem('user', JSON.stringify(user));
           setCurrentUser(user);
           setCurrentMenu('inbox');
+          window.location.replace('/');
         }} 
         onBypassLogin={handleBypassLogin} 
       />
@@ -1615,7 +1677,7 @@ export default function App() {
               </div>
             </div>
             <button 
-              onClick={() => setCurrentUser(null)}
+              onClick={handleLogout}
               title="Keluar (Logout)"
               className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition-colors cursor-pointer shrink-0"
             >
@@ -1640,7 +1702,7 @@ export default function App() {
                 {currentMenu === 'pending-input' && 'Pending Order Input'}
                 {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
                 {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
-                {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
+                {(currentMenu as string) === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
                 {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
                 {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
                 {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
@@ -1913,8 +1975,8 @@ export default function App() {
                   <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
                 </div>
 
-                {/* AI Worker Processing Progress Bar */}
-                {aiProgress && aiProgress.unanalyzed > 0 && (
+                {/* AI Worker Processing Progress Bar - HANYA tampil jika ada data tiket (tickets.length > 0) */}
+                {tickets.length > 0 && aiProgress && aiProgress.unanalyzed > 0 && (
                   <div className="p-3 bg-gradient-to-r from-indigo-900/90 via-purple-900/90 to-slate-900/90 border border-indigo-500/40 rounded-xl shadow-sm text-white space-y-1.5 transition-all duration-300">
                     <div className="flex items-center justify-between text-xs font-semibold">
                       <div className="flex items-center gap-1.5 text-indigo-200">
@@ -1938,7 +2000,7 @@ export default function App() {
                   </div>
                 )}
 
-                {pendingCount > 0 && (
+                {tickets.length > 0 && pendingCount > 0 && (
                   <button
                     onClick={() => setIsQueueModalOpen(true)}
                     className="flex items-center justify-between px-3 py-2 bg-amber-50 border border-amber-200 hover:border-amber-300 text-amber-800 rounded-lg text-[11px] font-medium hover:bg-amber-100/80 transition-all cursor-pointer w-full shadow-xs"
@@ -1958,11 +2020,13 @@ export default function App() {
               </div>
 
               {filteredEmails.length === 0 ? (
-                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400">
-                  <Mail className="h-8 w-8 text-slate-200 mb-2" />
-                  <p className="text-xs font-semibold">No tickets found</p>
-                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[200px]">
-                    No emails match the selected folder or search query.
+                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400 my-auto">
+                  <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl mb-3">
+                    <Mail className="h-8 w-8 text-slate-300" />
+                  </div>
+                  <p className="text-xs font-bold text-slate-700">Inbox Kosong</p>
+                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[220px]">
+                    Belum ada tiket email yang diterima untuk tenant ini.
                   </p>
                 </div>
               ) : (
@@ -2516,11 +2580,15 @@ export default function App() {
 
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1">
-                  <Mail className="h-12 w-12 text-slate-200 mb-3" />
-                  <p className="font-bold text-sm">No ticket selected</p>
-                  <p className="text-xs text-slate-400 mt-1 max-w-[280px] leading-normal">
-                    Select a ticket from the list to view its contents, extracted variables, and CIT API execution state.
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1 my-auto">
+                  <div className="p-4 bg-slate-50 border border-slate-100 rounded-3xl mb-3">
+                    <Inbox className="h-10 w-10 text-slate-300" />
+                  </div>
+                  <p className="font-bold text-sm text-slate-700">Inbox Kosong / Belum Ada Tiket</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[300px] leading-relaxed">
+                    {tickets.length === 0
+                      ? "Belum ada email pada database tenant ini. Silakan lakukan 'Sync Mail' atau konfigurasikan akun POP3 di menu Settings."
+                      : "Pilih tiket dari daftar di sebelah kiri untuk melihat isi pesan, variabel hasil ekstraksi AI, dan status otomasi."}
                   </p>
                 </div>
               )}
@@ -2828,6 +2896,18 @@ export default function App() {
                     <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
                     <span>WhatsApp & Reports</span>
                   </button>
+
+                  <button
+                    onClick={() => setSettingsTab('api-docs')}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      settingsTab === 'api-docs' 
+                        ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Code2 className="h-4 w-4 shrink-0 text-indigo-600" />
+                    <span>Developer API / Docs</span>
+                  </button>
                 </div>
               </div>
 
@@ -2900,6 +2980,24 @@ export default function App() {
                 
                 {settingsTab === 'redis-monitor' && (
                   <RedisQueueDashboard currentUser={currentUser} />
+                )}
+
+                {/* TAB DEVELOPER API DOCS (SWAGGER) */}
+                {settingsTab === 'api-docs' && (
+                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-lg font-bold text-slate-800">Developer API Documentation</h2>
+                        <p className="text-sm text-slate-500">Spesifikasi endpoint resmi untuk integrasi sistem luar (DCT Web & Telegram).</p>
+                      </div>
+                      <span className="px-3 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-bold rounded-full">
+                        OpenAPI v3.0
+                      </span>
+                    </div>
+                    <div className="p-4 swagger-container max-w-full overflow-x-auto">
+                      <SwaggerUI docExpansion="list" spec={apiDocsSchema}/>
+                    </div>
+                  </div>
                 )}
 
 
@@ -3750,7 +3848,7 @@ export default function App() {
         )}
 
         {/* SUPER ADMIN DASHBOARD ANALYTICS SECTION */}
-        {(currentMenu === 'superadmin-analytics' || currentMenu === 'superadmin') && (
+        {(currentMenu === 'superadmin-analytics' || (currentMenu as string) === 'superadmin') && (
           currentUser?.role === 'SUPER_ADMIN' ? (
             <div className="flex-1 overflow-y-auto">
               <SuperAdminAnalyticsView />
@@ -3820,6 +3918,7 @@ export default function App() {
               currentTenantId={currentUser?.tenant_id || 1} 
               tenantName={currentUser?.tenant_name || 'COS'} 
               onAddToast={addToast}
+              onOpenWaQr={() => setIsWaQrModalOpen(true)}
             />
           </div>
         )}

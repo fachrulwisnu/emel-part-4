@@ -2,7 +2,9 @@ import { dbGetAllEmails } from '../src/database-service';
 
 export default async function handler(req: any, res: any) {
   try {
-    const emails = await dbGetAllEmails();
+    const reqUser = (req as any).user;
+    const tenantId = req.query?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id;
+    const emails = await dbGetAllEmails(tenantId ? Number(tenantId) : undefined);
     
     // Aggregate folder_parent and folder_child counts in memory
     const countsMap = new Map<string, number>();

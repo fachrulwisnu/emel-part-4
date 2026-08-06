@@ -55,7 +55,11 @@ export class Pop3Client {
                 resolve(line.trim());
               } else {
                 this.close();
-                reject(new Error(`Server greeting error: ${line.trim()}`));
+                let cleanLine = line.trim();
+                if (cleanLine.includes('550') || cleanLine.toLowerCase().includes('authorization failed')) {
+                  cleanLine += ' - Server POP3 menolak otorisasi koneksi (Silakan periksa konfigurasi Port SSL 995 vs 110, IP Whitelist, atau Kredensial akun)';
+                }
+                reject(new Error(`Server greeting error: ${cleanLine}`));
               }
             }
           } else {

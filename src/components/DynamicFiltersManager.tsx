@@ -40,24 +40,29 @@ export const DynamicFiltersManager: React.FC<DynamicFiltersManagerProps> = ({ cu
 
   const fetchFilters = async () => {
     setLoading(true);
+    setFilters([]);
     try {
       const res = await fetch('/api/dynamic-filters');
       const data = await res.json();
       if (data.success) {
         setFilters(data.filters || []);
+      } else {
+        setFilters([]);
       }
     } catch (err: any) {
       console.error('Error fetching dynamic filters:', err);
+      setFilters([]);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    setFilters([]);
     if (isSuperAdmin) {
       fetchFilters();
     }
-  }, [isSuperAdmin]);
+  }, [isSuperAdmin, currentUser?.tenant_id]);
 
   const handleOpenModal = (rule?: DynamicFilterRule) => {
     if (rule) {

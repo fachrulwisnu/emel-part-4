@@ -3511,7 +3511,7 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
     for (const email of emails) {
       let matchedFilter: any = null;
       for (const filter of filters) {
-        if (filter.tenant_id && filter.tenant_id !== 1 && email.tenant_id && filter.tenant_id !== email.tenant_id) {
+        if (filter.tenant_id && email.tenant_id && filter.tenant_id !== email.tenant_id) {
           continue;
         }
         const senderText = email.sender || (email as any).sender_email || '';
