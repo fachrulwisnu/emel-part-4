@@ -1,13 +1,11 @@
 import { getDatabaseConfig, DatabaseConfig } from '../utils/configManager';
-import { getMongoDb, closeMongoConnection } from '../lib/mongodb';
 import { getPostgresPool, closePostgresPool } from '../lib/postgres';
-import { Db } from 'mongodb';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 
 export interface DbServiceInstance {
-  type: 'mongodb' | 'postgres';
-  mongoDb: Db | null;
+  type: 'postgres' | 'mongodb';
+  mongoDb: any | null;
   pgPool: pg.Pool | null;
   config: DatabaseConfig;
 }
@@ -139,53 +137,32 @@ export interface DailySummary {
   history?: DailySummary[];
 }
 
-let lastActiveDriver: 'mongodb' | 'postgres' | null = null;
+let lastActiveDriver: 'postgres' | null = null;
 
 /**
- * Returns the currently active database client (MongoDB or PostgreSQL) based on config.
+ * Mengambil instance layanan database yang sedang aktif (PostgreSQL).
+ *
+ * [MIGRATION NOTE]: Sebelumnya fungsi ini mendukung seleksi dinamis antara MongoDB dan PostgreSQL.
+ * Sekarang aplikasi telah tersentralisasi penuh pada PostgreSQL untuk efisiensi kueri relasional dan performa multi-tenant.
+ *
+ * @returns {Promise<DbServiceInstance>} Instance layanan DB yang menyertakan pgPool.
  */
 export async function getDbService(): Promise<DbServiceInstance> {
   const config = await getDatabaseConfig();
-  const driver = config.active_driver;
+  lastActiveDriver = 'postgres';
 
-  // Handle switching if driver changed
-  if (lastActiveDriver && lastActiveDriver !== driver) {
-    console.log(`[dbManager] Active database changed from ${lastActiveDriver} to ${driver}. Closing old connection...`);
-    if (lastActiveDriver === 'mongodb') {
-      await closeMongoConnection().catch(() => {});
-    } else if (lastActiveDriver === 'postgres') {
-      await closePostgresPool().catch(() => {});
-    }
-  }
-  lastActiveDriver = driver;
-
-  if (driver === 'postgres') {
-    try {
-      const pool = await getPostgresPool(config.connections.postgres);
-      return {
-        type: 'postgres',
-        mongoDb: null,
-        pgPool: pool,
-        config
-      };
-    } catch (err: any) {
-      console.warn(`[dbManager] PostgreSQL connection unavailable: ${err.message || String(err)}. Falling back to MongoDB/SQLite storage engine.`);
-    }
-  }
-
-  // Fallback: MongoDB / Local Storage
   try {
-    const db = await getMongoDb(config.connections.mongodb);
+    const pool = await getPostgresPool(config.connections.postgres);
     return {
-      type: 'mongodb',
-      mongoDb: db,
-      pgPool: null,
+      type: 'postgres',
+      mongoDb: null,
+      pgPool: pool,
       config
     };
   } catch (err: any) {
-    console.warn(`[dbManager] MongoDB connection notice: ${err.message || String(err)}. Using fallback local storage engine.`);
+    console.warn(`[dbManager] PostgreSQL pool initialization: ${err.message || String(err)}`);
     return {
-      type: 'mongodb',
+      type: 'postgres',
       mongoDb: null,
       pgPool: null,
       config
@@ -193,12 +170,37 @@ export async function getDbService(): Promise<DbServiceInstance> {
   }
 }
 
+/**
+ * Mengeksekusi query SQL mentah pada PostgreSQL Pool aktif.
+ *
+ * [MIGRATION NOTE]: Menjadi metode utama eksekusi database pasca penghapusan NoSQL / MongoDB.
+ *
+ * @param {string} text - Query SQL berparameter ($1, $2, dst).
+ * @param {any[]} [params=[]] - Array parameter untuk query.
+ * @returns {Promise<pg.QueryResult<any>>} Hasil Query SQL dari pgPool.
+ */
+export async function dbQuery(text: string, params: any[] = []): Promise<pg.QueryResult<any>> {
+  const dbService = await getDbService();
+  if (!dbService.pgPool) {
+    throw new Error('PostgreSQL Pool is not initialized or unavailable');
+  }
+  // [POSTGRESQL QUERY]: Memanggil query berskala pool ke database PostgreSQL
+  return await dbService.pgPool.query(text, params);
+}
+
 // =========================================================================
 // UNIFIED CRUD HELPERS
 // =========================================================================
 
 /**
- * Save/Upsert an email record
+ * Menyimpan atau memperbarui (Upsert) rekaman email ke dalam tabel `emails` PostgreSQL.
+ *
+ * [MIGRATION NOTE]: Logika ini sebelumnya melakukan operasi updateOne $set upsert pada Mongoose/MongoDB.
+ * Sekarang disatukan menggunakan klausa `INSERT INTO ... ON CONFLICT (message_id) DO UPDATE` pada PostgreSQL.
+ *
+ * @param {string} messageId - Message ID unik milik email.
+ * @param {any} payload - Objek payload detail email.
+ * @returns {Promise<void>}
  */
 export async function dbSaveEmail(messageId: string, payload: any): Promise<void> {
   const dbService = await getDbService();
@@ -1746,7 +1748,7 @@ export async function dbGetPendingEmails(tenantId?: number): Promise<any[]> {
   const dbService = await getDbService();
   if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
-      let query = `SELECT message_id, tenant_id, subject, COALESCE(body_text, html_body, '') as body, sender, date, created_at FROM emails WHERE (ai_status = 'PENDING' OR is_summarized = false OR summary IS NULL OR summary = '' OR summary = 'Belum dianalisis (Menunggu AI...)')`;
+      let query = `SELECT message_id, tenant_id, subject, COALESCE(body_text, html_body, '') as body, sender, date, created_at FROM emails WHERE (ai_status = 'PENDING' OR is_summarized = false OR summary IS NULL OR summary = '' OR summary = 'Belum dianalisis (Menunggu AI...)') AND (ai_status IS NULL OR ai_status != 'SKIPPED_NO_BODY')`;
       const params: any[] = [];
       if (tenantId) {
         query += ` AND tenant_id = $1`;

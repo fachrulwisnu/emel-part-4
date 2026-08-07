@@ -117,20 +117,12 @@ export function saveAppSettings(settings: Partial<AppSettings>): AppSettings {
 let supabaseInstance: SupabaseClient | null = null;
 
 export function getSupabaseClient(): SupabaseClient | null {
-  // If active driver is mongodb, we must completely ignore/not call Supabase.
-  const activeDriver = getDbDriver();
-  if (activeDriver === 'mongodb') {
-    return null;
-  }
-
   const settings = getAppSettings();
   const url = settings.supabaseUrl;
   const key = settings.supabaseKey;
 
   if (url && key) {
     if (!supabaseInstance) {
-      // COMMENTED OUT as per high-priority global disable instructions:
-      // supabaseInstance = createClient(url, key);
       console.log('[Supabase] Inisialisasi Supabase diblokir secara global untuk mencegah error statement timeout.');
     }
     return supabaseInstance;
@@ -140,7 +132,6 @@ export function getSupabaseClient(): SupabaseClient | null {
 
 // Helper to check if Supabase is connected
 export function isSupabaseActive(): boolean {
-  if (getDbDriver() === 'mongodb') return false;
   return getSupabaseClient() !== null;
 }
 
@@ -1551,6 +1542,16 @@ export async function processEmailQueue(): Promise<void> {
 /**
  * Retrieve a single email by its message_id from SQLite with a fallback to Supabase
  */
+/**
+ * Mengambil detail email berdasarkan `message_id` atau ID unik dari database.
+ *
+ * [MIGRATION NOTE]: Sebelumnya menggunakan query Mongoose `findOne({ message_id })`.
+ * Sekarang tersentralisasi menggunakan PostgreSQL / SQLite terindeks untuk performa kueri multi-tenant.
+ *
+ * @param {string} messageId - ID pesan unik email.
+ * @param {number} [tenantId] - ID Tenant pemilik data.
+ * @returns {Promise<Email | null>} Objek email terstruktur atau null jika tidak ditemukan.
+ */
 export async function dbGetEmailByMessageId(messageId: string, tenantId?: number): Promise<Email | null> {
   console.log(`Mencari data dengan message_id atau id: ${messageId}`);
   
@@ -2876,6 +2877,26 @@ export async function dbGetUnsummarizedEmails(): Promise<any[]> {
  * Fetches all emails with ai_status = 'PENDING' from Supabase and SQLite.
  */
 export async function dbGetAllPendingEmails(): Promise<Email[]> {
+  try {
+    const { getDbService } = await import('./services/dbManager');
+    const dbService = await getDbService();
+    if (dbService.type === 'postgres' && dbService.pgPool) {
+      const res = await dbService.pgPool.query(`
+        SELECT * FROM emails 
+        WHERE (ai_status = 'PENDING' OR is_summarized = false OR summary IS NULL OR summary = '' OR summary = 'Belum dianalisis (Menunggu AI...)')
+          AND (ai_status IS NULL OR ai_status != 'SKIPPED_NO_BODY')
+        ORDER BY date DESC
+      `);
+      return res.rows.map((row: any) => ({
+        ...row,
+        tags: typeof row.tags === 'string' ? JSON.parse(row.tags || '[]') : (row.tags || []),
+        attachments: typeof row.attachments === 'string' ? JSON.parse(row.attachments || '[]') : (row.attachments || [])
+      }));
+    }
+  } catch (pgErr) {
+    console.error('[dbGetAllPendingEmails] PostgreSQL query error:', pgErr);
+  }
+
   const { getDbDriver } = await import('./config/dbSwitcher');
   const driver = getDbDriver();
   if (driver === 'mongodb') {
@@ -3547,11 +3568,6 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
               "UPDATE public.email_analysis SET folder = $1, sub_folder = $2 WHERE message_id = $3",
               [parent, child, email.message_id || String(email.id)]
             ).catch(() => {});
-          } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-            await dbService.mongoDb.collection('emails').updateMany(
-              { $or: [{ message_id: email.message_id }, { id: email.id }] },
-              { $set: { folder_parent: parent, folder_child: child, suggested_folder_parent: parent, suggested_folder_child: child, suggested_bank: parent } }
-            );
           } else {
             const db = getSqliteDb();
             db.run(

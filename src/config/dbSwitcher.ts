@@ -1,30 +1,51 @@
-import { getDatabaseConfig, saveDatabaseConfig, DatabaseConfig } from '../utils/configManager';
+/**
+ * =========================================================================
+ * DATABASE SWITCHER MODULE
+ * =========================================================================
+ *
+ * [MIGRATION NOTE]: Modul ini dulunya memfasilitasi switching antara MongoDB dan PostgreSQL.
+ * Sekarang telah terkunci secara permanen pada 'postgres' untuk menegaskan migrasi penuh ke PostgreSQL.
+ */
 
-export type DbDriver = 'mongodb' | 'postgres';
+import { getDatabaseConfig, saveDatabaseConfig } from '../utils/configManager';
 
-let cachedDriver: DbDriver = 'mongodb';
+export type DbDriver = 'postgres' | 'mongodb';
+
+let cachedDriver: DbDriver = 'postgres';
 
 /**
- * Returns active driver synchronously or asynchronously
+ * Mengembalikan driver database aktif secara asinkron.
+ *
+ * [MIGRATION NOTE]: Menjamin ketersediaan PostgreSQL sebagai satu-satunya RDBMS terpusat.
+ *
+ * @returns {Promise<DbDriver>} Mengembalikan string 'postgres'.
  */
 export async function getDbDriverAsync(): Promise<DbDriver> {
   const config = await getDatabaseConfig();
-  cachedDriver = config.active_driver;
-  return config.active_driver;
+  cachedDriver = 'postgres';
+  return 'postgres';
 }
 
 /**
- * Legacy sync getter returning cached active driver
+ * Mengembalikan driver database aktif secara sinkron.
+ *
+ * @returns {DbDriver} Mengembalikan string 'postgres'.
  */
 export function getDbDriver(): DbDriver {
-  return cachedDriver;
+  return 'postgres';
 }
 
 /**
- * Switches the active database driver in the JSON config file
+ * Mengatur driver database aktif ke PostgreSQL.
+ *
+ * [MIGRATION NOTE]: Menonaktifkan pengalihan ke MongoDB dan memastikannya terkunci pada PostgreSQL.
+ *
+ * @param {DbDriver} [driver='postgres'] - Nama driver database.
+ * @returns {Promise<void>}
  */
-export async function switchDatabase(driver: DbDriver): Promise<void> {
-  console.log(`[dbSwitcher] Switching database driver to: ${driver}`);
-  cachedDriver = driver;
-  await saveDatabaseConfig({ active_driver: driver });
+export async function switchDatabase(driver: DbDriver = 'postgres'): Promise<void> {
+  console.log(`[dbSwitcher] Database driver set to: postgres`);
+  cachedDriver = 'postgres';
+  await saveDatabaseConfig({ active_driver: 'postgres' });
 }
+

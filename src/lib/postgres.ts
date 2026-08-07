@@ -6,7 +6,15 @@ let pgPool: pg.Pool | null = null;
 let currentConnectionString: string | null = null;
 
 /**
- * Initializes and auto-creates tables if not present
+ * Inisialisasi skema dan pembuatan otomatis tabel-tabel PostgreSQL jika belum tersedia.
+ *
+ * [MIGRATION NOTE]: Sebelumnya sistem menggunakan MongoDB dengan skema Mongoose terpisah.
+ * Seluruh entitas (tenants, users, emails, mail_configs, system_logs, dll.) kini dimigrasikan
+ * secara penuh ke skema terpusat PostgreSQL dengan penanganan relasi multi-tenant (ON DELETE CASCADE)
+ * dan kolom JSONB untuk performa optimal.
+ *
+ * @param {pg.Pool} pool - Connection Pool PostgreSQL aktif.
+ * @returns {Promise<void>}
  */
 async function initPostgresTables(pool: pg.Pool): Promise<void> {
   const client = await pool.connect();
@@ -193,6 +201,19 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS public.system_logs (
+          id SERIAL PRIMARY KEY,
+          tenant_id INT NOT NULL,
+          task_type VARCHAR(100) NOT NULL,
+          status VARCHAR(50) NOT NULL,
+          message TEXT NOT NULL,
+          metadata JSONB DEFAULT '{}'::jsonb,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_system_logs_tenant_id ON public.system_logs(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_system_logs_created_at ON public.system_logs(created_at DESC);
+
     `);
 
     // Seed default tenant and users ONLY if tenants table is empty
@@ -224,11 +245,22 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
 }
 
 /**
- * Gets or initializes the PostgreSQL Pool connection for the given connection string
+ * Mengambil atau menginisialisasi PostgreSQL Pool connection berdasarkan connection string.
+ *
+ * [MIGRATION NOTE]: Menggantikan fungsi inisialisasi `mongoose.connect()` dari arsitektur NoSQL sebelumnya.
+ * Menggunakan pg.Pool terkelola dengan batas timeout dan otomatisasi verifikasi tabel.
+ *
+ * @param {string} connectionString - URI PostgreSQL untuk koneksi database.
+ * @returns {Promise<pg.Pool>} Mengembalikan instance pg.Pool yang siap dipakai.
  */
 export async function getPostgresPool(connectionString: string): Promise<pg.Pool> {
+  const effectiveConnString = (connectionString && connectionString.trim()) || (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) || '';
+  if (!effectiveConnString) {
+    throw new Error('PostgreSQL connection string is empty');
+  }
+
   // If connection string changed or pool doesn't exist, recreate pool
-  if (!pgPool || currentConnectionString !== connectionString) {
+  if (!pgPool || currentConnectionString !== effectiveConnString) {
     if (pgPool) {
       console.log('[PostgreSQL] Closing previous connection pool...');
       await pgPool.end().catch(err => console.error('[PostgreSQL] Error ending pool:', err));
@@ -236,12 +268,19 @@ export async function getPostgresPool(connectionString: string): Promise<pg.Pool
 
     console.log('[PostgreSQL] Connecting to PostgreSQL database...');
     pgPool = new Pool({
-      connectionString,
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 30000
+      connectionString: effectiveConnString,
+      max: 50,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+      maxUses: 7500
     });
 
-    currentConnectionString = connectionString;
+    // Handle unexpected background connection errors to prevent process crash
+    pgPool.on('error', (err) => {
+      console.warn('[PostgreSQL Pool Error]: Connection error on idle client:', err.message || err);
+    });
+
+    currentConnectionString = effectiveConnString;
     await initPostgresTables(pgPool);
     console.log('[PostgreSQL] Connected and tables verified successfully.');
   }
@@ -250,7 +289,9 @@ export async function getPostgresPool(connectionString: string): Promise<pg.Pool
 }
 
 /**
- * Safely closes the active PostgreSQL pool
+ * Menutup secara aman (Graceful Shutdown) instance PostgreSQL Connection Pool aktif.
+ *
+ * @returns {Promise<void>}
  */
 export async function closePostgresPool(): Promise<void> {
   if (pgPool) {

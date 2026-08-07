@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Mail, 
   Folder, 
@@ -321,6 +321,16 @@ export default function App() {
   const [selectedFolder, setSelectedFolder] = useState<string>('all');
   const [dynamicFolders, setDynamicFolders] = useState<{ folder_parent: string; folder_child: string; count: number }[]>([]);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
+
+  const groupedFolders = useMemo(() => {
+    const grouped: Record<string, { child: string; count: number }[]> = {};
+    dynamicFolders.forEach(item => {
+      const parent = item.folder_parent || 'Lainnya';
+      if (!grouped[parent]) grouped[parent] = [];
+      grouped[parent].push({ child: item.folder_child || 'Uncategorized', count: item.count });
+    });
+    return grouped;
+  }, [dynamicFolders]);
   
   // AI Progress Status
   const [aiProgress, setAiProgress] = useState<{ total: number; unanalyzed: number; completed: number; percentage: number; is_analyzing: boolean } | null>(null);
@@ -520,7 +530,7 @@ export default function App() {
       return;
     }
     setIsReSummarizing(true);
-    addToast('Re-Summary Dimulai', 'Me-reset data AI dan memasukkan email ke antrean Redis Queue...');
+    addToast('Re-Summary Dimulai', 'Me-reset data AI dan memasukkan email ke antrean RabbitMQ Queue...');
     try {
       const tenantId = currentUser?.tenantId || currentUser?.tenant_id || 1;
       const accountEmail = currentUser?.email || selectedSourceEmail || '';
@@ -535,7 +545,7 @@ export default function App() {
       });
       const data = await response.json();
       if (data.success) {
-        addToast('Re-Summary Berhasil', data.message || `${data.enqueued_count || 0} email berhasil masuk antrean Redis.`);
+        addToast('Re-Summary Berhasil', data.message || `${data.enqueued_count || 0} email berhasil masuk antrean RabbitMQ.`);
         fetchPendingQueue();
         loadEmails();
       } else {
@@ -777,11 +787,9 @@ export default function App() {
     }
   };
 
-  // Fetch Emails
+  // Fetch Emails (Silent Background Refetch to prevent UI flicker)
   const loadEmails = async (sourceEmailFilter?: string) => {
     try {
-      setTickets([]);
-      setSelectedEmail(null);
       const activeSource = sourceEmailFilter !== undefined ? sourceEmailFilter : selectedSourceEmail;
       let url = `/api/emails?tenant_id=${currentUser?.tenant_id || ''}`;
       if (activeSource) {
@@ -948,7 +956,7 @@ export default function App() {
     loadAiProgress();
     const interval = setInterval(() => {
       loadAiProgress();
-    }, 5000);
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1227,7 +1235,7 @@ export default function App() {
     fetchPendingQueue();
     const interval = setInterval(() => {
       fetchPendingQueue();
-    }, isQueueModalOpen ? 4000 : 12000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [isQueueModalOpen]);
 
@@ -1884,18 +1892,10 @@ export default function App() {
                   <div className="border-b border-slate-100 my-2"></div>
 
                   {/* Grouped Dynamic folder tree */}
-                  {(() => {
-                    const grouped: Record<string, { child: string; count: number }[]> = {};
-                    dynamicFolders.forEach(item => {
-                      const parent = item.folder_parent || 'Lainnya';
-                      if (!grouped[parent]) grouped[parent] = [];
-                      grouped[parent].push({ child: item.folder_child || 'Uncategorized', count: item.count });
-                    });
-
-                    return Object.keys(grouped).map(parent => {
-                      const children = grouped[parent];
-                      const totalCount = children.reduce((sum, c) => sum + c.count, 0);
-                      const isExpanded = expandedParents[parent] !== false;
+                  {Object.keys(groupedFolders).map(parent => {
+                    const children = groupedFolders[parent];
+                    const totalCount = children.reduce((sum, c) => sum + c.count, 0);
+                    const isExpanded = expandedParents[parent] !== false;
 
                       return (
                         <div key={parent} className="space-y-0.5">
@@ -1959,8 +1959,7 @@ export default function App() {
                           )}
                         </div>
                       );
-                    });
-                  })()}
+                    })}
                 </nav>
               </div>
             </aside>
@@ -2967,7 +2966,7 @@ export default function App() {
                       }`}
                     >
                       <Cpu className="h-4 w-4 shrink-0 text-indigo-500" />
-                      <span>AI Queue & Redis Monitor</span>
+                      <span>RabbitMQ & System Logs</span>
                     </button>
                   </div>
                 </div>

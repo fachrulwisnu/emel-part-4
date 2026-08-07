@@ -30,7 +30,7 @@ import {
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant, DailySummary } from './services/dbManager';
 import { generateDailySummary } from './services/aiProcessingService';
-import { emailQueue, pushTenantLog } from './config/queue';
+import { publishTask, pushTenantLog } from './config/rabbitmq';
 import { detectClientFromEmail } from './services/clientDetector';
 
 // Import broadcastEvent dynamically from server to prevent circular dependencies
@@ -448,18 +448,14 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
         
         for (const qJob of queueJobs) {
             try {
-                await emailQueue.add('process-email', {
+                await publishTask(qJob.tenantId, 'AI_PARSE', {
                   messageId: qJob.uid,
                   tenantId: qJob.tenantId,
                   email_id: qJob.uid,
                   tenant_id: qJob.tenantId
-                }, {
-                  delay: 1500,
-                  attempts: 5,
-                  backoff: { type: 'fixed', delay: 2000 }
                 });
-                console.log(`[Queue: Added] Email messageId ${qJob.uid} masuk antrean dengan delay 1.5s (Tenant ID: ${qJob.tenantId}).`);
-            } catch (queueErr) {
+                console.log(`[Queue: Added] Email messageId ${qJob.uid} published to RabbitMQ queue (Tenant ID: ${qJob.tenantId}).`);
+            } catch (queueErr: any) {
                 console.error(`[Queue Error] Failed to enqueue Email ID ${qJob.uid}:`, queueErr.message || queueErr);
             }
         }

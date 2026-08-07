@@ -135,8 +135,8 @@ async function startServer() {
     try {
       const { saveDatabaseConfig } = await import("./src/utils/configManager.js");
       const { active_driver, connections } = req.body;
-      if (active_driver && active_driver !== 'mongodb' && active_driver !== 'postgres') {
-        return res.status(400).json({ success: false, message: "Invalid active_driver. Must be 'mongodb' or 'postgres'." });
+      if (active_driver && active_driver !== 'postgres') {
+        return res.status(400).json({ success: false, message: "Invalid active_driver. System is consolidated on 'postgres'." });
       }
       const updatedConfig = await saveDatabaseConfig({ active_driver, connections });
       res.json({ success: true, config: updatedConfig });
@@ -788,7 +788,7 @@ async function startServer() {
 
   const handleSingleBulkSummaryGenerate = async (req: any, res: any) => {
     try {
-      const { emailQueue, pushTenantLog } = await import("./src/config/queue");
+      const { publishTask } = await import("./src/config/rabbitmq");
       const { generateDailySummary } = await import("./src/services/aiProcessingService");
       const { getDbService, dbGetDailySummaries, dbGetDailySummaryByDate } = await import("./src/services/dbManager");
       
@@ -859,17 +859,15 @@ async function startServer() {
         });
       }
 
-      // Add task to Redis BullMQ Queue and return immediately
-      await emailQueue.add('DailyBulkSummary', {
+      // Add task to RabbitMQ Queue and return immediately
+      await publishTask(tenantIdNum, 'BULK_SUMMARY', {
         tenantId: tenantIdNum,
         targetDate: target_date
       });
 
-      await pushTenantLog(tenantIdNum, `[DailyBulkSummary] Job added to BullMQ Queue for date ${target_date}.`, 'INFO', 0, 'DailyBulkSummary');
-
       return res.json({
         success: true,
-        message: "Task queued",
+        message: "Task successfully queued to RabbitMQ",
         queued: true,
         tenantId: tenantIdNum,
         targetDate: target_date
@@ -882,20 +880,19 @@ async function startServer() {
   app.post("/api/daily-summaries/trigger", handleBulkSummaryTrigger);
   app.post("/api/bulk-summary/generate", handleSingleBulkSummaryGenerate);
 
-  // Endpoint untuk POP3 Background Sync via Redis Queue
+  // Endpoint untuk POP3 Background Sync via RabbitMQ Queue
   app.post(["/api/emails/sync", "/api/fetch-emails"], async (req, res) => {
     try {
-      const { emailQueue, pushTenantLog } = await import("./src/config/queue");
+      const { publishTask } = await import("./src/config/rabbitmq");
       const reqUser = (req as any).user;
       const tenantId = req.body?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id || 1;
       const tenantIdNum = Number(tenantId);
 
-      await emailQueue.add('SyncPOP3', { tenantId: tenantIdNum });
-      await pushTenantLog(tenantIdNum, `[SyncPOP3] POP3 email sync job queued in BullMQ for Tenant #${tenantIdNum}.`, 'INFO', 0, 'SyncPOP3');
+      await publishTask(tenantIdNum, 'SYNC_MAIL', { tenantId: tenantIdNum });
 
       res.json({
         success: true,
-        message: "Task queued",
+        message: "Task successfully queued to RabbitMQ",
         queued: true,
         tenantId: tenantIdNum
       });
@@ -905,11 +902,11 @@ async function startServer() {
   });
 
   // ==========================================
-  // SUPERADMIN REDIS TENANT LOG MONITORING API
+  // SUPERADMIN POSTGRES TENANT LOG MONITORING API
   // ==========================================
-  app.get("/api/admin/active-redis-tenants", async (req, res) => {
+  app.get(["/api/admin/active-redis-tenants", "/api/admin/active-tenants"], async (req, res) => {
     try {
-      const { redisConnection } = await import("./src/config/queue");
+      const { getActiveLogTenants } = await import("./src/config/rabbitmq");
       const { dbGetTenants } = await import("./src/services/dbManager");
 
       let registeredTenants: any[] = [];
@@ -932,21 +929,8 @@ async function startServer() {
       if (!tenantMap.has(1)) tenantMap.set(1, "COS - Cabang KUDUS (Tenant 1)");
       if (!tenantMap.has(2)) tenantMap.set(2, "COS - Cabang PALEMBANG (Tenant 2)");
 
-      let keys: string[] = [];
-      try {
-        keys = await redisConnection.keys("system_logs:tenant:*");
-      } catch (e) {
-        console.warn("[Admin API] Redis keys scan warning:", e);
-      }
-
-      const activeTenantIds = new Set<number>();
-      keys.forEach(k => {
-        const parts = k.split("system_logs:tenant:");
-        if (parts[1]) {
-          const id = Number(parts[1]);
-          if (!isNaN(id)) activeTenantIds.add(id);
-        }
-      });
+      const activeTenantIdsArray = await getActiveLogTenants();
+      const activeTenantIds = new Set<number>(activeTenantIdsArray);
 
       activeTenantIds.forEach(id => {
         if (!tenantMap.has(id)) {
@@ -969,24 +953,27 @@ async function startServer() {
     }
   });
 
-  app.get("/api/admin/redis-logs/:tenantId", async (req, res) => {
+  app.get(["/api/admin/redis-logs/:tenantId", "/api/admin/logs/:tenantId"], async (req, res) => {
     try {
       const tenantId = req.params.tenantId;
-      const { redisConnection } = await import("./src/config/queue");
-      const rawLogs = await redisConnection.lrange(`system_logs:tenant:${tenantId}`, 0, 100);
+      const { getSystemLogsForTenant } = await import("./src/config/rabbitmq");
+      const dbLogs = await getSystemLogsForTenant(Number(tenantId), 100);
 
-      const logs = rawLogs.map(str => {
+      const logs = dbLogs.map((row: any) => {
+        let meta: any = {};
         try {
-          return JSON.parse(str);
-        } catch (e) {
-          return {
-            timestamp: new Date().toISOString(),
-            message: str,
-            status: "INFO",
-            progress: 0,
-            jobType: "System"
-          };
-        }
+          meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+        } catch (e) {}
+
+        return {
+          id: row.id,
+          timestamp: row.created_at || new Date().toISOString(),
+          message: row.message,
+          status: row.status || 'INFO',
+          progress: meta.progress || 0,
+          jobType: row.task_type || meta.jobType || 'System',
+          tenantId: row.tenant_id
+        };
       });
 
       res.json({
@@ -1012,11 +999,6 @@ async function startServer() {
         await dbService.pgPool.query(
           "UPDATE public.emails SET processed_tickets = $1, target_tickets = $2, order_status = $3 WHERE message_id = $4 OR id::text = $4",
           [processed_tickets, target_tickets, order_status, message_id]
-        );
-      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-        await dbService.mongoDb.collection('emails').updateOne(
-          { $or: [{ message_id }, { _id: message_id }] },
-          { $set: { processed_tickets, target_tickets, order_status } }
         );
       }
       
@@ -1046,17 +1028,6 @@ async function startServer() {
         q += " ORDER BY date DESC NULLS LAST LIMIT 50";
         const resDb = await dbService.pgPool.query(q, params);
         emails = resDb.rows;
-      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-        const query: any = { 
-          $or: [
-            { order_status: 'NEW' },
-            { order_status: 'PARTIAL' },
-            { is_cit_order: true }
-          ],
-          order_status: { $ne: 'COMPLETED' }
-        };
-        if (tenantId) query.tenant_id = tenantId;
-        emails = await dbService.mongoDb.collection('emails').find(query).sort({ received_at: -1, date: -1 }).limit(50).toArray();
       }
       
       res.json({ success: true, emails });
@@ -1104,15 +1075,6 @@ async function startServer() {
             [tenantId, targetDateStr]
           );
           emailCountNow = Number(cntRes.rows[0]?.cnt || 0);
-        } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-          const startOfDay = new Date(targetDateStr);
-          startOfDay.setHours(0,0,0,0);
-          const endOfDay = new Date(targetDateStr);
-          endOfDay.setHours(23,59,59,999);
-          emailCountNow = await dbService.mongoDb.collection('emails').countDocuments({
-            tenant_id: tenantId,
-            $or: [{ received_at: { $gte: startOfDay, $lte: endOfDay } }, { date: { $gte: startOfDay, $lte: endOfDay } }]
-          });
         }
         const processedCount = Number((matchedSummary as any).total_emails_processed || (matchedSummary.source_email_ids ? matchedSummary.source_email_ids.length : 0));
         new_emails_count = Math.max(0, emailCountNow - processedCount);
@@ -1183,58 +1145,65 @@ async function startServer() {
   });
 
   // ==========================================
-  // SUPER ADMIN REDIS & BULLMQ MONITORING API
+  // SUPER ADMIN RABBITMQ & POSTGRES SYSTEM LOGS MONITORING API
   // ==========================================
   app.get("/api/admin/queue-status", async (req, res) => {
     try {
-      const { emailQueue } = await import("./src/config/queue");
-      
+      const { getDbService } = await import("./src/services/dbManager");
+      const dbService = await getDbService();
+
       let counts = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
       let completedJobs: any[] = [];
       let failedJobs: any[] = [];
 
-      try {
-        const rawCounts = await emailQueue.getJobCounts();
-        counts = {
-          waiting: rawCounts.waiting || 0,
-          active: rawCounts.active || 0,
-          completed: rawCounts.completed || 0,
-          failed: rawCounts.failed || 0,
-          delayed: rawCounts.delayed || 0,
-        };
-      } catch (e: any) {
-        console.warn("[Queue API Warning] Could not fetch job counts:", e.message);
-      }
+      if (dbService.type === 'postgres' && dbService.pgPool) {
+        try {
+          const statsRes = await dbService.pgPool.query(`
+            SELECT status, COUNT(*)::int as count 
+            FROM public.system_logs 
+            GROUP BY status
+          `);
+          
+          statsRes.rows.forEach(r => {
+            if (r.status === 'SUCCESS' || r.status === 'COMPLETED') counts.completed += Number(r.count);
+            else if (r.status === 'FAILED' || r.status === 'ERROR') counts.failed += Number(r.count);
+            else if (r.status === 'PROCESSING') counts.active += Number(r.count);
+            else counts.waiting += Number(r.count);
+          });
 
-      try {
-        const rawCompleted = await emailQueue.getCompleted(0, 50);
-        completedJobs = rawCompleted.map(job => ({
-          id: job.id,
-          name: job.name,
-          data: job.data || {},
-          timestamp: job.timestamp,
-          processedOn: job.processedOn,
-          finishedOn: job.finishedOn,
-          durationMs: (job.finishedOn && job.processedOn) ? (job.finishedOn - job.processedOn) : null,
-          returnvalue: job.returnvalue
-        }));
-      } catch (e: any) {
-        console.warn("[Queue API Warning] Could not fetch completed jobs:", e.message);
-      }
+          const completedRes = await dbService.pgPool.query(`
+            SELECT * FROM public.system_logs 
+            WHERE status IN ('SUCCESS', 'COMPLETED') 
+            ORDER BY created_at DESC LIMIT 50
+          `);
 
-      try {
-        const rawFailed = await emailQueue.getFailed(0, 50);
-        failedJobs = rawFailed.map(job => ({
-          id: job.id,
-          name: job.name,
-          data: job.data || {},
-          timestamp: job.timestamp,
-          failedReason: job.failedReason || 'Unknown LLM Exception',
-          stacktrace: job.stacktrace || [],
-          attemptsMade: job.attemptsMade
-        }));
-      } catch (e: any) {
-        console.warn("[Queue API Warning] Could not fetch failed jobs:", e.message);
+          completedJobs = completedRes.rows.map(row => ({
+            id: row.id,
+            name: row.task_type,
+            data: row.metadata || {},
+            timestamp: row.created_at,
+            finishedOn: row.created_at,
+            message: row.message,
+            tenantId: row.tenant_id
+          }));
+
+          const failedRes = await dbService.pgPool.query(`
+            SELECT * FROM public.system_logs 
+            WHERE status IN ('FAILED', 'ERROR') 
+            ORDER BY created_at DESC LIMIT 50
+          `);
+
+          failedJobs = failedRes.rows.map(row => ({
+            id: row.id,
+            name: row.task_type,
+            data: row.metadata || {},
+            timestamp: row.created_at,
+            failedReason: row.message || 'Worker Processing Exception',
+            tenantId: row.tenant_id
+          }));
+        } catch (e: any) {
+          console.warn("[Queue API Warning] Error fetching queue status from DB:", e.message);
+        }
       }
 
       res.json({
@@ -1251,27 +1220,26 @@ async function startServer() {
   app.post("/api/admin/queue-retry/:jobId", async (req, res) => {
     try {
       const { jobId } = req.params;
-      const { emailQueue } = await import("./src/config/queue");
-      
-      let retried = false;
-      try {
-        const job = await emailQueue.getJob(jobId);
-        if (job) {
-          await job.retry();
-          retried = true;
-        }
-      } catch (e) {
-        console.warn(`[Queue API Warning] Standard job.retry() failed for ${jobId}, re-adding to queue...`);
-      }
+      const { publishTask } = await import("./src/config/rabbitmq");
+      const { dbGetEmailByMessageId } = await import("./src/database-service");
+      const emailId = req.body?.email_id || req.body?.message_id || jobId;
+      const reqUser = (req as any).user;
+      const tenantId = Number(req.body?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id || 1);
 
-      if (!retried) {
-        const emailId = req.body?.email_id || jobId;
-        const reqUser = (req as any).user;
-        const tenantId = req.body?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id;
-        await emailQueue.add('process-email', { email_id: emailId, tenant_id: tenantId }, { attempts: 3 });
-      }
+      const emailDetail = await dbGetEmailByMessageId(String(emailId), tenantId).catch(() => null);
 
-      res.json({ success: true, message: `Job ${jobId} dipancing ulang ke antrean AI.` });
+      await publishTask(tenantId, 'AI_PARSE', {
+        message_id: String(emailId),
+        tenant_id: tenantId,
+        subject: emailDetail?.subject || '',
+        body: emailDetail?.body_text || emailDetail?.html_body || emailDetail?.body || '',
+        body_text: emailDetail?.body_text || emailDetail?.body || '',
+        sender: emailDetail?.sender || '',
+        received_at: emailDetail?.date || new Date().toISOString(),
+        retry: true
+      });
+
+      res.json({ success: true, message: `Job ${jobId} dipancing ulang ke antrean RabbitMQ AI.` });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
@@ -1591,8 +1559,7 @@ async function startServer() {
   // POST Trigger Bulk AI Process / Extract
   const handleBulkExtract = async (req: any, res: any) => {
     try {
-      const { emailQueue, aiQueue } = await import("./src/config/queue");
-      const activeQueue = aiQueue || emailQueue;
+      const { publishTask } = await import("./src/config/rabbitmq");
       const { dbGetPendingEmails } = await import("./src/services/dbManager");
       const { dbGetAllPendingEmails } = await import("./src/database-service");
 
@@ -1622,35 +1589,30 @@ async function startServer() {
         });
       }
 
-      // INSTRUKSI 2: Push ke Redis Queue (Full Payload & Fire and Forget)
+      // INSTRUKSI 2: Push ke RabbitMQ Queue (Full Payload & Fire and Forget)
       let queuedCount = 0;
       for (const email of pendingEmails) {
         const messageId = String(email.message_id || email.id || '').trim();
         if (!messageId) continue;
 
-        await activeQueue.add('process-email', {
+        const tenantNum = email.tenant_id ? Number(email.tenant_id) : (tenantId || 1);
+        await publishTask(tenantNum, 'AI_PARSE', {
           message_id: messageId,
-          tenant_id: email.tenant_id ? Number(email.tenant_id) : tenantId,
+          tenant_id: tenantNum,
           subject: email.subject || '',
-          body: email.body || email.body_text || email.html_body || '', // WAJIB ADA
+          body: email.body || email.body_text || email.html_body || '',
           sender: email.sender || email.sender_email || '',
           received_at: email.received_at || email.date || new Date().toISOString()
-        }, {
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 5000
-          }
         });
         queuedCount++;
       }
 
-      console.log(`[Bulk Extract] Successfully enqueued ${queuedCount} emails to Redis queue.`);
+      console.log(`[Bulk Extract] Successfully enqueued ${queuedCount} emails to RabbitMQ queue.`);
 
       // INSTRUKSI 3: Kembalikan respons cepat ke UI
       return res.status(200).json({
         success: true,
-        message: `${queuedCount} email berhasil dimasukkan ke antrean AI untuk diproses secara massal.`,
+        message: `${queuedCount} email berhasil dimasukkan ke antrean RabbitMQ untuk diproses secara massal.`,
         queued_count: queuedCount
       });
     } catch (err: any) {
@@ -1678,7 +1640,7 @@ async function startServer() {
       const accountEmail = account_email ? String(account_email).trim() : '';
 
       const { getDbService } = await import("./src/services/dbManager");
-      const { aiQueue } = await import("./src/config/queue");
+      const { publishTask } = await import("./src/config/rabbitmq");
       const dbService = await getDbService();
 
       if (dbService.type === 'postgres' && dbService.pgPool) {
@@ -1704,7 +1666,7 @@ async function startServer() {
         await dbService.pgPool.query(resetQuery, resetParams);
         console.log(`[Re-Summary Tenant] Tahap A Selesai: Reset summary data AI di PostgreSQL untuk Tenant ID ${tenantId} (Account: ${accountEmail || 'All'})`);
 
-        // Tahap B: Ambil Data & Push ke Redis
+        // Tahap B: Ambil Data & Push ke RabbitMQ
         let selectQuery = `
           SELECT * FROM emails 
           WHERE tenant_id = $1 AND summary IS NULL
@@ -1723,7 +1685,7 @@ async function startServer() {
           const messageId = String(email.message_id || email.id || '').trim();
           if (!messageId) continue;
 
-          await aiQueue.add('process-email', {
+          await publishTask(tenantId, 'AI_PARSE', {
             message_id: messageId,
             tenant_id: email.tenant_id ? Number(email.tenant_id) : tenantId,
             subject: email.subject || '',
@@ -1732,18 +1694,15 @@ async function startServer() {
             sender: email.sender || '',
             receiver: email.receiver || '',
             date: email.date || new Date().toISOString()
-          }, {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 5000 }
           });
           enqueuedCount++;
         }
 
-        console.log(`[Re-Summary Tenant] Tahap B Selesai: ${enqueuedCount} email dimasukkan ke aiQueue Redis.`);
+        console.log(`[Re-Summary Tenant] Tahap B Selesai: ${enqueuedCount} email dimasukkan ke RabbitMQ.`);
 
         return res.status(200).json({
           success: true,
-          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean Redis Queue.`,
+          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean RabbitMQ.`,
           enqueued_count: enqueuedCount
         });
       } else {
@@ -1764,7 +1723,7 @@ async function startServer() {
             denomination_breakdown: {}
           });
 
-          await aiQueue.add('process-email', {
+          await publishTask(tenantId, 'AI_PARSE', {
             message_id: email.message_id,
             tenant_id: tenantId,
             subject: email.subject || '',
@@ -1777,7 +1736,7 @@ async function startServer() {
 
         return res.status(200).json({
           success: true,
-          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean Redis Queue.`,
+          message: `Berhasil me-reset data AI dan mendaftarkan ${enqueuedCount} email ke antrean RabbitMQ.`,
           enqueued_count: enqueuedCount
         });
       }

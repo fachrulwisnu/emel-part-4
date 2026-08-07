@@ -172,7 +172,7 @@ export const RedisQueueDashboard: React.FC<RedisQueueDashboardProps> = ({ curren
           <ShieldAlert className="w-12 h-12 text-amber-600 mb-3" />
           <h2 className="text-xl font-bold mb-2">Akses Terbatas (Super Admin Only)</h2>
           <p className="text-sm max-w-md">
-            Halaman Redis BullMQ Monitor hanya dapat diakses oleh role **Super Admin**. Silakan login sebagai Super Admin untuk memantau status antrean pemrosesan AI.
+            Halaman System Logs & RabbitMQ Monitor hanya dapat diakses oleh role **Super Admin**. Silakan login sebagai Super Admin untuk memantau status antrean dan log eksekusi.
           </p>
         </div>
       </div>
@@ -190,14 +190,14 @@ export const RedisQueueDashboard: React.FC<RedisQueueDashboardProps> = ({ curren
             Super Admin Infrastructure Control
           </div>
           <h1 className="text-2xl font-extrabold tracking-tight flex items-center gap-2">
-            AI Queue & Redis BullMQ Monitor
+            RabbitMQ Task Queue & System Logs Monitor
             <span className="text-[11px] bg-emerald-500/20 text-emerald-300 font-mono font-bold px-2.5 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              Live Redis
+              Live RabbitMQ + PostgreSQL
             </span>
           </h1>
           <p className="text-slate-300 text-sm mt-1 max-w-2xl">
-            Pemantauan performa antrean pemrosesan email AI real-time, statistik throughput BullMQ, dan kontrol pemicuan ulang (retry) untuk job yang mengalami error.
+            Pemantauan antrean tugas RabbitMQ, log eksekusi PostgreSQL per tenant, dan penanganan pancingan ulang (retry) tugas secara terpusat.
           </p>
         </div>
 

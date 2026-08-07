@@ -1,6 +1,6 @@
 import { getAutoTags } from '../src/tags';
 import { dbUpsertEmail } from '../src/database-service';
-import { emailQueue } from '../src/config/queue';
+import { publishTask } from '../src/config/rabbitmq';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -89,8 +89,15 @@ export default async function handler(req: any, res: any) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     for (const email of fetchedEmails) {
       try {
-        await emailQueue.add('process-email', { email_id: email.uid, tenant_id: 1, messageId: email.uid, tenantId: 1 });
-        console.log(`[Queue: Added] Email ID ${email.uid} masuk antrean. (Menunggu AI)`);
+        await publishTask(1, 'AI_PARSE', {
+          message_id: email.uid,
+          tenant_id: 1,
+          subject: email.subject,
+          body: email.body,
+          sender: email.fromAddress,
+          received_at: email.date
+        });
+        console.log(`[RabbitMQ: Enqueued] Email ID ${email.uid} masuk antrean. (Menunggu AI)`);
       } catch (qErr: any) {
         console.error(`[Queue Error] Failed to enqueue Email ID ${email.uid}:`, qErr.message || qErr);
       }

@@ -3,9 +3,8 @@ import fsPromises from 'fs/promises';
 import path from 'path';
 
 export interface DatabaseConfig {
-  active_driver: 'mongodb' | 'postgres';
+  active_driver: 'postgres';
   connections: {
-    mongodb: string;
     postgres: string;
   };
 }
@@ -14,9 +13,8 @@ const CONFIG_DIR = path.join(process.cwd(), 'config');
 const CONFIG_FILE_PATH = path.join(CONFIG_DIR, 'database-config.json');
 
 const DEFAULT_CONFIG: DatabaseConfig = {
-  active_driver: 'mongodb',
+  active_driver: 'postgres',
   connections: {
-    mongodb: 'mongodb://fachrulwisnunovianto_db_user:%40BosskuBabi2021@ac-jjfqkcv-shard-00-00.4sfcd75.mongodb.net:27017,ac-jjfqkcv-shard-00-01.4sfcd75.mongodb.net:27017,ac-jjfqkcv-shard-00-02.4sfcd75.mongodb.net:27017/emails?ssl=true&replicaSet=atlas-3mdncx-shard-0&authSource=admin&appName=Cluster0',
     postgres: ''
   }
 };
@@ -45,9 +43,8 @@ async function ensureConfigFile(): Promise<DatabaseConfig> {
     }
     const parsed = JSON.parse(content);
     return {
-      active_driver: (parsed.active_driver === 'postgres' ? 'postgres' : 'mongodb'),
+      active_driver: 'postgres',
       connections: {
-        mongodb: parsed.connections?.mongodb ?? '',
         postgres: parsed.connections?.postgres ?? ''
       }
     };
@@ -73,9 +70,8 @@ export async function saveDatabaseConfig(
   const current = await getDatabaseConfig();
   
   const updated: DatabaseConfig = {
-    active_driver: newConfig.active_driver === 'postgres' ? 'postgres' : (newConfig.active_driver === 'mongodb' ? 'mongodb' : current.active_driver),
+    active_driver: 'postgres',
     connections: {
-      mongodb: newConfig.connections?.mongodb ?? current.connections.mongodb ?? '',
       postgres: newConfig.connections?.postgres ?? current.connections.postgres ?? ''
     }
   };
@@ -90,6 +86,6 @@ export async function saveDatabaseConfig(
     'utf-8'
   );
 
-  console.log('[configManager] Database configuration updated successfully:', updated.active_driver);
+  console.log('[configManager] Database configuration updated successfully: postgres');
   return updated;
 }

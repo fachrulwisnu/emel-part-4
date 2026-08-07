@@ -976,8 +976,7 @@ export async function executeControlledBulkProcess(
   analyzeSingleEmailFn?: (messageId: string, tenantId?: number) => Promise<any>,
   onProgress?: (data: { current: number; total: number; percentage: number; log: string; status: string }) => void
 ): Promise<void> {
-  const { emailQueue, aiQueue } = await import('../config/queue');
-  const activeQueue = aiQueue || emailQueue;
+  const { publishTask } = await import('../config/rabbitmq');
   const total = pendingEmails.length;
 
   for (let i = 0; i < total; i++) {
@@ -986,18 +985,16 @@ export async function executeControlledBulkProcess(
     if (!messageId) continue;
 
     try {
-      await activeQueue.add('process-email', {
+      const tenantIdNum = Number(email.tenant_id || 1);
+      await publishTask(tenantIdNum, 'AI_PARSE', {
         message_id: messageId,
-        tenant_id: email.tenant_id || 1,
+        tenant_id: tenantIdNum,
         subject: email.subject || '',
         body: email.body || email.body_text || email.html_body || '',
         sender: email.sender || email.sender_email || '',
         received_at: email.received_at || email.date || new Date().toISOString()
-      }, {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 }
       });
-      console.log(`[Queue Enqueue] Added email ${messageId} to Redis queue.`);
+      console.log(`[RabbitMQ Enqueue] Added email ${messageId} to RabbitMQ task queue.`);
     } catch (qErr) {
       console.error(`[Queue Add Error] Failed to enqueue email ${messageId}:`, qErr);
     }
@@ -1008,7 +1005,7 @@ export async function executeControlledBulkProcess(
         current: i + 1,
         total,
         percentage: Math.round(((i + 1) / total) * 100),
-        log: `Email ${i + 1}/${total} (${email.subject || messageId}) berhasil dimasukkan ke antrean Redis AI.`
+        log: `Email ${i + 1}/${total} (${email.subject || messageId}) berhasil dimasukkan ke antrean RabbitMQ AI.`
       });
     }
   }
@@ -1016,6 +1013,17 @@ export async function executeControlledBulkProcess(
 
 /**
  * Generates a Consolidated Daily Bulk Summary for Non-COS Divisions (e.g. RH, BM)
+ */
+/**
+ * Menggenerasi ringkasan harian AI (Daily Bulk Summary) untuk tenant dan tanggal tertentu.
+ *
+ * [MIGRATION NOTE]: Sebelumnya mengueri koleksi MongoDB `emails` dan `daily_summaries`.
+ * Sekarang disatukan menggunakan query SQL PostgreSQL berindeks `DATE("date") = $2::date`
+ * serta menyimpan hasil ke tabel `daily_summaries` PostgreSQL.
+ *
+ * @param {number} tenantId - ID Tenant pemilik data.
+ * @param {string} [targetDate] - Tanggal target ringkasan (format 'YYYY-MM-DD').
+ * @returns {Promise<any>} Objek DailySummary yang dihasilkan dan disimpan.
  */
 export async function generateDailySummary(tenantId: number, targetDate?: string): Promise<any> {
   const { dbGetTenants, getDbService } = await import('./dbManager');
@@ -1105,49 +1113,8 @@ export async function generateDailySummary(tenantId: number, targetDate?: string
       [tenantId, summaryDateStr]
     );
     filteredEmails = emailRes.rows;
-
-  } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-    const col = dbService.mongoDb.collection('emails');
-    const startOfDay = new Date(summaryDateStr);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(summaryDateStr);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    filteredEmails = await col.find({
-      tenant_id: tenantId,
-      $or: [
-        { received_at: { $gte: startOfDay, $lte: endOfDay } },
-        { date: { $gte: startOfDay, $lte: endOfDay } }
-      ]
-    }).limit(100).toArray();
-
-    if (filteredEmails.length === 0 && !targetDate) {
-      const latestEmail = await col.find({ tenant_id: tenantId }).sort({ date: -1, received_at: -1 }).limit(1).toArray();
-      if (latestEmail.length > 0) {
-        const latestDate = latestEmail[0].date || latestEmail[0].received_at;
-        if (latestDate) {
-          summaryDateStr = new Date(latestDate).toISOString().split('T')[0];
-          const maxDate = new Date(summaryDateStr);
-          maxDate.setHours(0, 0, 0, 0);
-          const endMaxDate = new Date(summaryDateStr);
-          endMaxDate.setHours(23, 59, 59, 999);
-          filteredEmails = await col.find({
-            tenant_id: tenantId,
-            $or: [
-              { received_at: { $gte: maxDate, $lte: endMaxDate } },
-              { date: { $gte: maxDate, $lte: endMaxDate } }
-            ]
-          }).limit(100).toArray();
-        }
-      }
-    }
-
-    stats.total_emails = filteredEmails.length;
-    stats.unread_count = filteredEmails.filter(e => e.is_read === false).length;
-    stats.action_required_count = filteredEmails.filter(e => e.action_required === true).length;
-    stats.urgent_count = filteredEmails.filter(e => e.urgency_level === 'High' || e.is_important === true).length;
-    stats.total_amount_sum = filteredEmails.reduce((acc, e) => acc + (Number(e.total_amount) || 0), 0);
   }
+  stats.total_amount_sum = filteredEmails.reduce((acc, e) => acc + (Number(e.total_amount) || 0), 0);
 
   // Format email ringkas
   const emailListStr = filteredEmails.map((e, idx) => {
