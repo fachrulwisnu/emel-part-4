@@ -50,11 +50,12 @@ interface DenominationRow {
   denomination: number;
   quantity: number;
   subtotal: number;
+  remarks: string;
+  fancySerialNumber: string;
   isAiFilled?: boolean;
 }
 
 interface CitPartyFields {
-  bank: string;
   name: string;
   address: string;
   city: string;
@@ -77,8 +78,7 @@ const CitPartyPanel: React.FC<CitPartyPanelProps> = ({ title, value, onChange })
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
       <h5 className="text-[11px] font-extrabold uppercase tracking-wider text-slate-700">{title}</h5>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <input value={value.bank} onChange={(e) => update('bank', e.target.value)} placeholder="Bank" className="px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden" />
-        <input value={value.name} onChange={(e) => update('name', e.target.value)} placeholder="Nama" className="px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden" />
+        <input value={value.name} onChange={(e) => update('name', e.target.value)} placeholder="Nama" className="md:col-span-2 px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden" />
         <input value={value.address} onChange={(e) => update('address', e.target.value)} placeholder="Alamat" className="md:col-span-2 px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden" />
         <input value={value.city} onChange={(e) => update('city', e.target.value)} placeholder="Kota" className="px-3 py-2 text-xs font-semibold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden" />
         <div className="grid grid-cols-2 gap-2">
@@ -93,8 +93,8 @@ const CitPartyPanel: React.FC<CitPartyPanelProps> = ({ title, value, onChange })
 interface TicketDraft {
   planDate: string;
   tripDate: string;
-  branchCode: number | null;
-  branchName: string;
+  warehouseCode: string;
+  warehouseName: string;
   bankCode: string;
   bankName: string;
   clientCode: string;
@@ -108,7 +108,7 @@ interface TicketDraft {
   deliveryType: 'D' | 'DCC' | 'C' | 'CCC' | 'T';
   cycleType: 'P' | 'S' | 'A';
   onCall: boolean;
-  transactionType: 'STC' | 'COS' | 'BBC';
+  transactionType: '' | 'STC' | 'COS' | 'BBC';
   machineCdr: 'Y' | 'N';
   validationLocationEnabled: boolean;
   validationLocation: string;
@@ -119,6 +119,8 @@ interface TicketDraft {
   currency: string;
   targetAmount: number;
   rows: DenominationRow[];
+  pairedCollectionTargetAmount: number;
+  pairedCollectionRows: DenominationRow[];
 }
 
 export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
@@ -145,8 +147,8 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   // Form Fields State
   const [planDate, setPlanDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [tripDate, setTripDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [branchCode, setBranchCode] = useState<number | null>(null);
-  const [branchName, setBranchName] = useState<string>('');
+  const [warehouseCode, setWarehouseCode] = useState<string>('');
+  const [warehouseName, setWarehouseName] = useState<string>('');
   const [bankCode, setBankCode] = useState<string>('');
   const [bankName, setBankName] = useState<string>('');
   const [clientCode, setClientCode] = useState<string>('');
@@ -159,15 +161,15 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   const [deliveryType, setDeliveryType] = useState<'D' | 'DCC' | 'C' | 'CCC' | 'T'>('D');
   const [cycleType, setCycleType] = useState<'P' | 'S' | 'A'>('P');
   const [onCall, setOnCall] = useState<boolean>(false);
-  const [transactionType, setTransactionType] = useState<'STC' | 'COS' | 'BBC'>('STC');
+  const [transactionType, setTransactionType] = useState<'' | 'STC' | 'COS' | 'BBC'>('');
   const [machineCdr, setMachineCdr] = useState<'Y' | 'N'>('N');
   const [validationLocationEnabled, setValidationLocationEnabled] = useState<boolean>(false);
   const [validationLocation, setValidationLocation] = useState<string>('');
   const [senderParty, setSenderParty] = useState<CitPartyFields>({
-    bank: '', name: '', address: '', city: '', contactName: '', contactNumber: ''
+    name: '', address: '', city: '', contactName: '', contactNumber: ''
   });
   const [receiverParty, setReceiverParty] = useState<CitPartyFields>({
-    bank: '', name: '', address: '', city: '', contactName: '', contactNumber: ''
+    name: '', address: '', city: '', contactName: '', contactNumber: ''
   });
   const [daToken, setDaToken] = useState<string>('');
   const [citType, setCitType] = useState<string>('CIT');
@@ -175,12 +177,15 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   const [notes, setNotes] = useState<string>('');
   const [targetAmount, setTargetAmount] = useState<number>(0);
   const [rows, setRows] = useState<DenominationRow[]>([]);
+  const [pairedCollectionTargetAmount, setPairedCollectionTargetAmount] = useState<number>(0);
+  const [pairedCollectionRows, setPairedCollectionRows] = useState<DenominationRow[]>([]);
   const [ticketDrafts, setTicketDrafts] = useState<Record<number, TicketDraft>>({});
 
   // AI Field Highlights (Visual Sparkle Flags)
   const [aiHighlights, setAiHighlights] = useState<Record<string, boolean>>({
     targetTickets: true,
-    branchName: true,
+    warehouseName: true,
+    vaultBranchName: true,
     clientName: true,
     tripType: true,
     cycleType: true,
@@ -192,14 +197,21 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Search dropdown states
-  const [branchSearch, setBranchSearch] = useState('');
+  const [warehouseSearch, setWarehouseSearch] = useState('');
   const [isBranchOpen, setIsBranchOpen] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
   const [isClientOpen, setIsClientOpen] = useState(false);
   const [bankSearch, setBankSearch] = useState('');
   const [isBankOpen, setIsBankOpen] = useState(false);
 
-  const branchOptions = Array.from(
+  const warehouseOptions = Array.from(
+    new Map<string, { code: string; name: string }>(
+      masterEntities
+        .filter(entity => String(entity.Type || '').trim().toUpperCase() === 'WH' && Boolean(entity.EntityCode))
+        .map(entity => [entity.EntityCode, { code: entity.EntityCode, name: entity.EntityName || entity.EntityCode }])
+    ).values()
+  ).sort((a, b) => a.name.localeCompare(b.name));
+  const vaultOptions = Array.from(
     new Map<number, { code: number; name: string }>(
       masterEntities
         .filter(entity => entity.Type === 'ENT' && entity.BranchCode !== null && Boolean(entity.BranchName))
@@ -207,9 +219,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
     ).values()
   ).sort((a, b) => a.name.localeCompare(b.name));
 
-  const branchClients = masterEntities.filter(
-    entity => entity.Type === 'ENT' && entity.BranchCode === branchCode
-  );
+  const branchClients = masterEntities.filter(entity => entity.Type === 'ENT');
   const groupNames = new Map(
     masterEntities
       .filter(entity => entity.Type === 'GRP' && Boolean(entity.EntityCode))
@@ -226,6 +236,9 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   const clientOptions = branchClients
     .filter(entity => !bankCode || (entity.ManagingGroupCode || entity.GroupCode || '') === bankCode)
     .sort((a, b) => (a.EntityName || a.EntityCode).localeCompare(b.EntityName || b.EntityCode));
+  const selectedClient = masterEntities.find(
+    entity => entity.Type === 'ENT' && entity.EntityCode === clientCode
+  );
 
   // Fetch initial email details and master data
   useEffect(() => {
@@ -398,7 +411,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   };
 
   const emptyParty = (): CitPartyFields => ({
-    bank: '', name: '', address: '', city: '', contactName: '', contactNumber: ''
+    name: '', address: '', city: '', contactName: '', contactNumber: ''
   });
 
   const buildTicketDraftFromAi = (ai: any, ticketIdx: number, itemsMaster: ScItemMaster[]): TicketDraft => {
@@ -431,6 +444,8 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
           denomination,
           quantity: qty > 0 ? qty : 0,
           subtotal: denomination * (qty > 0 ? qty : 0),
+          remarks: '',
+          fancySerialNumber: '',
           isAiFilled: true
         }];
       }
@@ -439,8 +454,8 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
     return {
       planDate: ai.plan_date || new Date().toISOString().split('T')[0],
       tripDate: orderObj?.trip_date || ai.trip_date || ai.plan_date || new Date().toISOString().split('T')[0],
-      branchCode: null,
-      branchName: orderObj?.branch || ai.branch_name || '',
+      warehouseCode: orderObj?.warehouse_code || ai.warehouse_code || '',
+      warehouseName: orderObj?.warehouse_name || ai.warehouse_name || orderObj?.branch || ai.branch_name || '',
       bankCode: '',
       bankName: orderObj?.bank || ai.bank_name || '',
       clientCode: '',
@@ -456,7 +471,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       onCall: Boolean(orderObj?.on_call ?? ai.on_call),
       transactionType: ['STC', 'COS', 'BBC'].includes(orderObj?.transaction_type || ai.transaction_type)
         ? (orderObj?.transaction_type || ai.transaction_type)
-        : 'STC',
+        : '',
       machineCdr: orderObj?.machine_cdr === 'Y' || ai.machine_cdr === 'Y' ? 'Y' : 'N',
       validationLocationEnabled: Boolean(orderObj?.validation_location || ai.validation_location),
       validationLocation: orderObj?.validation_location || ai.validation_location || '',
@@ -466,15 +481,17 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       citType: ai.cit_type || 'CIT',
       currency: selectedCurrency,
       targetAmount: amt,
-      rows: draftRows
+      rows: draftRows,
+      pairedCollectionTargetAmount: 0,
+      pairedCollectionRows: []
     };
   };
 
   const applyTicketDraft = (draft: TicketDraft) => {
     setPlanDate(draft.planDate);
     setTripDate(draft.tripDate);
-    setBranchCode(draft.branchCode);
-    setBranchName(draft.branchName);
+    setWarehouseCode(draft.warehouseCode);
+    setWarehouseName(draft.warehouseName);
     setBankCode(draft.bankCode);
     setBankName(draft.bankName);
     setClientCode(draft.clientCode);
@@ -499,13 +516,15 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
     setCurrency(draft.currency);
     setTargetAmount(draft.targetAmount);
     setRows(draft.rows.map(row => ({ ...row })));
+    setPairedCollectionTargetAmount(draft.pairedCollectionTargetAmount);
+    setPairedCollectionRows(draft.pairedCollectionRows.map(row => ({ ...row })));
   };
 
   const captureCurrentTicketDraft = (): TicketDraft => ({
     planDate,
     tripDate,
-    branchCode,
-    branchName,
+    warehouseCode,
+    warehouseName,
     bankCode,
     bankName,
     clientCode,
@@ -529,7 +548,9 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
     citType,
     currency,
     targetAmount,
-    rows: rows.map(row => ({ ...row }))
+    rows: rows.map(row => ({ ...row })),
+    pairedCollectionTargetAmount,
+    pairedCollectionRows: pairedCollectionRows.map(row => ({ ...row }))
   });
 
   // Switch ticket tab
@@ -548,7 +569,6 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
 
     if (clientName) {
       const selectedParty: CitPartyFields = {
-        bank: bankName,
         name: clientName,
         address: '',
         city: '',
@@ -566,21 +586,27 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
   };
 
   // Denomination Row handlers
-  const handleAddRow = () => {
+  const handleAddRow = (target: 'primary' | 'paired' = 'primary') => {
     const defaultMaster = masterItems.find(item => item.MoneyCode === currency);
     if (!defaultMaster) return;
 
     const denomination = Number(defaultMaster.Value) || 0;
     const newRow: DenominationRow = {
-      id: `row-${Date.now()}-${Math.random()}`,
+      id: `${target}-row-${Date.now()}-${Math.random()}`,
       item_id: defaultMaster.Code,
       item_name: defaultMaster.Name || defaultMaster.Code,
       denomination,
-      quantity: 100,
-      subtotal: denomination * 100,
+      quantity: 0,
+      subtotal: 0,
+      remarks: '',
+      fancySerialNumber: '',
       isAiFilled: false
     };
-    setRows([...rows, newRow]);
+    if (target === 'paired') {
+      setPairedCollectionRows(prev => [...prev, newRow]);
+    } else {
+      setRows(prev => [...prev, newRow]);
+    }
   };
 
   const handleCurrencyChange = (nextCurrency: string) => {
@@ -588,6 +614,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
     const firstItem = masterItems.find(item => item.MoneyCode === nextCurrency);
     if (!firstItem) {
       setRows([]);
+      setPairedCollectionRows([]);
       return;
     }
 
@@ -600,10 +627,23 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       subtotal: denomination * row.quantity,
       isAiFilled: false
     })));
+    setPairedCollectionRows(prevRows => prevRows.map(row => ({
+      ...row,
+      item_id: firstItem.Code,
+      item_name: firstItem.Name || firstItem.Code,
+      denomination,
+      subtotal: denomination * row.quantity,
+      isAiFilled: false
+    })));
   };
 
-  const handleUpdateRow = (id: string, field: 'item_id' | 'quantity', value: any) => {
-    setRows(prevRows =>
+  const handleUpdateRow = (
+    target: 'primary' | 'paired',
+    id: string,
+    field: 'item_id' | 'quantity' | 'remarks' | 'fancySerialNumber',
+    value: string
+  ) => {
+    const updateRows = (prevRows: DenominationRow[]) =>
       prevRows.map(row => {
         if (row.id !== id) return row;
 
@@ -628,19 +668,30 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             subtotal: row.denomination * newQty,
             isAiFilled: false
           };
+        } else if (field === 'remarks' || field === 'fancySerialNumber') {
+          return { ...row, [field]: value, isAiFilled: false };
         }
         return row;
-      })
-    );
+      });
+
+    if (target === 'paired') {
+      setPairedCollectionRows(updateRows);
+    } else {
+      setRows(updateRows);
+    }
   };
 
-  const handleRemoveRow = (id: string) => {
-    if (rows.length <= 1) return;
-    setRows(rows.filter(r => r.id !== id));
+  const handleRemoveRow = (target: 'primary' | 'paired', id: string) => {
+    if (target === 'paired') {
+      setPairedCollectionRows(prev => prev.filter(row => row.id !== id));
+    } else {
+      setRows(prev => prev.filter(row => row.id !== id));
+    }
   };
 
   // Calculated total amount across all breakdown rows
   const calculatedTotal = rows.reduce((sum, r) => sum + r.subtotal, 0);
+  const pairedCollectionTotal = pairedCollectionRows.reduce((sum, row) => sum + row.subtotal, 0);
   const effectiveTotal = tripType === 'Delivery' ? calculatedTotal : targetAmount;
   const ticketSummaryDrafts = Array.from({ length: targetTickets }, (_, index) => {
     const ticketIndex = index + 1;
@@ -652,13 +703,45 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       : draft.targetAmount;
     return { ticketIndex, draft, total };
   });
-  const grandTotal = ticketSummaryDrafts.reduce((sum, item) => sum + item.total, 0);
+  const operationalSummaryRows = ticketSummaryDrafts.flatMap(({ ticketIndex, draft, total }) => {
+    const primary = {
+      key: `${ticketIndex}-${draft.deliveryType}`,
+      ticketIndex,
+      tripCode: draft.deliveryType,
+      draft,
+      total
+    };
+    if (draft.deliveryType !== 'DCC') return [primary];
+    return [
+      primary,
+      {
+        key: `${ticketIndex}-CCC`,
+        ticketIndex,
+        tripCode: 'CCC' as const,
+        draft,
+        total: draft.pairedCollectionRows.reduce((sum, row) => sum + row.subtotal, 0)
+      }
+    ];
+  });
+  const grandTotal = operationalSummaryRows.reduce((sum, item) => sum + item.total, 0);
 
   // Submit Handler (Multi-Order Partial Fulfillment)
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!planDate || !tripDate || !branchName || !clientName || (tripType === 'Delivery' && rows.length === 0)) {
-      alert('Tanggal Plan, Tanggal Trip, Branch, Client, dan detail pecahan untuk Delivery wajib diisi.');
+    if (!planDate || !tripDate || !warehouseCode || vaultBranchCode === null || !bankCode || !clientCode) {
+      alert('Tanggal Plan, Tanggal Trip, Cab ADV, Vault, Bank, dan Client wajib diisi.');
+      return;
+    }
+    if (!transactionType) {
+      alert('Jenis Transaksi pada Client belum diatur di ScEntity. Hubungi Team Marketing sebelum membuat trip.');
+      return;
+    }
+    if (tripType === 'Delivery' && rows.length === 0) {
+      alert('Detail denomination Delivery wajib diisi.');
+      return;
+    }
+    if (deliveryType === 'DCC' && pairedCollectionRows.length === 0) {
+      alert('DCC harus memiliki detail denomination pasangan CCC.');
       return;
     }
     if (tripDate < planDate) {
@@ -673,8 +756,10 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
         ticket_index: currentTicketIndex,
         target_tickets: targetTickets,
         trip_date: tripDate,
-        branch_code: branchCode,
-        branch_name: branchName,
+        warehouse_code: warehouseCode,
+        warehouse_name: warehouseName,
+        branch_code: vaultBranchCode,
+        branch_name: vaultBranchName,
         bank_code: bankCode,
         bank_name: bankName,
         client_code: clientCode,
@@ -698,6 +783,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
         currency,
         total_amount: effectiveTotal,
         items: rows,
+        linked_orders: deliveryType === 'DCC'
+          ? [{
+              trip_code: 'CCC',
+              currency,
+              total_amount: pairedCollectionTotal,
+              items: pairedCollectionRows
+            }]
+          : [],
         notes
       };
 
@@ -743,6 +836,127 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
       setSubmitting(false);
     }
   };
+
+  const renderDenominationPanel = (
+    title: string,
+    target: 'primary' | 'paired',
+    panelRows: DenominationRow[],
+    total: number,
+    extractedTarget: number
+  ) => (
+    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-100">
+        <div className="flex items-center gap-2">
+          <Coins className="h-4 w-4 text-emerald-600" />
+          <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">{title}</h4>
+          {target === 'paired' && (
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-bold text-violet-700">
+              Otomatis dibuat bersama DCC
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => handleAddRow(target)}
+          className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-xl text-xs flex items-center gap-1 cursor-pointer transition-colors border border-blue-200"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span>Tambah Pecahan</span>
+        </button>
+      </div>
+
+      <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+        <div className="bg-slate-50 px-4 py-2.5 grid grid-cols-12 gap-3 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+          <div className="col-span-3">Kode / Pecahan Uang</div>
+          <div className="col-span-2 text-right">Qty</div>
+          <div className="col-span-2 text-right">Value</div>
+          <div className="col-span-2">Keterangan</div>
+          <div className="col-span-2">Fancy SN</div>
+          <div className="col-span-1 text-center">Aksi</div>
+        </div>
+
+        {panelRows.map(row => (
+          <div key={row.id} className="px-4 py-3 grid grid-cols-12 gap-3 items-center hover:bg-slate-50">
+            <div className="col-span-3 flex items-center gap-2">
+              {row.isAiFilled && <Sparkles className="h-3.5 w-3.5 text-blue-600 shrink-0" />}
+              <select
+                value={row.item_id}
+                onChange={(e) => handleUpdateRow(target, row.id, 'item_id', e.target.value)}
+                className="w-full px-2.5 py-1.5 text-xs font-bold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              >
+                {masterItems
+                  .filter(item => item.MoneyCode === currency)
+                  .map(item => (
+                    <option key={item.Code} value={item.Code}>
+                      {item.Code} — {item.Name || item.Code}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <input
+                type="number"
+                min={0}
+                value={row.quantity}
+                onChange={(e) => handleUpdateRow(target, row.id, 'quantity', e.target.value)}
+                className="w-full px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
+            </div>
+            <div className="col-span-2 text-right font-mono font-bold text-slate-800 text-xs">
+              {row.denomination.toLocaleString()}
+            </div>
+            <div className="col-span-2">
+              <input
+                value={row.remarks}
+                onChange={(e) => handleUpdateRow(target, row.id, 'remarks', e.target.value)}
+                className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
+            </div>
+            <div className="col-span-2">
+              <input
+                value={row.fancySerialNumber}
+                onChange={(e) => handleUpdateRow(target, row.id, 'fancySerialNumber', e.target.value)}
+                className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+              />
+            </div>
+            <div className="col-span-1 text-center">
+              <button
+                type="button"
+                onClick={() => handleRemoveRow(target, row.id)}
+                className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 cursor-pointer transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+
+        {panelRows.length === 0 && (
+          <div className="px-4 py-6 text-center text-xs font-medium text-slate-400">
+            Belum ada denomination. Klik Tambah Pecahan.
+          </div>
+        )}
+      </div>
+
+      <div className="bg-slate-900 text-white p-4 rounded-xl flex items-center justify-between shadow-md">
+        <div>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Total Nominal {target === 'paired' ? 'CCC' : deliveryType}</span>
+          <p className="text-xl font-extrabold font-mono text-emerald-400">{currency} {total.toLocaleString()}</p>
+        </div>
+        <div className="text-right">
+          <span className="text-[10px] text-slate-400 block font-bold">Target: {currency} {extractedTarget.toLocaleString()}</span>
+          <span className={`mt-1 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-bold ${
+            total === extractedTarget
+              ? 'border-emerald-500/30 bg-emerald-500/20 text-emerald-300'
+              : 'border-amber-500/30 bg-amber-500/20 text-amber-300'
+          }`}>
+            {total === extractedTarget ? <Check className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
+            {total === extractedTarget ? 'Nominal Sesuai' : 'Ada Penyesuaian Manual'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
@@ -938,7 +1152,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                 <span className="ml-auto rounded-md bg-slate-100 px-2 py-1 text-slate-600">Satuan: {currency}</span>
               </div>
 
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Tanggal Plan */}
                 <div>
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5 flex items-center gap-1">
@@ -970,14 +1184,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   />
                 </div>
 
-                {/* Target Branch / Cabang */}
+                {/* Cabang Advantage / Warehouse */}
                 <div className="relative">
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5 flex items-center justify-between">
                     <span className="flex items-center gap-1">
                       <Building2 className="h-3.5 w-3.5 text-slate-400" />
-                      <span>Branch / Cabang *</span>
+                      <span>Cab ADV *</span>
                     </span>
-                    {aiHighlights.branchName && (
+                    {aiHighlights.warehouseName && (
                       <span className="text-[9px] text-blue-700 bg-blue-50 font-bold px-1.5 py-0.2 rounded border border-blue-200 flex items-center gap-0.5">
                         <Sparkles className="h-2 w-2" /> AI
                       </span>
@@ -987,12 +1201,12 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   <div
                     onClick={() => setIsBranchOpen(!isBranchOpen)}
                     className={`w-full px-3 py-2 text-xs font-bold rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
-                      aiHighlights.branchName
+                      aiHighlights.warehouseName
                         ? 'bg-blue-50/50 border-blue-300 text-blue-900 ring-1 ring-blue-200'
                         : 'bg-slate-50 border-slate-300 text-slate-800'
                     }`}
                   >
-                    <span>{branchName || 'Pilih Branch'}</span>
+                    <span>{warehouseName || 'Pilih Cab ADV'}</span>
                     <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
                   </div>
 
@@ -1002,43 +1216,37 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                         <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2.5" />
                         <input
                           type="text"
-                          placeholder="Cari cabang..."
-                          value={branchSearch}
-                          onChange={(e) => setBranchSearch(e.target.value)}
+                          placeholder="Cari kode atau nama Cab ADV..."
+                          value={warehouseSearch}
+                          onChange={(e) => setWarehouseSearch(e.target.value)}
                           className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-hidden"
                         />
                       </div>
                       <div className="max-h-40 overflow-y-auto space-y-0.5">
-                        {branchOptions
-                          .filter(branch => `${branch.name} ${branch.code}`.toLowerCase().includes(branchSearch.toLowerCase()))
-                          .map(branch => (
+                        {warehouseOptions
+                          .filter(warehouse => `${warehouse.name} ${warehouse.code}`.toLowerCase().includes(warehouseSearch.toLowerCase()))
+                          .map(warehouse => (
                           <div
-                            key={branch.code}
+                            key={warehouse.code}
                             onClick={() => {
-                              setBranchCode(branch.code);
-                              setBranchName(branch.name);
-                              setBankCode('');
-                              setBankName('');
-                              setClientCode('');
-                              setClientName('');
-                              setVaultBranchCode(null);
-                              setVaultBranchName('');
+                              setWarehouseCode(warehouse.code);
+                              setWarehouseName(warehouse.name);
                               setIsBranchOpen(false);
-                              setAiHighlights(prev => ({ ...prev, branchName: false }));
+                              setAiHighlights(prev => ({ ...prev, warehouseName: false }));
                             }}
                             className={`px-3 py-2 text-xs font-bold rounded-lg cursor-pointer transition-colors ${
-                              branchCode === branch.code ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'
+                              warehouseCode === warehouse.code ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'
                             }`}
                           >
-                            <span>{branch.name}</span>
-                            <span className={`ml-2 font-mono text-[10px] ${branchCode === branch.code ? 'text-blue-100' : 'text-slate-400'}`}>
-                              {branch.code}
+                            <span>{warehouse.name}</span>
+                            <span className={`ml-2 font-mono text-[10px] ${warehouseCode === warehouse.code ? 'text-blue-100' : 'text-slate-400'}`}>
+                              {warehouse.code}
                             </span>
                           </div>
                         ))}
-                        {branchOptions.length === 0 && (
+                        {warehouseOptions.length === 0 && (
                           <div className="px-3 py-2 text-xs text-slate-400">
-                            {entityMasterLoading ? 'Memuat master branch...' : 'Master branch belum tersedia.'}
+                            {entityMasterLoading ? 'Memuat master Cab ADV...' : 'Master Cab ADV belum tersedia.'}
                           </div>
                         )}
                       </div>
@@ -1056,7 +1264,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                     onClick={() => setIsBankOpen(!isBankOpen)}
                     className="w-full px-3 py-2 text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl flex items-center justify-between cursor-pointer transition-all"
                   >
-                    <span>{bankName || (branchCode ? 'Pilih Bank' : 'Pilih Branch dahulu')}</span>
+                    <span>{bankName || 'Pilih Bank'}</span>
                     <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
                   </div>
                   {isBankOpen && (
@@ -1084,6 +1292,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                                 setClientName('');
                                 setVaultBranchCode(null);
                                 setVaultBranchName('');
+                                setTransactionType('');
                                 setIsBankOpen(false);
                               }}
                               className={`px-3 py-2 text-xs font-bold rounded-lg cursor-pointer transition-colors ${
@@ -1098,7 +1307,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                           ))}
                         {bankOptions.length === 0 && (
                           <div className="px-3 py-2 text-xs text-slate-400">
-                            {entityMasterLoading ? 'Memuat master bank...' : branchCode ? 'Bank tidak ditemukan.' : 'Pilih Branch dahulu.'}
+                            {entityMasterLoading ? 'Memuat master bank...' : 'Bank tidak ditemukan.'}
                           </div>
                         )}
                       </div>
@@ -1107,7 +1316,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-t border-slate-100 pt-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 border-t border-slate-100 pt-4">
                 {/* Client */}
                 <div className="relative">
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5 flex items-center justify-between">
@@ -1123,14 +1332,16 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   </label>
 
                   <div
-                    onClick={() => setIsClientOpen(!isClientOpen)}
+                    onClick={() => bankCode && setIsClientOpen(!isClientOpen)}
                     className={`w-full px-3 py-2 text-xs font-bold rounded-xl border flex items-center justify-between cursor-pointer transition-all ${
                       aiHighlights.clientName
                         ? 'bg-blue-50/50 border-blue-300 text-blue-900 ring-1 ring-blue-200'
-                        : 'bg-slate-50 border-slate-300 text-slate-800'
+                        : bankCode
+                          ? 'bg-slate-50 border-slate-300 text-slate-800'
+                          : 'bg-slate-100 border-slate-300 text-slate-400 cursor-not-allowed'
                     }`}
                   >
-                    <span>{clientName || (bankCode ? 'Pilih Client' : 'Pilih Branch dan Bank dahulu')}</span>
+                    <span>{clientName || (bankCode ? 'Pilih Client' : 'Pilih Bank dahulu')}</span>
                     <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
                   </div>
 
@@ -1157,11 +1368,11 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                               setClientName(client.EntityName || client.EntityCode);
                               setVaultBranchCode(client.VaultBranchCode);
                               setVaultBranchName(
-                                branchOptions.find(branch => branch.code === client.VaultBranchCode)?.name ||
-                                (client.VaultBranchCode !== null ? String(client.VaultBranchCode) : '')
+                                client.VaultBranchCode === null
+                                  ? ''
+                                  : vaultOptions.find(vault => vault.code === client.VaultBranchCode)?.name || String(client.VaultBranchCode)
                               );
                               const selectedParty = {
-                                bank: bankName,
                                 name: client.EntityName || client.EntityCode,
                                 address: '',
                                 city: '',
@@ -1173,11 +1384,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                               } else {
                                 setReceiverParty(selectedParty);
                               }
-                              if (client.DefaultCountMethod && ['STC', 'COS', 'BBC'].includes(client.DefaultCountMethod)) {
-                                setTransactionType(client.DefaultCountMethod as 'STC' | 'COS' | 'BBC');
-                              }
+                              const defaultCountMethod = String(client.DefaultCountMethod || '').trim().toUpperCase();
+                              setTransactionType(
+                                ['STC', 'COS', 'BBC'].includes(defaultCountMethod)
+                                  ? defaultCountMethod as 'STC' | 'COS' | 'BBC'
+                                  : ''
+                              );
                               setIsClientOpen(false);
-                              setAiHighlights(prev => ({ ...prev, clientName: false }));
+                              setAiHighlights(prev => ({ ...prev, clientName: false, vaultBranchName: false }));
                             }}
                             className={`px-3 py-2 text-xs font-bold rounded-lg cursor-pointer transition-colors ${
                               clientCode === client.EntityCode ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 text-slate-700'
@@ -1191,7 +1405,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                         ))}
                         {clientOptions.length === 0 && (
                           <div className="px-3 py-2 text-xs text-slate-400">
-                            {branchCode && bankCode ? 'Client tidak ditemukan.' : 'Pilih Branch dan Bank dahulu.'}
+                            {bankCode ? 'Client tidak ditemukan.' : 'Pilih Bank dahulu.'}
                           </div>
                         )}
                       </div>
@@ -1200,21 +1414,26 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                 </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">Vault</label>
-                  <input
-                    type="text"
-                    value={vaultBranchName}
-                    readOnly
+                  <div
                     title={vaultBranchCode !== null ? `VaultBranchCode: ${vaultBranchCode}` : undefined}
                     className="w-full px-3 py-2 text-xs font-bold bg-slate-100 border border-slate-200 rounded-xl text-slate-600"
-                  />
+                  >
+                    {clientCode ? vaultBranchName || 'Vault client belum diatur' : 'Pilih Client dahulu'}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">Client BI</label>
+                  <div className="w-full px-3 py-2 text-xs font-bold bg-slate-100 border border-slate-200 rounded-xl text-slate-600">
+                    {!selectedClient ? 'Pilih Client dahulu' : selectedClient.IsClientBI === 1 ? 'Ya' : 'Tidak'}
+                  </div>
                 </div>
                 <div>
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">No Seri</label>
                   <input
                     type="text"
                     value={serialNumber}
-                    readOnly
-                    className="w-full px-3 py-2 text-xs font-bold bg-slate-100 border border-slate-200 rounded-xl text-slate-600"
+                    onChange={(e) => setSerialNumber(e.target.value)}
+                    className="w-full px-3 py-2 text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white focus:outline-hidden"
                   />
                 </div>
               </div>
@@ -1227,7 +1446,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                 <span>Operational Category & Custom Fields</span>
               </h4>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
                 {/* CIT Category */}
                 <div>
                   <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5 flex items-center justify-between">
@@ -1259,18 +1478,34 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                       </span>
                     )}
                   </label>
-                  <select
-                    value={cycleType}
-                    onChange={(e) => {
-                      setCycleType(e.target.value as 'P' | 'S' | 'A');
-                      setAiHighlights(prev => ({ ...prev, cycleType: false }));
-                    }}
-                    className="w-full px-3 py-2 text-xs font-bold bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-hidden cursor-pointer"
-                  >
-                    <option value="P">Pagi (P)</option>
-                    <option value="S">Siang (S)</option>
-                    {tripType === 'Delivery' && <option value="A">Adhoc (A)</option>}
-                  </select>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      { value: 'P', label: 'Pagi' },
+                      { value: 'S', label: 'Siang' },
+                      ...(tripType === 'Delivery' ? [{ value: 'A', label: 'Adhoc' }] : [])
+                    ] as Array<{ value: 'P' | 'S' | 'A'; label: string }>).map(option => (
+                      <label
+                        key={option.value}
+                        className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                          cycleType === option.value
+                            ? 'border-blue-600 bg-blue-50 text-blue-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="cycleType"
+                          value={option.value}
+                          checked={cycleType === option.value}
+                          onChange={() => {
+                            setCycleType(option.value);
+                            setAiHighlights(prev => ({ ...prev, cycleType: false }));
+                          }}
+                        />
+                        <span>{option.label} ({option.value})</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Satuan / Mata Uang */}
@@ -1288,6 +1523,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                     ))}
                   </select>
                 </div>
+
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 border-t border-slate-100 pt-4">
@@ -1301,7 +1537,15 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                           <span>Delivery (D)</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="deliveryType" checked={deliveryType === 'DCC'} onChange={() => setDeliveryType('DCC')} />
+                          <input
+                            type="radio"
+                            name="deliveryType"
+                            checked={deliveryType === 'DCC'}
+                            onChange={() => {
+                              setDeliveryType('DCC');
+                              if (pairedCollectionRows.length === 0) handleAddRow('paired');
+                            }}
+                          />
                           <span>Delivery Cash to Cash (DCC)</span>
                         </label>
                       </>
@@ -1337,27 +1581,36 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-2">Jenis Transaksi</label>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-2">
+                    Jenis Transaksi
+                    <span className="ml-2 normal-case text-[9px] font-semibold text-slate-400">otomatis dari Client</span>
+                  </label>
                   <div className="flex gap-2">
-                    {(['STC', 'COS', 'BBC'] as const).map(type => (
-                      <button
+                    {(['STC', 'BBC', 'COS'] as const).map(type => (
+                      <label
                         key={type}
-                        type="button"
-                        onClick={() => setTransactionType(type)}
-                        className={`rounded-lg border px-3 py-1.5 text-[10px] font-extrabold transition-colors ${
+                        className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-[10px] font-extrabold ${
                           transactionType === type
-                            ? 'border-blue-600 bg-blue-600 text-white'
-                            : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                            ? 'border-blue-600 bg-blue-50 text-blue-700'
+                            : 'border-slate-200 bg-slate-50 text-slate-400'
                         }`}
                       >
-                        {type}
-                      </button>
+                        <input type="radio" name="transactionType" checked={transactionType === type} disabled />
+                        <span>{type}</span>
+                      </label>
                     ))}
                   </div>
+                  {!transactionType && clientCode && (
+                    <p className="mt-2 text-[10px] font-bold text-rose-600">
+                      Belum diatur pada ScEntity. Hubungi Team Marketing.
+                    </p>
+                  )}
                 </div>
 
                 <div>
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">Jumlah</label>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">
+                    {deliveryType === 'DCC' ? 'Jumlah DCC' : 'Jumlah'}
+                  </label>
                   <input
                     type="number"
                     min={0}
@@ -1366,6 +1619,19 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                     className="w-full px-3 py-2 text-xs font-mono font-bold text-right bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white focus:outline-hidden"
                   />
                 </div>
+
+                {deliveryType === 'DCC' && (
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">Jumlah CCC</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={pairedCollectionTargetAmount}
+                      onChange={(e) => setPairedCollectionTargetAmount(Math.max(0, Number(e.target.value) || 0))}
+                      className="w-full px-3 py-2 text-xs font-mono font-bold text-right bg-violet-50 border border-violet-200 rounded-xl focus:ring-2 focus:ring-violet-500 focus:bg-white focus:outline-hidden"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 border-t border-slate-100 pt-4">
@@ -1442,7 +1708,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
 
                 <button
                   type="button"
-                  onClick={handleAddRow}
+                  onClick={() => handleAddRow('primary')}
                   className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-xl text-xs flex items-center gap-1 cursor-pointer transition-colors border border-blue-200"
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -1453,9 +1719,11 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
               {/* Rows Table */}
               <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
                 <div className="bg-slate-50 px-4 py-2.5 grid grid-cols-12 gap-3 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                  <div className="col-span-5">Jenis Pecahan Uang (Master Item)</div>
-                  <div className="col-span-3 text-right">Jumlah (Lembar)</div>
-                  <div className="col-span-3 text-right">Subtotal ({currency})</div>
+                  <div className="col-span-3">Kode / Pecahan Uang</div>
+                  <div className="col-span-2 text-right">Qty</div>
+                  <div className="col-span-2 text-right">Value</div>
+                  <div className="col-span-2">Keterangan</div>
+                  <div className="col-span-2">Fancy SN</div>
                   <div className="col-span-1 text-center">Aksi</div>
                 </div>
 
@@ -1467,48 +1735,62 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                     }`}
                   >
                     {/* Item Select */}
-                    <div className="col-span-5 flex items-center gap-2">
+                    <div className="col-span-3 flex items-center gap-2">
                       {row.isAiFilled && (
                         <Sparkles className="h-3.5 w-3.5 text-blue-600 shrink-0" title="Terisi Otomatis oleh AI" />
                       )}
                       <select
                         value={row.item_id}
-                        onChange={(e) => handleUpdateRow(row.id, 'item_id', e.target.value)}
+                        onChange={(e) => handleUpdateRow('primary', row.id, 'item_id', e.target.value)}
                         className="w-full px-2.5 py-1.5 text-xs font-bold bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                       >
                         {masterItems
                           .filter(item => item.MoneyCode === currency)
                           .map(item => (
                           <option key={item.Code} value={item.Code}>
-                            {item.Name || item.Code}
+                            {item.Code} — {item.Name || item.Code}
                           </option>
                         ))}
                       </select>
                     </div>
 
                     {/* Quantity */}
-                    <div className="col-span-3">
+                    <div className="col-span-2">
                       <input
                         type="number"
-                        min={1}
+                        min={0}
                         value={row.quantity}
-                        onChange={(e) => handleUpdateRow(row.id, 'quantity', e.target.value)}
+                        onChange={(e) => handleUpdateRow('primary', row.id, 'quantity', e.target.value)}
                         className="w-full px-2.5 py-1.5 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
                       />
                     </div>
 
-                    {/* Subtotal */}
-                    <div className="col-span-3 text-right font-mono font-bold text-slate-800 text-xs">
-                      {row.subtotal.toLocaleString()} {currency}
+                    <div className="col-span-2 text-right font-mono font-bold text-slate-800 text-xs">
+                      {row.denomination.toLocaleString()}
+                    </div>
+
+                    <div className="col-span-2">
+                      <input
+                        value={row.remarks}
+                        onChange={(e) => handleUpdateRow('primary', row.id, 'remarks', e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <input
+                        value={row.fancySerialNumber}
+                        onChange={(e) => handleUpdateRow('primary', row.id, 'fancySerialNumber', e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                      />
                     </div>
 
                     {/* Remove button */}
                     <div className="col-span-1 text-center">
                       <button
                         type="button"
-                        onClick={() => handleRemoveRow(row.id)}
-                        disabled={rows.length <= 1}
-                        className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 disabled:opacity-30 cursor-pointer transition-colors"
+                        onClick={() => handleRemoveRow('primary', row.id)}
+                        className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 cursor-pointer transition-colors"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -1544,6 +1826,14 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
             </div>
             )}
 
+            {tripType === 'Delivery' && deliveryType === 'DCC' && renderDenominationPanel(
+              'Denomination Pasangan Collection Cash to Cash (CCC)',
+              'paired',
+              pairedCollectionRows,
+              pairedCollectionTotal,
+              pairedCollectionTargetAmount
+            )}
+
             {/* Common Fields */}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
               <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-2 pb-2 border-b border-slate-100">
@@ -1569,7 +1859,7 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   <span>Order Summary (All Tickets)</span>
                 </h4>
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-700">
-                  {targetTickets} Ticket
+                  {operationalSummaryRows.length} Trip Operasional
                 </span>
               </div>
 
@@ -1578,23 +1868,25 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                   <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
                     <tr>
                       <th className="px-3 py-2.5 font-extrabold">No</th>
-                      <th className="px-3 py-2.5 font-extrabold">Category</th>
+                      <th className="px-3 py-2.5 font-extrabold">Tipe Trip</th>
                       <th className="px-3 py-2.5 font-extrabold">Tanggal Trip</th>
                       <th className="px-3 py-2.5 font-extrabold">Currency</th>
-                      <th className="px-3 py-2.5 font-extrabold">Branch</th>
+                      <th className="px-3 py-2.5 font-extrabold">Cab ADV</th>
+                      <th className="px-3 py-2.5 font-extrabold">Vault</th>
                       <th className="px-3 py-2.5 font-extrabold">Client</th>
                       <th className="px-3 py-2.5 text-right font-extrabold">Total / Jumlah</th>
                       <th className="px-3 py-2.5 text-center font-extrabold">Details</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {ticketSummaryDrafts.map(({ ticketIndex, draft, total }) => (
-                      <tr key={ticketIndex} className={ticketIndex === currentTicketIndex ? 'bg-blue-50/50' : 'bg-white'}>
+                    {operationalSummaryRows.map(({ key, ticketIndex, tripCode, draft, total }) => (
+                      <tr key={key} className={ticketIndex === currentTicketIndex ? 'bg-blue-50/50' : 'bg-white'}>
                         <td className="px-3 py-2.5 font-bold">{ticketIndex}</td>
-                        <td className="px-3 py-2.5 font-semibold">DA {draft.tripType}</td>
+                        <td className="px-3 py-2.5 font-semibold">{tripCode}</td>
                         <td className="px-3 py-2.5 font-mono">{draft.tripDate}</td>
                         <td className="px-3 py-2.5 font-mono font-bold">{draft.currency}</td>
-                        <td className="px-3 py-2.5 font-semibold">{draft.branchName || '-'}</td>
+                        <td className="px-3 py-2.5 font-semibold">{draft.warehouseName || '-'}</td>
+                        <td className="px-3 py-2.5 font-semibold">{draft.vaultBranchName || '-'}</td>
                         <td className="px-3 py-2.5 font-semibold">{draft.clientName || '-'}</td>
                         <td className="px-3 py-2.5 text-right font-mono font-bold">
                           {draft.currency} {total.toLocaleString()}
