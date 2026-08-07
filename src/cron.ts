@@ -30,7 +30,7 @@ import {
 import { triggerCitApiWorkflow } from './cit-api-service';
 import { dbGetTenants, dbSaveEmail, dbSaveDailySummary, dbGetCustomFilters, dbGetDynamicFilters, Tenant, DailySummary } from './services/dbManager';
 import { generateDailySummary } from './services/aiProcessingService';
-import { emailQueue } from './config/queue';
+import { emailQueue, pushTenantLog } from './config/queue';
 import { detectClientFromEmail } from './services/clientDetector';
 
 // Import broadcastEvent dynamically from server to prevent circular dependencies
@@ -484,6 +484,7 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
 
       totalAddedCount += accountAddedCount;
       console.log(`[POP3 Fetcher] ✅ Berhasil menarik ${accountAddedCount} email baru dari ${config.email_address}`);
+      await pushTenantLog(config.tenant_id || 1, `[SyncPOP3] Connected to ${config.email_address}. Synced ${accountAddedCount} new emails.`, 'SUCCESS', 100, 'SyncPOP3').catch(() => {});
       await client.sendCommand('QUIT').catch(() => {});
       try { client.close(); } catch (e) {}
 
@@ -492,7 +493,9 @@ export async function performBackgroundSync(): Promise<{ success: boolean; count
       if (/authorization failed|authentication failed|USER command rejected|PASS command rejected/i.test(syncErrorMessage)) {
         pop3RetryAfter.set(accountKey, Date.now() + POP3_AUTH_RETRY_COOLDOWN_MS);
       }
-      console.warn(`[POP3 Fetcher] ⚠️ Connection/Authentication warning for ${config.email_address}: ${syncErr.message || String(syncErr)}`);
+      const tenantId = config.tenant_id || 1;
+      console.warn(`[POP3 Fetcher] ⚠️ Connection/Authentication warning for ${config.email_address}: ${syncErrorMessage}`);
+      await pushTenantLog(tenantId, `[SyncPOP3 Warning] ${config.email_address}: ${syncErrorMessage}`, 'ERROR', 100, 'SyncPOP3').catch(() => {});
       try { client.close(); } catch (e) {}
     }
   }

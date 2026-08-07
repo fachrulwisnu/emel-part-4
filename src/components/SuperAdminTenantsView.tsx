@@ -30,6 +30,10 @@ export interface TenantPermissions {
   daily_summary: boolean;
   mail_wa_setup: boolean;
   dynamic_filters: boolean;
+  order_input_read?: boolean;
+  order_input_create?: boolean;
+  order_input_update?: boolean;
+  order_input_delete?: boolean;
 }
 
 export interface TenantConfig {
@@ -92,6 +96,36 @@ export const SuperAdminTenantsView: React.FC = () => {
     loadTenants();
   }, []);
 
+  const handleOpenAddTenant = () => {
+    setModalTab('info');
+    setShowPassword(false);
+    setEditingTenant({
+      id: 0,
+      name: '',
+      admin_email: '',
+      admin_password: '',
+      ai_models: ['Custom AI Core'],
+      feature_individual_parsing: false,
+      feature_bulk_summary: false,
+      pop3_host: '',
+      pop3_port: 110,
+      pop3_user: '',
+      pop3_pass: '',
+      wa_phone: '',
+      permissions: {
+        dashboard: true,
+        cit_dispatch: true,
+        daily_summary: true,
+        mail_wa_setup: true,
+        dynamic_filters: true,
+        order_input_read: true,
+        order_input_create: true,
+        order_input_update: true,
+        order_input_delete: true
+      }
+    });
+  };
+
   const handleSaveTenant = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTenant) return;
@@ -131,6 +165,21 @@ export const SuperAdminTenantsView: React.FC = () => {
       const data = await res.json();
 
       if (data.success) {
+        const savedTenant: TenantConfig = data.tenant || {
+          ...payload,
+          id: data.tenant?.id || editingTenant.id || Date.now()
+        };
+
+        // Phase 2: Array state update using .map() for edits to prevent duplication
+        setTenants(prev => {
+          const exists = prev.some(item => item.id === savedTenant.id);
+          if (exists) {
+            return prev.map(item => item.id === savedTenant.id ? savedTenant : item);
+          } else {
+            return [...prev, savedTenant];
+          }
+        });
+
         setStatusMsg({ 
           type: 'success', 
           text: `Transaksi Berhasil! Divisi "${editingTenant.name}" dan Akun Admin (${editingTenant.admin_email || 'terbarui'}) berhasil disimpan.` 
@@ -256,34 +305,7 @@ export const SuperAdminTenantsView: React.FC = () => {
             </div>
 
             <button
-              onClick={() => {
-                setModalTab('info');
-                setEditingTenant({
-                  id: 0,
-                  name: '',
-                  admin_email: '',
-                  admin_password: '',
-                  ai_models: ['Custom AI Core', 'Nemotron 3 Super 120B'],
-                  feature_individual_parsing: true,
-                  feature_bulk_summary: false,
-                  pop3_host: '',
-                  pop3_port: 110,
-                  pop3_user: '',
-                  pop3_pass: '',
-                  wa_phone: '',
-                  permissions: {
-                    dashboard: true,
-                    cit_dispatch: true,
-                    daily_summary: true,
-                    mail_wa_setup: true,
-                                              dynamic_filters: true,
-                          order_input_read: true,
-                          order_input_create: true,
-                          order_input_update: true,
-                          order_input_delete: true
-                        }
-                });
-              }}
+              onClick={handleOpenAddTenant}
               className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -628,7 +650,7 @@ export const SuperAdminTenantsView: React.FC = () => {
                           cit_dispatch: true,
                           daily_summary: true,
                           mail_wa_setup: true,
-                                                    dynamic_filters: true,
+                          dynamic_filters: true,
                           order_input_read: true,
                           order_input_create: true,
                           order_input_update: true,

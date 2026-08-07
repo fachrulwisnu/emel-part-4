@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   FileText, 
   Send, 
@@ -19,7 +21,9 @@ import {
   ShieldAlert,
   Tag,
   Paperclip,
-  Check
+  Check,
+  History,
+  Copy
 } from 'lucide-react';
 
 interface EmailSource {
@@ -40,14 +44,16 @@ interface EmailSource {
 }
 
 interface DailySummary {
-  id?: number;
+  id?: number | string;
   tenant_id: number;
   summary_date: string;
   content_text: string;
+  content_text_short?: string;
   is_sent_to_wa?: boolean;
   source_email_ids?: string[];
   source_emails?: EmailSource[];
   created_at?: string;
+  history?: DailySummary[];
 }
 
 interface BulkSummaryViewProps {
@@ -75,7 +81,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   const [isLoading, setIsLoading] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [blastingId, setBlastingId] = useState<number | null>(null);
+  const [blastingId, setBlastingId] = useState<number | string | null>(null);
 
   // Cache & Incremental Detection States
   const [isCached, setIsCached] = useState<boolean>(false);
@@ -88,7 +94,16 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
 
   // Accordion state per summary ID
-  const [expandedSummaryIds, setExpandedSummaryIds] = useState<Record<number, boolean>>({});
+  const [expandedSummaryIds, setExpandedSummaryIds] = useState<Record<string | number, boolean>>({});
+
+  // Active Tab per summary card: 'full' (Laporan Lengkap Web/DCT) vs 'short' (Telegram/WA)
+  const [activeTabMap, setActiveTabMap] = useState<Record<string | number, 'full' | 'short'>>({});
+
+  // Selected Version per summary card
+  const [selectedVersionMap, setSelectedVersionMap] = useState<Record<string | number, number>>({});
+
+  // Copied indicator
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // Modal summary detail state (INSTRUKSI 3)
   const [selectedSummaryForDetail, setSelectedSummaryForDetail] = useState<DailySummary | null>(null);
@@ -118,6 +133,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     }
 
     setIsLoading(true);
+    setSummaries([]);
     try {
       let url = `/api/bulk-summary/today?target_date=${targetDateStr}`;
       if (currentTenantId) url += `&tenant_id=${currentTenantId}`;
@@ -128,20 +144,22 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
       setHasNewEmails(Boolean(data.has_new_emails));
       setNewEmailsCount(Number(data.new_emails_count || 0));
 
-      if (data.success && data.data) {
+      const targetObj = data.data || data.cached_data;
+      const textContent = targetObj?.summary_text || targetObj?.content_text;
+      if (data.success && targetObj && textContent && textContent.trim().length > 0) {
         const mappedData = {
-          ...data.data,
-          content_text: data.data.summary_text || data.data.content_text,
-          created_at: data.data.generated_at || data.data.created_at,
-          source_emails: data.data.referenced_emails || data.data.source_emails
+          ...targetObj,
+          content_text: textContent,
+          content_text_short: targetObj.summary_text_short || targetObj.content_text_short,
+          created_at: targetObj.generated_at || targetObj.created_at,
+          source_emails: targetObj.referenced_emails || targetObj.source_emails
         };
         setSummaries([mappedData]);
         if (mappedData.id) {
           setExpandedSummaryIds({ [mappedData.id]: true });
         }
       } else {
-        // Auto-generate for this date if not found
-        handleTriggerBulkSummary(targetDateStr);
+        setSummaries([]);
       }
     } catch (err) {
       console.error('Failed to load daily summaries:', err);
@@ -154,7 +172,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     loadSummaries();
   }, [currentTenantId]);
 
-  const handleTriggerBulkSummary = async (overrideDate?: string, options?: { is_merge?: boolean; force_refresh?: boolean }) => {
+  const handleTriggerBulkSummary = async (overrideDate?: string, options?: { is_merge?: boolean; force_refresh?: boolean; force_reprocess?: boolean }) => {
     const rawDate = overrideDate || selectedDate;
     const targetDateStr = typeof rawDate === 'string' && rawDate.trim() ? rawDate.trim().split('T')[0] : todayStr;
     setMessage(null);
@@ -202,7 +220,8 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
           tenant_id: currentTenantId,
           target_date: targetDateStr,
           is_merge: Boolean(options?.is_merge),
-          force_refresh: Boolean(options?.force_refresh)
+          force_refresh: Boolean(options?.force_refresh),
+          force_reprocess: Boolean(options?.force_reprocess || options?.force_refresh || options?.is_merge)
         })
       });
       const data = await res.json();
@@ -211,17 +230,19 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
       setProgressPercent(100);
       setCurrentStepText('Step 4 (100%): Menyimpan dan memfinalisasi laporan...');
 
-      if (data.success && data.data) {
+      const targetObj = data.data || data.cached_data;
+      if (data.success && targetObj) {
         setIsCached(Boolean(data.cached));
         setHasNewEmails(Boolean(data.has_new_emails));
         setNewEmailsCount(Number(data.new_emails_count || 0));
 
         setMessage(data.message || `Rangkuman baru berhasil diproses untuk tanggal ${targetDateStr}!`);
         const mappedData = {
-          ...data.data,
-          content_text: data.data.summary_text || data.data.content_text,
-          created_at: data.data.generated_at || data.data.created_at,
-          source_emails: data.data.referenced_emails || data.data.source_emails
+          ...targetObj,
+          content_text: targetObj.summary_text || targetObj.content_text,
+          content_text_short: targetObj.summary_text_short || targetObj.content_text_short,
+          created_at: targetObj.generated_at || targetObj.created_at,
+          source_emails: targetObj.referenced_emails || targetObj.source_emails
         };
         setSummaries([mappedData]);
         if (mappedData.id) {
@@ -244,7 +265,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     }
   };
 
-  const handleWaBlast = async (summaryId: number) => {
+  const handleWaBlast = async (summaryId: number | string) => {
     setBlastingId(summaryId);
     setMessage(null);
     try {
@@ -265,7 +286,7 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
     }
   };
 
-  const toggleAccordion = (summaryId: number) => {
+  const toggleAccordion = (summaryId: number | string) => {
     setExpandedSummaryIds(prev => ({
       ...prev,
       [summaryId]: !prev[summaryId]
@@ -371,21 +392,18 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
         </div>
       )}
 
-      {/* INSTRUKSI 2: INCREMENTAL NEW EMAIL DETECTION & MERGE BANNER */}
+      {/* INSTRUKSI 3: INCREMENTAL NEW EMAIL DETECTION & MERGE BANNER */}
       {hasNewEmails && !isTriggering && (
-        <div className="p-5 bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border border-amber-500/40 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-amber-200 shadow-lg animate-fadeIn">
+        <div className="p-5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-amber-900 shadow-sm animate-fadeIn">
           <div className="flex items-center gap-3">
-            <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+            <div className="p-3 rounded-2xl bg-amber-200/80 text-amber-800 border border-amber-300">
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <div>
-              <div className="font-bold text-sm text-amber-300 flex items-center gap-2">
-                <span>Ready to Merge</span>
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 font-extrabold text-xs shadow-xs">
-                  +{newEmailsCount} Email Baru Ditemukan
-                </span>
+              <div className="font-extrabold text-sm text-amber-950 flex items-center gap-2">
+                <span>Terdeteksi {newEmailsCount} Email Baru yang belum dirangkum!</span>
               </div>
-              <p className="text-xs text-amber-200/90 mt-1">
+              <p className="text-xs text-amber-800 mt-0.5">
                 Terdapat email baru yang masuk sejak rangkuman terakhir. Gabungkan email baru ke dalam laporan harian tanpa membuang token untuk merangkum ulang email lama.
               </p>
             </div>
@@ -393,20 +411,12 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
           <div className="flex items-center gap-2.5 self-end sm:self-auto shrink-0">
             <button
-              onClick={() => handleTriggerBulkSummary(selectedDate, { is_merge: true })}
+              onClick={() => handleTriggerBulkSummary(selectedDate, { force_reprocess: true, is_merge: true })}
               disabled={isTriggering || isLoading}
-              className="px-4 py-2.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
-              <Sparkles className="w-4 h-4 fill-slate-950" />
-              <span>Merge New Emails (+{newEmailsCount})</span>
-            </button>
-
-            <button
-              onClick={() => handleTriggerBulkSummary(selectedDate, { force_refresh: true })}
-              disabled={isTriggering || isLoading}
-              className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-xl border border-slate-700 font-bold transition-all cursor-pointer"
-            >
-              Generate Ulang Semua
+              <Sparkles className="w-4 h-4 fill-white" />
+              <span>Merge & Generate Ulang</span>
             </button>
           </div>
         </div>
@@ -423,33 +433,50 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
       <div className="space-y-6">
         {summaries.length === 0 ? (
           <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500 space-y-3 shadow-xs">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center">
-              <FileText className="w-6 h-6" />
+            <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center border border-indigo-100 shadow-2xs">
+              <FileText className="w-7 h-7" />
             </div>
-            <h3 className="font-bold text-slate-800 text-sm">Belum Ada Rangkuman Harian</h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Sistem akan memproses email masuk secara otomatis sesuai cut-off 05:00 - 23:59 harian dan menghasilkan rangkuman AI.
+            <h3 className="font-bold text-slate-800 text-sm">Belum ada rangkuman untuk tanggal ini</h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+              Belum ada rangkuman harian yang ter-generate untuk tanggal {selectedDate}. Silakan klik Generate Summary di bawah ini.
             </p>
             <button
-              onClick={handleTriggerBulkSummary}
+              onClick={() => handleTriggerBulkSummary()}
               disabled={isTriggering || isLoading}
-              className="mt-2 inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold shadow-xs hover:bg-indigo-700 transition-all cursor-pointer disabled:opacity-50"
+              className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold shadow-sm hover:bg-indigo-700 transition-all cursor-pointer disabled:opacity-50"
             >
               <Sparkles className={`w-4 h-4 text-amber-300 ${(isTriggering || isLoading) ? 'animate-spin' : ''}`} />
-              <span>{(isTriggering || isLoading) ? 'Memproses AI Summary...' : 'Jalankan Manual Sekarang'}</span>
+              <span>{(isTriggering || isLoading) ? 'Memproses AI Summary...' : 'Generate Summary Tanggal Ini'}</span>
             </button>
           </div>
         ) : (
           summaries.map((s, idx) => {
             const summaryId = s.id || idx;
             const isExpanded = !!expandedSummaryIds[summaryId];
-            const sourceEmails = s.source_emails || [];
+            
+            // Version History calculation
+            const historyList = (s.history && s.history.length > 0) ? s.history : [s];
+            const currentVersionIdx = selectedVersionMap[summaryId] ?? 0;
+            const activeSummary = historyList[currentVersionIdx] || s;
+
+            const sourceEmails = activeSummary.source_emails || s.source_emails || [];
             const sourceCount = sourceEmails.length;
+
+            const currentTab = activeTabMap[summaryId] || 'full';
+            const displayText = currentTab === 'short' 
+              ? (activeSummary.content_text_short || activeSummary.content_text)
+              : activeSummary.content_text;
+
+            const handleCopyText = (text: string) => {
+              navigator.clipboard.writeText(text);
+              setCopiedKey(`${summaryId}-${currentTab}`);
+              setTimeout(() => setCopiedKey(null), 2000);
+            };
 
             return (
               <div key={summaryId} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 transition-all overflow-hidden">
                 
-                {/* Header Card with Strategic WA Blast Button */}
+                {/* Header Card with Version Selector & Action Buttons */}
                 <div className="bg-slate-50/80 p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="p-2.5 bg-indigo-600 text-white rounded-xl font-extrabold text-xs shadow-xs">
@@ -460,21 +487,40 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                         <Calendar className="w-4 h-4 text-indigo-600" />
                         <span>Rangkuman Tanggal: {String(s.summary_date || '')}</span>
                       </h3>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5">
+                      <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-0.5 flex-wrap">
                         <Clock className="w-3 h-3 text-slate-400" />
-                        <span>Terakhir Diperbarui: {s.created_at ? new Date(s.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
+                        <span>Diperbarui: {activeSummary.created_at ? new Date(activeSummary.created_at).toLocaleString('id-ID') : 'Baru Saja'}</span>
                         <span>•</span>
-                        <span className="font-medium text-slate-600">Cut-off Time: 05:00 - 23:59</span>
+                        <span className="font-medium text-slate-600">Cut-off: 05:00 - 23:59</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Strategic WA Blast Controls (INSTRUKSI 4) */}
+                  {/* Top Right Actions & Badges */}
                   <div className="flex items-center gap-2 flex-wrap">
+                    {/* Version History Dropdown / Switcher if multiple versions exist */}
+                    {historyList.length > 1 && (
+                      <div className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-200 rounded-xl px-2.5 py-1 text-xs">
+                        <History className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        <span className="font-bold text-indigo-900 text-[11px]">Versi:</span>
+                        <select
+                          value={currentVersionIdx}
+                          onChange={(e) => setSelectedVersionMap(prev => ({ ...prev, [summaryId]: Number(e.target.value) }))}
+                          className="bg-transparent font-bold text-indigo-700 focus:outline-none cursor-pointer text-xs"
+                        >
+                          {historyList.map((h, hIdx) => (
+                            <option key={hIdx} value={hIdx}>
+                              Versi #{historyList.length - hIdx} ({h.created_at ? new Date(h.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : 'Terbaru'}) {hIdx === 0 ? '• Terbaru' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
                     {isCached && (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-sky-50 text-sky-700 border border-sky-300">
                         <CheckCircle2 className="w-3.5 h-3.5 text-sky-600" />
-                        <span>Cache Database Active</span>
+                        <span>Cached</span>
                       </span>
                     )}
 
@@ -484,13 +530,13 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
                         : 'bg-amber-50 text-amber-800 border-amber-300'
                     }`}>
                       <MessageSquare className="w-3.5 h-3.5" />
-                      <span>{s.is_sent_to_wa ? 'Sent via WhatsApp' : 'Ready for Blast'}</span>
+                      <span>{s.is_sent_to_wa ? 'Sent via WA' : 'Ready for Blast'}</span>
                     </span>
 
                     <button
                       type="button"
-                      onClick={() => setSelectedSummaryForDetail(s)}
-                      className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                      onClick={() => setSelectedSummaryForDetail(activeSummary)}
+                      className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                     >
                       <Eye className="w-3.5 h-3.5" />
                       <span>Lihat Detail</span>
@@ -498,33 +544,81 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
                     <button
                       type="button"
-                      onClick={() => handleWaBlast(summaryId)}
+                      onClick={() => handleWaBlast(summaryId as number)}
                       disabled={blastingId === summaryId}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-2 cursor-pointer ${
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer ${
                         s.is_sent_to_wa
                           ? 'bg-slate-800 hover:bg-slate-900 text-white'
                           : 'bg-emerald-600 hover:bg-emerald-500 text-white'
                       }`}
-                      title="Kirim hasil rangkuman AI ke nomor WhatsApp divisi"
                     >
                       <Send className={`w-3.5 h-3.5 ${blastingId === summaryId ? 'animate-pulse' : ''}`} />
-                      <span>{blastingId === summaryId ? 'Mengirim...' : s.is_sent_to_wa ? 'Blast Ulang WA' : 'Blast WA Sekarang'}</span>
+                      <span>{blastingId === summaryId ? 'Mengirim...' : s.is_sent_to_wa ? 'Blast Ulang WA' : 'Blast WA'}</span>
                     </button>
                   </div>
                 </div>
 
-                {/* AI Summary Content Text Box */}
+                {/* AI Summary Content & Format Switcher Tabs */}
                 <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>Teks Hasil Summary AI (WhatsApp Ready)</span>
-                    </h4>
+                  {/* Format Tabs & Copy Action */}
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-3 flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTabMap(prev => ({ ...prev, [summaryId]: 'full' as const }))}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          currentTab === 'full'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Laporan Lengkap (Web / DCT)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setActiveTabMap(prev => ({ ...prev, [summaryId]: 'short' as const }))}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          currentTab === 'short'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Format Ringkas (Telegram / WA)</span>
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(displayText)}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedKey === `${summaryId}-${currentTab}` ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-emerald-700">Teks Disalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Salin Teks {currentTab === 'short' ? 'Telegram/WA' : 'Laporan'}</span>
+                        </>
+                      )}
+                    </button>
                   </div>
 
-                  <div className="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
-                    {s.content_text}
-                  </div>
+                  {/* Summary Text Content Rendering */}
+                  {currentTab === 'full' ? (
+                    <div className="bg-white text-gray-900 border border-gray-200 shadow-sm rounded-xl p-6 lg:p-8 prose prose-slate prose-table:border-collapse prose-th:bg-gray-100 prose-td:border prose-td:border-gray-200 max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayText}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="bg-emerald-50 text-emerald-950 border border-emerald-200 shadow-sm rounded-xl p-6 lg:p-8 whitespace-pre-wrap font-mono text-xs leading-relaxed">
+                      {displayText}
+                    </div>
+                  )}
 
                   {/* INSTRUKSI 3: DATA TRANSPARENCY & AWARENESS SECTION */}
                   <div className="mt-6 border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
@@ -784,16 +878,57 @@ export const BulkSummaryView: React.FC<BulkSummaryViewProps> = ({ currentTenantI
 
             {/* Modal Body */}
             <div className="p-6 overflow-y-auto flex-1 space-y-6">
-              {/* WhatsApp Text Summary */}
+              {/* Laporan Lengkap (Web / DCT) */}
               <div>
-                <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-indigo-600" />
-                  Teks Rangkuman AI
-                </h4>
-                <div className="bg-slate-900 text-slate-100 rounded-xl p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed shadow-inner border border-slate-800">
-                  {selectedSummaryForDetail.content_text}
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-600" />
+                    Laporan Lengkap (Web / DCT)
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedSummaryForDetail.content_text);
+                      setCopiedKey('modal-full');
+                      setTimeout(() => setCopiedKey(null), 2000);
+                    }}
+                    className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                  >
+                    {copiedKey === 'modal-full' ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
+                    <span>{copiedKey === 'modal-full' ? 'Disalin!' : 'Salin Laporan'}</span>
+                  </button>
+                </div>
+                <div className="bg-white text-gray-900 border border-gray-200 shadow-sm rounded-xl p-6 lg:p-8 prose prose-slate prose-table:border-collapse prose-th:bg-gray-100 prose-td:border prose-td:border-gray-200 max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedSummaryForDetail.content_text}</ReactMarkdown>
                 </div>
               </div>
+
+              {/* Format Ringkas (Telegram / WA) */}
+              {selectedSummaryForDetail.content_text_short && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-emerald-600" />
+                      Format Ringkas (Telegram / WhatsApp)
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedSummaryForDetail.content_text_short || '');
+                        setCopiedKey('modal-short');
+                        setTimeout(() => setCopiedKey(null), 2000);
+                      }}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiedKey === 'modal-short' ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5 text-slate-500" />}
+                      <span>{copiedKey === 'modal-short' ? 'Disalin!' : 'Salin Telegram/WA'}</span>
+                    </button>
+                  </div>
+                  <div className="bg-emerald-50 text-emerald-950 border border-emerald-200 shadow-sm rounded-xl p-6 lg:p-8 whitespace-pre-wrap font-mono text-xs leading-relaxed">
+                    {selectedSummaryForDetail.content_text_short}
+                  </div>
+                </div>
+              )}
 
               {/* Source Emails Accordion List */}
               <div>

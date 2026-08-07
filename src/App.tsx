@@ -40,7 +40,9 @@ import {
   Send,
   Tag,
   FolderSync,
-  RotateCcw
+  RotateCcw,
+  HelpCircle,
+  Key
 } from 'lucide-react';
 import { PendingOrderInput } from './components/PendingOrderInput';
 import CitDashboard from './components/CitDashboard';
@@ -60,7 +62,10 @@ import { TenantIntegrationSettings } from './components/TenantIntegrationSetting
 import { DynamicFiltersManager } from './components/DynamicFiltersManager';
 import { HelpDrawer } from './components/HelpDrawer';
 import { RedisQueueDashboard } from './components/RedisQueueDashboard';
-import { Shield, Building2, Layers, LogOut, Key, BarChart3, Building, ShieldCheck, Filter, HelpCircle, Cpu } from 'lucide-react';
+import { Shield, Building2, Layers, LogOut, BarChart3, Building, ShieldCheck, Filter, Cpu, Code2 } from 'lucide-react';
+import SwaggerUI from 'swagger-ui-react';
+import 'swagger-ui-react/swagger-ui.css';
+import apiDocsSchema from './utils/apiDocsSchema';
 
 interface UserPermissions {
   dashboard: boolean;
@@ -77,6 +82,7 @@ interface UserPermissions {
 interface UserSession {
   id: number;
   tenant_id: number | null;
+  tenantId?: number | null;
   email: string;
   role: 'SUPER_ADMIN' | 'TENANT_ADMIN';
   tenant_name?: string;
@@ -100,6 +106,10 @@ interface Email {
   sub_category?: string;
   folder_parent?: string;
   folder_child?: string;
+  suggested_folder_parent?: string;
+  suggested_folder_child?: string;
+  source_email?: string;
+  attachments?: any[];
   api_workflow_status?: string;
   api_workflow_log?: string;
 
@@ -216,20 +226,24 @@ const getTagBadgeStyle = (str: string) => {
 };
 
 export default function App() {
-  // Authentication & Multi-Tenant User Session
-  const [currentUser, setCurrentUser] = useState<UserSession | null>({
-    id: 1,
-    tenant_id: null,
-    email: 'fachrul',
-    role: 'SUPER_ADMIN',
-    tenant_name: 'SUPER ADMIN'
+  // Authentication & Multi-Tenant User Session (Loaded cleanly from localStorage or null)
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => {
+    try {
+      const stored = localStorage.getItem('user');
+      if (stored) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error("Failed to parse stored user session:", e);
+    }
+    return null;
   });
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Navigation
   const [currentMenu, setCurrentMenu] = useState<'inbox' | 'intelligence' | 'cit-dashboard' | 'bulk-summary' | 'dynamic-rules' | 'settings' | 'superadmin-analytics' | 'superadmin-tenants' | 'tenant-settings' | 'dynamic-filters' | 'redis-monitor' | 'pending-input'>('inbox');
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor' | 'pending-input'>('mail');
+  const [settingsTab, setSettingsTab] = useState<'mail' | 'whatsapp' | 'api' | 'api-docs' | 'backfill' | 'ai-health' | 'superadmin-analytics' | 'superadmin-tenants' | 'redis-monitor' | 'pending-input'>('mail');
   const [prefillEmail, setPrefillEmail] = useState<Email | null>(null);
 
   // Multi-Account Filter States
@@ -640,7 +654,7 @@ export default function App() {
     }
   };
 
-  const addToast = (title: string, message: string) => {
+  const addToast = (title: string, message: string, type?: string) => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, title, message }]);
     setTimeout(() => {
@@ -736,23 +750,39 @@ export default function App() {
     }
   };
 
+  const resetState = () => {
+    setTickets([]);
+    setSelectedEmail(null);
+    setMailConfigs([]);
+    setSelectedSourceEmail('');
+    setDynamicFolders([]);
+    setCustomFilters([]);
+    setFilterRules([]);
+    setConfiguredRules([]);
+  };
+
   // Fetch Mail Configs for multi-account selector
   const loadMailConfigs = async () => {
     try {
       const tenantId = currentUser?.tenant_id || '';
       const res = await fetch(`/api/mail-configs?tenant_id=${tenantId}`);
       const data = await res.json();
-      if (data.success && data.configs) {
+      if (data.success && Array.isArray(data.configs)) {
         setMailConfigs(data.configs);
+      } else {
+        setMailConfigs([]);
       }
     } catch (err) {
       console.error('Failed to load mail configs:', err);
+      setMailConfigs([]);
     }
   };
 
   // Fetch Emails
   const loadEmails = async (sourceEmailFilter?: string) => {
     try {
+      setTickets([]);
+      setSelectedEmail(null);
       const activeSource = sourceEmailFilter !== undefined ? sourceEmailFilter : selectedSourceEmail;
       let url = `/api/emails?tenant_id=${currentUser?.tenant_id || ''}`;
       if (activeSource) {
@@ -760,7 +790,7 @@ export default function App() {
       }
       const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.emails) {
+      if (data.success && Array.isArray(data.emails)) {
         // Map raw database emails to frontend schema (e.g. fromName, fromAddress)
         const mapped: Email[] = data.emails.map((email: any) => {
           let fromName = '';
@@ -794,6 +824,9 @@ export default function App() {
         } else {
           setSelectedEmail(null);
         }
+      } else {
+        setTickets([]);
+        setSelectedEmail(null);
       }
       await loadFolders();
     } catch (err) {
@@ -804,9 +837,14 @@ export default function App() {
   // Load dynamic folder list
   const loadFolders = async () => {
     try {
-      const res = await fetch('/api/folders');
+      const tenantId = currentUser?.tenant_id || currentUser?.tenantId;
+      let url = '/api/folders';
+      if (tenantId) {
+        url += `?tenant_id=${tenantId}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
-      if (data.success && data.folders) {
+      if (data.success && Array.isArray(data.folders)) {
         setDynamicFolders(data.folders);
         setExpandedParents(prev => {
           const next = { ...prev };
@@ -818,9 +856,12 @@ export default function App() {
           });
           return next;
         });
+      } else {
+        setDynamicFolders([]);
       }
     } catch (err) {
       console.error('Failed to load folders:', err);
+      setDynamicFolders([]);
     }
   };
 
@@ -913,6 +954,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    resetState();
     if (currentUser) {
       loadMailConfigs();
       loadEmails(selectedSourceEmail);
@@ -1398,48 +1440,70 @@ export default function App() {
     return clean.slice(0, 2).toUpperCase();
   };
 
+  const handleLogout = () => {
+    // 1. Sapu bersih semua storage (Nuclear Option)
+    localStorage.clear();
+    sessionStorage.clear();
+
+    // 2. Set state ke null
+    if (typeof setCurrentUser === 'function') setCurrentUser(null);
+
+    // 3. Paksa hard reload browser ke halaman root agar RAM dibuang & auth state terinisialisasi bersih
+    window.location.replace('/');
+  };
+
   const handleBypassLogin = (role: 'SUPER_ADMIN' | 'TENANT_ADMIN') => {
-    if (role === 'SUPER_ADMIN') {
-      setCurrentUser({
-        id: 1,
-        tenant_id: null,
-        email: 'fachrul',
-        role: 'SUPER_ADMIN',
-        tenant_name: 'SUPER ADMIN',
-        permissions: {
-          dashboard: true,
-          cit_dispatch: true,
-          daily_summary: true,
-          mail_wa_setup: true,
-          dynamic_filters: true
-        }
-      });
-      setCurrentMenu('inbox');
-    } else {
-      setCurrentUser({
-        id: 2,
-        tenant_id: 1,
-        email: 'cos',
-        role: 'TENANT_ADMIN',
-        tenant_name: 'COS',
-        permissions: {
-          dashboard: true,
-          cit_dispatch: true,
-          daily_summary: true,
-          mail_wa_setup: true,
-          dynamic_filters: true
-        }
-      });
-      setCurrentMenu('inbox');
-    }
+    // 1. Bersihkan sisa data lama sebelum pasang yang baru
+    localStorage.clear();
+    sessionStorage.clear();
+
+    const userObj: UserSession = role === 'SUPER_ADMIN' ? {
+      id: 1,
+      tenant_id: null,
+      email: 'fachrul',
+      role: 'SUPER_ADMIN',
+      tenant_name: 'SUPER ADMIN',
+      permissions: {
+        dashboard: true,
+        cit_dispatch: true,
+        daily_summary: true,
+        mail_wa_setup: true,
+        dynamic_filters: true
+      }
+    } : {
+      id: 2,
+      tenant_id: 1,
+      email: 'cos',
+      role: 'TENANT_ADMIN',
+      tenant_name: 'COS',
+      permissions: {
+        dashboard: true,
+        cit_dispatch: true,
+        daily_summary: true,
+        mail_wa_setup: true,
+        dynamic_filters: true
+      }
+    };
+
+    // 2. Pasang data baru
+    localStorage.setItem('user', JSON.stringify(userObj));
+    setCurrentUser(userObj);
+    setCurrentMenu('inbox');
+
+    // 3. HARD RELOAD ke root untuk inisiasi state yang bersih
+    window.location.replace('/');
   };
 
   if (!currentUser) {
     return (
       <LoginPage 
         onLoginSuccess={(user) => {
+          localStorage.clear();
+          sessionStorage.clear();
+          localStorage.setItem('user', JSON.stringify(user));
           setCurrentUser(user);
           setCurrentMenu('inbox');
+          window.location.replace('/');
         }} 
         onBypassLogin={handleBypassLogin} 
       />
@@ -1614,7 +1678,7 @@ export default function App() {
               </div>
             </div>
             <button 
-              onClick={() => setCurrentUser(null)}
+              onClick={handleLogout}
               title="Keluar (Logout)"
               className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-lg transition-colors cursor-pointer shrink-0"
             >
@@ -1627,139 +1691,153 @@ export default function App() {
       {/* 2. MAIN WORKSPACE */}
       <main className="flex flex-col flex-1 overflow-hidden" id="workspace_container">
         
-        {/* TOP SYSTEM & ACTIONS BAR */}
-        <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0" id="workspace_header">
-          <div className="flex items-center space-x-3">
-            <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans">
-              {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
-              {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
-                            {currentMenu === 'pending-input' && 'Pending Order Input'}
-              {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
-              {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
-              {currentMenu === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
-              {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
-              {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
-              {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
-              {currentMenu === 'redis-monitor' && 'AI Queue & Redis BullMQ Monitor'}
-            </h1>
-            <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200">
-              <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
-              {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
-            </span>
-            <AiHealthIndicators />
+        {/* TOP SYSTEM & ACTIONS BAR (REVAMPED TWO-ROW LAYOUT) */}
+        <header className="border-b border-slate-200 bg-white flex flex-col shrink-0 shadow-2xs" id="workspace_header">
+          {/* BARIS 1: Header Info, Status Badges, Action Buttons & User Session */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between px-6 py-3 border-b border-slate-100 gap-3">
+            {/* Kiri: Title & Status Badges */}
+            <div className="flex items-center gap-3 flex-wrap min-w-0">
+              <h1 className="text-base font-bold text-slate-800 tracking-tight font-sans truncate">
+                {currentMenu === 'inbox' && 'Workflow Email Ticketing System'}
+                {currentMenu === 'cit-dashboard' && 'CIT Dispatch Management Dashboard'}
+                {currentMenu === 'pending-input' && 'Pending Order Input'}
+                {currentMenu === 'settings' && 'Automation Rule & Mail Config'}
+                {currentMenu === 'intelligence' && 'AI Email Intelligence Dashboard'}
+                {(currentMenu as string) === 'superadmin' && 'Super Admin Multi-Tenant Control Center'}
+                {currentMenu === 'bulk-summary' && 'Daily Bulk Email Summary & WA Blast'}
+                {currentMenu === 'tenant-settings' && `Mail & WA Integration Setup (Divisi ${currentUser?.tenant_name || 'Tenant'})`}
+                {currentMenu === 'dynamic-filters' && 'Master Dynamic Filters Routing (Region 1-6)'}
+                {currentMenu === 'redis-monitor' && 'AI Queue & Redis BullMQ Monitor'}
+              </h1>
+              <span className="px-2 py-0.5 text-[10px] bg-slate-100 text-slate-700 rounded-full font-mono font-bold flex items-center gap-1.5 border border-slate-200 shrink-0">
+                <span className={`h-2 w-2 rounded-full ${dbDriver === 'mongodb' ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
+                {dbDriver === 'mongodb' ? 'MongoDB Active' : 'PostgreSQL Active'}
+              </span>
+              <AiHealthIndicators />
+            </div>
 
-            {/* Global Contextual Help Button (INSTRUKSI 1) */}
-            <button
-              onClick={() => setIsHelpOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-xl font-bold text-xs shadow-2xs transition-all cursor-pointer active:scale-95"
-              title="Buka Panduan & Dokumentasi Fitur"
-            >
-              <HelpCircle className="w-4 h-4 text-indigo-600" />
-              <span>Panduan</span>
-            </button>
+            {/* Kanan: Action Buttons & User Session */}
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {currentMenu === 'inbox' && (
+                <>
+                  <button
+                    onClick={handleManualSync}
+                    disabled={isSyncing}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleRunFolderBackfill}
+                    disabled={isFolderBackfilling}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                    title="Run retroactive folder tagging for all historical emails"
+                  >
+                    <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
+                    <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleReSummaryTenant}
+                    disabled={isReSummarizing}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-medium rounded-lg text-xs transition-all duration-200 hover:opacity-90 shadow-sm cursor-pointer disabled:opacity-50 shrink-0"
+                    title="Reset & Re-Summary seluruh email untuk tenant ini via Redis Queue"
+                  >
+                    <RotateCcw className={`h-3.5 w-3.5 ${isReSummarizing ? 'animate-spin' : ''}`} />
+                    <span>{isReSummarizing ? 'Re-Summarizing...' : '🔄 Re-Summary Keseluruhan'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleClearDatabase}
+                    className="h-9 px-3.5 flex items-center gap-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-rose-600 font-medium rounded-lg text-xs transition-all duration-200 shadow-2xs cursor-pointer shrink-0"
+                    title="Flush cached inbox data"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Flush Inbox</span>
+                  </button>
+                </>
+              )}
+
+              {/* User Session & Login Button */}
+              <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+                {currentUser ? (
+                  <div className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 h-9 rounded-lg transition-all cursor-pointer" onClick={() => setIsLoginModalOpen(true)}>
+                    <div className="w-5 h-5 rounded bg-blue-600 text-white font-bold text-[10px] flex items-center justify-center">
+                      {currentUser.email[0].toUpperCase()}
+                    </div>
+                    <div className="text-left leading-tight">
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        <span className="truncate max-w-[120px]">{currentUser.email}</span>
+                        <span className="text-[9px] px-1.5 py-0.2 bg-blue-600 text-white rounded font-mono">
+                          {currentUser.role}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsLoginModalOpen(true)}
+                    className="h-9 flex items-center gap-1.5 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-all duration-200 shadow-sm cursor-pointer"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Login Tenant</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-2.5">
-            {currentMenu === 'inbox' && (
-              <>
-                {/* Account Switcher / Unified Inbox Selector */}
-                <div className="relative text-xs">
-                  <select
-                    value={selectedSourceEmail}
-                    onChange={(e) => {
-                      setSelectedSourceEmail(e.target.value);
-                      loadEmails(e.target.value);
-                    }}
-                    className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg font-bold text-xs focus:outline-none cursor-pointer"
-                  >
-                    <option value="">Semua Akun Email (Unified Inbox)</option>
-                    {mailConfigs.map((cfg) => (
-                      <option key={cfg.id} value={cfg.email_address}>
-                        ✉️ {cfg.email_address}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="relative w-64 text-xs">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search sender, subject..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-8.5 pr-3 py-1.5 bg-slate-100 hover:bg-slate-150 border border-transparent hover:border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg focus:outline-none transition-all leading-normal"
-                  />
-                </div>
-
-                <button
-                  onClick={handleManualSync}
-                  disabled={isSyncing}
-                  className="flex items-center space-x-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>{isSyncing ? 'Syncing POP3...' : 'Sync Mail'}</span>
-                </button>
-
-                <button
-                  onClick={handleRunFolderBackfill}
-                  disabled={isFolderBackfilling}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                  title="Run retroactive folder tagging for all historical emails"
-                >
-                  <FolderSync className={`h-3.5 w-3.5 ${isFolderBackfilling ? 'animate-spin' : ''}`} />
-                  <span>{isFolderBackfilling ? 'Processing...' : 'Run Data Backfill'}</span>
-                </button>
-
-                <button
-                  onClick={handleReSummaryTenant}
-                  disabled={isReSummarizing}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                  title="Reset & Re-Summary seluruh email untuk tenant ini via Redis Queue"
-                >
-                  <RotateCcw className={`h-3.5 w-3.5 ${isReSummarizing ? 'animate-spin' : ''}`} />
-                  <span>{isReSummarizing ? 'Re-Summarizing...' : '🔄 Re-Summary Keseluruhan'}</span>
-                </button>
-
-                <button
-                  onClick={handleClearDatabase}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:border-rose-200 text-slate-500 hover:text-rose-600 font-bold rounded-lg text-xs transition-colors cursor-pointer"
-                  title="Flush cached inbox data"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  <span>Flush Inbox</span>
-                </button>
-              </>
-            )}
-
-            {/* User Session & Login Button */}
-            <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-              {currentUser ? (
-                <div className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200/80 px-3 py-1.5 rounded-xl transition-all cursor-pointer" onClick={() => setIsLoginModalOpen(true)}>
-                  <div className="w-6 h-6 rounded-lg bg-blue-600 text-white font-bold text-xs flex items-center justify-center">
-                    {currentUser.email[0].toUpperCase()}
+          {/* BARIS 2: Control Toolbar (Account Selector, Search Bar & Panduan Help Button) */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between px-6 py-2 bg-slate-50/80 gap-3">
+            <div className="flex items-center gap-3 flex-wrap flex-1 min-w-0">
+              {currentMenu === 'inbox' && (
+                <>
+                  {/* Account Switcher / Unified Inbox Selector */}
+                  <div className="relative text-xs min-w-[220px]">
+                    <select
+                      value={selectedSourceEmail}
+                      onChange={(e) => {
+                        setSelectedSourceEmail(e.target.value);
+                        loadEmails(e.target.value);
+                      }}
+                      className="w-full h-9 px-3 bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 rounded-lg font-medium text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20 shadow-2xs cursor-pointer transition-all"
+                    >
+                      <option value="">Semua Akun Email (Unified Inbox)</option>
+                      {mailConfigs.map((cfg) => (
+                        <option key={cfg.id} value={cfg.email_address}>
+                          ✉️ {cfg.email_address}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="text-left leading-tight">
-                    <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
-                      <span>{currentUser.email}</span>
-                      <span className="text-[9px] px-1.5 py-0.2 bg-blue-600 text-white rounded font-mono">
-                        {currentUser.role}
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-slate-500">
-                      {currentUser.role === 'SUPER_ADMIN' ? 'Super Admin' : `Divisi ${currentUser.tenant_name || currentUser.tenant_id}`}
-                    </span>
+
+                  {/* Search Bar */}
+                  <div className="relative flex-1 max-w-md text-xs">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Search sender, subject..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full h-9 pl-9 pr-3 bg-white hover:bg-slate-50 border border-slate-200 focus:border-blue-500 focus:bg-white rounded-lg text-xs font-medium focus:outline-none transition-all shadow-2xs leading-normal"
+                    />
                   </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setIsLoginModalOpen(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs"
-                >
-                  <Key className="w-3.5 h-3.5" />
-                  <span>Login Tenant</span>
-                </button>
+                </>
               )}
+            </div>
+
+            {/* Global Contextual Help Button (Panduan) */}
+            <div className="flex items-center gap-2 shrink-0 justify-end">
+              <button
+                onClick={() => setIsHelpOpen(true)}
+                className="h-9 flex items-center gap-1.5 px-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 rounded-lg font-medium text-xs shadow-2xs transition-all duration-200 hover:opacity-90 cursor-pointer active:scale-95 shrink-0"
+                title="Buka Panduan & Dokumentasi Fitur"
+              >
+                <HelpCircle className="w-4 h-4 text-indigo-600" />
+                <span>Panduan</span>
+              </button>
             </div>
           </div>
         </header>
@@ -1898,8 +1976,8 @@ export default function App() {
                   <span className="text-[9px] text-slate-400 italic font-medium">Sorted by date</span>
                 </div>
 
-                {/* AI Worker Processing Progress Bar */}
-                {aiProgress && aiProgress.unanalyzed > 0 && (
+                {/* AI Worker Processing Progress Bar - HANYA tampil jika ada data tiket (tickets.length > 0) */}
+                {tickets.length > 0 && aiProgress && aiProgress.unanalyzed > 0 && (
                   <div className="p-3 bg-gradient-to-r from-indigo-900/90 via-purple-900/90 to-slate-900/90 border border-indigo-500/40 rounded-xl shadow-sm text-white space-y-1.5 transition-all duration-300">
                     <div className="flex items-center justify-between text-xs font-semibold">
                       <div className="flex items-center gap-1.5 text-indigo-200">
@@ -1923,7 +2001,7 @@ export default function App() {
                   </div>
                 )}
 
-                {pendingCount > 0 && (
+                {tickets.length > 0 && pendingCount > 0 && (
                   <button
                     onClick={() => setIsQueueModalOpen(true)}
                     className="flex items-center justify-between px-3 py-2 bg-amber-50 border border-amber-200 hover:border-amber-300 text-amber-800 rounded-lg text-[11px] font-medium hover:bg-amber-100/80 transition-all cursor-pointer w-full shadow-xs"
@@ -1943,11 +2021,13 @@ export default function App() {
               </div>
 
               {filteredEmails.length === 0 ? (
-                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400">
-                  <Mail className="h-8 w-8 text-slate-200 mb-2" />
-                  <p className="text-xs font-semibold">No tickets found</p>
-                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[200px]">
-                    No emails match the selected folder or search query.
+                <div className="flex flex-col items-center justify-center p-8 text-center flex-1 text-slate-400 my-auto">
+                  <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl mb-3">
+                    <Mail className="h-8 w-8 text-slate-300" />
+                  </div>
+                  <p className="text-xs font-bold text-slate-700">Inbox Kosong</p>
+                  <p className="text-[10px] text-slate-400 mt-1 leading-normal max-w-[220px]">
+                    Belum ada tiket email yang diterima untuk tenant ini.
                   </p>
                 </div>
               ) : (
@@ -2503,11 +2583,15 @@ export default function App() {
 
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1">
-                  <Mail className="h-12 w-12 text-slate-200 mb-3" />
-                  <p className="font-bold text-sm">No ticket selected</p>
-                  <p className="text-xs text-slate-400 mt-1 max-w-[280px] leading-normal">
-                    Select a ticket from the list to view its contents, extracted variables, and CIT API execution state.
+                <div className="flex flex-col items-center justify-center h-full p-8 text-center text-slate-400 flex-1 my-auto">
+                  <div className="p-4 bg-slate-50 border border-slate-100 rounded-3xl mb-3">
+                    <Inbox className="h-10 w-10 text-slate-300" />
+                  </div>
+                  <p className="font-bold text-sm text-slate-700">Inbox Kosong / Belum Ada Tiket</p>
+                  <p className="text-xs text-slate-400 mt-1 max-w-[300px] leading-relaxed">
+                    {tickets.length === 0
+                      ? "Belum ada email pada database tenant ini. Silakan lakukan 'Sync Mail' atau konfigurasikan akun POP3 di menu Settings."
+                      : "Pilih tiket dari daftar di sebelah kiri untuk melihat isi pesan, variabel hasil ekstraksi AI, dan status otomasi."}
                   </p>
                 </div>
               )}
@@ -2815,6 +2899,18 @@ export default function App() {
                     <MessageSquare className="h-4 w-4 shrink-0 text-slate-500" />
                     <span>WhatsApp & Reports</span>
                   </button>
+
+                  <button
+                    onClick={() => setSettingsTab('api-docs')}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      settingsTab === 'api-docs' 
+                        ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80 shadow-2xs' 
+                        : 'text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Code2 className="h-4 w-4 shrink-0 text-indigo-600" />
+                    <span>Developer API / Docs</span>
+                  </button>
                 </div>
               </div>
 
@@ -2887,6 +2983,24 @@ export default function App() {
                 
                 {settingsTab === 'redis-monitor' && (
                   <RedisQueueDashboard currentUser={currentUser} />
+                )}
+
+                {/* TAB DEVELOPER API DOCS (SWAGGER) */}
+                {settingsTab === 'api-docs' && (
+                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-lg font-bold text-slate-800">Developer API Documentation</h2>
+                        <p className="text-sm text-slate-500">Spesifikasi endpoint resmi untuk integrasi sistem luar (DCT Web & Telegram).</p>
+                      </div>
+                      <span className="px-3 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-bold rounded-full">
+                        OpenAPI v3.0
+                      </span>
+                    </div>
+                    <div className="p-4 swagger-container max-w-full overflow-x-auto">
+                      <SwaggerUI docExpansion="list" spec={apiDocsSchema}/>
+                    </div>
+                  </div>
                 )}
 
 
@@ -3733,11 +3847,11 @@ export default function App() {
 
         {/* EMAIL INTELLIGENCE AI CATALOG SECTION */}
         {currentMenu === 'intelligence' && (
-          <EmailIntelligenceSection onAddToast={addToast} />
+          <EmailIntelligenceSection onAddToast={addToast} currentUser={currentUser} />
         )}
 
         {/* SUPER ADMIN DASHBOARD ANALYTICS SECTION */}
-        {(currentMenu === 'superadmin-analytics' || currentMenu === 'superadmin') && (
+        {(currentMenu === 'superadmin-analytics' || (currentMenu as string) === 'superadmin') && (
           currentUser?.role === 'SUPER_ADMIN' ? (
             <div className="flex-1 overflow-y-auto">
               <SuperAdminAnalyticsView />
@@ -3807,6 +3921,7 @@ export default function App() {
               currentTenantId={currentUser?.tenant_id || 1} 
               tenantName={currentUser?.tenant_name || 'COS'} 
               onAddToast={addToast}
+              onOpenWaQr={() => setIsWaQrModalOpen(true)}
             />
           </div>
         )}

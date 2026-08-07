@@ -18,9 +18,10 @@ import {
 
 interface EmailIntelligenceSectionProps {
   onAddToast?: (title: string, message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
+  currentUser?: any;
 }
 
-export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligenceSectionProps) {
+export default function EmailIntelligenceSection({ onAddToast, currentUser }: EmailIntelligenceSectionProps) {
   const [groupedEmails, setGroupedEmails] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedEmail, setSelectedEmail] = useState<any | null>(null);
@@ -272,7 +273,7 @@ export default function EmailIntelligenceSection({ onAddToast }: EmailIntelligen
             {Object.keys(groupedEmails).map((folderParent) => {
               const isFolderOpen = expandedNodes[folderParent];
               const subFolders = groupedEmails[folderParent];
-              const totalEmailsInFolder = Object.values(subFolders).reduce((acc: number, list: any) => acc + list.length, 0);
+              const totalEmailsInFolder = (Object.values(subFolders) as any[]).reduce((acc: number, list: any) => acc + (Array.isArray(list) ? list.length : 0), 0);
 
               return (
                 <div key={folderParent} className="space-y-1">

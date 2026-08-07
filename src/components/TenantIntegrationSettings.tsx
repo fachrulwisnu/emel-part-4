@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import SwaggerUI from 'swagger-ui-react';
+import 'swagger-ui-react/swagger-ui.css';
+import apiDocsSchema from '../utils/apiDocsSchema';
 import { 
   Mail, 
   MessageSquare, 
@@ -20,7 +23,8 @@ import {
   Plus,
   Trash2,
   Edit2,
-  X
+  X,
+  Code2
 } from 'lucide-react';
 
 interface MailConfig {
@@ -38,17 +42,27 @@ interface TenantIntegrationSettingsProps {
   currentTenantId?: number;
   tenantName?: string;
   onAddToast?: (title: string, message: string) => void;
+  onOpenWaQr?: () => void;
 }
 
 export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps> = ({
   currentTenantId = 1,
   tenantName = 'COS',
-  onAddToast
+  onAddToast,
+  onOpenWaQr
 }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [mailConfigs, setMailConfigs] = useState<MailConfig[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingConfig, setEditingConfig] = useState<MailConfig | null>(null);
+
+  // Default POP3 Config for new tenant
+  const [pop3Config, setPop3Config] = useState({
+    hostname: 'mail.advantagescm.com',
+    port: '995',
+    username: 'example.adv@advantagescm.com',
+    password: ''
+  });
   
   // Modal Form State
   const [formEmailAddress, setFormEmailAddress] = useState('');
@@ -64,6 +78,7 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
   // WhatsApp States
   const [waPhone, setWaPhone] = useState('6281234567890');
   const [isSavingWa, setIsSavingWa] = useState(false);
+  const [waSessionStatus, setWaSessionStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'PENDING'>('DISCONNECTED');
 
   // Single AI Model Tester State (Superadmin)
   const [selectedTestModel, setSelectedTestModel] = useState('Gemini Flash Latest');
@@ -134,43 +149,93 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
   // Load Mail Configurations
   const loadMailConfigs = async () => {
     setIsLoading(true);
+    setMailConfigs([]);
     try {
       const res = await fetch(`/api/mail-configs?tenant_id=${currentTenantId}`);
       const data = await res.json();
-      if (data.success && data.configs) {
+      if (data && data.success && Array.isArray(data.configs) && data.configs.length > 0) {
         setMailConfigs(data.configs);
+        const first = data.configs[0];
+        setPop3Config({
+          hostname: first.host || 'mail.advantagescm.com',
+          port: String(first.port || '995'),
+          username: first.username || 'example.adv@advantagescm.com',
+          password: '' // Wajib kosong agar user mengetik sendiri, tidak terisi otomatis
+        });
+      } else {
+        setMailConfigs([]);
+        // Default template values for new tenant
+        setPop3Config({
+          hostname: 'mail.advantagescm.com',
+          port: '995',
+          username: 'example.adv@advantagescm.com',
+          password: '' // Wajib kosong
+        });
       }
     } catch (err) {
       console.error('Failed to load mail configs:', err);
+      setMailConfigs([]);
+      setPop3Config({
+        hostname: 'mail.advantagescm.com',
+        port: '995',
+        username: 'example.adv@advantagescm.com',
+        password: ''
+      });
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Fetch WA Session Status
+  const fetchWaStatus = async () => {
+    try {
+      const res = await fetch('/api/whatsapp/qr');
+      const data = await res.json();
+      if (data && (data.status === 'connected' || data.isConnected === true)) {
+        setWaSessionStatus('CONNECTED');
+      } else if (data && data.status === 'pending' && data.qr) {
+        setWaSessionStatus('PENDING');
+      } else {
+        setWaSessionStatus('DISCONNECTED');
+      }
+    } catch (err) {
+      setWaSessionStatus('DISCONNECTED');
+    }
+  };
+
   // Load Tenant Info (WA Phone)
   const loadTenantConfig = async () => {
+    setWaPhone('');
     try {
       const res = await fetch(`/api/tenants?id=${currentTenantId}`);
       const data = await res.json();
       if (data.success && data.tenant) {
-        if (data.tenant.wa_phone) setWaPhone(data.tenant.wa_phone);
+        setWaPhone(data.tenant.wa_phone || '');
+      } else {
+        setWaPhone('');
       }
     } catch (err) {
       console.error('Failed to load tenant WA info:', err);
+      setWaPhone('');
     }
   };
 
   useEffect(() => {
-    loadMailConfigs();
-    loadTenantConfig();
+    setMailConfigs([]);
+    setWaPhone('');
+    if (currentTenantId) {
+      loadMailConfigs();
+      loadTenantConfig();
+      fetchWaStatus();
+    }
   }, [currentTenantId]);
 
   const handleOpenAddModal = () => {
     setEditingConfig(null);
-    setFormEmailAddress('');
-    setFormHost('pop.secureserver.net');
-    setFormPort(995);
-    setFormUsername('');
+    setFormEmailAddress(pop3Config.username || 'example.adv@advantagescm.com');
+    setFormHost(pop3Config.hostname || 'mail.advantagescm.com');
+    setFormPort(Number(pop3Config.port) || 995);
+    setFormUsername(pop3Config.username || 'example.adv@advantagescm.com');
     setFormPassword('');
     setFormIsActive(true);
     setIsModalOpen(true);
@@ -453,13 +518,42 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
 
       {/* WHATSAPP BLAST INTEGRATION SECTION */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-        <div className="flex items-center space-x-3 border-b border-slate-100 pb-4">
-          <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
-            <Smartphone className="w-5 h-5" />
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-4 gap-3">
+          <div className="flex items-center space-x-3">
+            <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
+              <Smartphone className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-800">WhatsApp Gateway & Blast Target (Divisi {tenantName})</h2>
+              <p className="text-xs text-slate-500">Nomor WhatsApp penerima rangkuman harian kolektif dan status pairing sesi WA.</p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-base font-bold text-slate-800">WhatsApp Blast Target (Divisi {tenantName})</h2>
-            <p className="text-xs text-slate-500">Nomor WhatsApp penerima rangkuman harian kolektif dan pemberitahuan penting.</p>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {waSessionStatus === 'CONNECTED' ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                <span>CONNECTED / Terhubung</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-300">
+                <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                <span>Disconnected / Belum Terhubung</span>
+              </span>
+            )}
+
+            {waSessionStatus !== 'CONNECTED' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenWaQr) onOpenWaQr();
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
+              >
+                <QrCode className="w-4 h-4 text-emerald-100" />
+                <span>Pairing WhatsApp Sekarang (Scan QR)</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -570,6 +664,25 @@ export const TenantIntegrationSettings: React.FC<TenantIntegrationSettingsProps>
             )}
           </div>
         )}
+      </div>
+
+      {/* DEVELOPER API DOCUMENTATION (SWAGGER) SECTION */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <Code2 className="w-5 h-5 text-indigo-600" />
+              <span>Developer API Documentation</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">Spesifikasi endpoint resmi untuk integrasi sistem luar (DCT Web & Telegram).</p>
+          </div>
+          <span className="px-3 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-bold rounded-full">
+            OpenAPI v3.0
+          </span>
+        </div>
+        <div className="p-4 swagger-container max-w-full overflow-x-auto">
+          <SwaggerUI docExpansion="list" spec={apiDocsSchema} />
+        </div>
       </div>
 
       {/* MODAL ADD / EDIT MAIL CONFIG */}

@@ -1737,7 +1737,9 @@ export const CitDispatchFullPage: React.FC<CitDispatchFullPageProps> = ({
                     {/* Item Select */}
                     <div className="col-span-3 flex items-center gap-2">
                       {row.isAiFilled && (
-                        <Sparkles className="h-3.5 w-3.5 text-blue-600 shrink-0" title="Terisi Otomatis oleh AI" />
+                        <span title="Terisi Otomatis oleh AI">
+                          <Sparkles className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                        </span>
                       )}
                       <select
                         value={row.item_id}

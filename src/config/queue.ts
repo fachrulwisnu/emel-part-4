@@ -60,11 +60,47 @@ export const emailQueue = new Queue(QUEUE_NAME, {
 
 emailQueue.on('error', (err) => {
   if ((err as any)?.code !== 'ECONNREFUSED') {
+    console.warn('[BullMQ Queue Warning]', err.message);
+  }
+});
+
+emailQueue.on('error', (err) => {
+  if ((err as any)?.code !== 'ECONNREFUSED') {
     console.warn('[Redis Queue Warning]', err.message);
   }
 });
 
 export const aiQueue = emailQueue;
+
+/**
+ * REDIS LOG NAMESPACING: Isolasi Log Per Tenant
+ * Format Key: system_logs:tenant:${tenantId}
+ * Expiration: 24 Jam (86400 detik)
+ */
+export async function pushTenantLog(
+  tenantId: number | string,
+  message: string,
+  status: 'INFO' | 'SUCCESS' | 'ERROR' = 'INFO',
+  progress: number = 0,
+  jobType: string = 'System'
+) {
+  try {
+    const key = `system_logs:tenant:${tenantId}`;
+    const logData = {
+      timestamp: new Date().toISOString(),
+      message,
+      status,
+      progress,
+      jobType,
+      tenantId: Number(tenantId)
+    };
+    await redisConnection.lpush(key, JSON.stringify(logData));
+    await redisConnection.ltrim(key, 0, 199); // Simpan 200 log terbaru
+    await redisConnection.expire(key, 86400); // Set TTL 24 jam (86400 detik)
+  } catch (err) {
+    console.error(`[pushTenantLog Error tenant:${tenantId}]`, err);
+  }
+}
 
 // Script cleanup sementara untuk membersihkan antrean usang saat startup
 async function clearStaleQueues() {

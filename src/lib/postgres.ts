@@ -167,14 +167,18 @@ async function initPostgresTables(pool: pg.Pool): Promise<void> {
           tenant_id INTEGER REFERENCES public.tenants(id) ON DELETE CASCADE,
           summary_date DATE NOT NULL,
           content_text TEXT NOT NULL,
+          content_text_short TEXT,
           total_emails_processed INTEGER DEFAULT 0,
           last_email_id_processed INTEGER DEFAULT 0,
           is_sent_to_wa BOOLEAN DEFAULT FALSE,
           source_email_ids JSONB DEFAULT '[]'::jsonb,
           created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT unique_tenant_date UNIQUE (tenant_id, summary_date)
+          updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS content_text_short TEXT;
+      ALTER TABLE public.daily_summaries DROP CONSTRAINT IF EXISTS unique_tenant_date;
+      ALTER TABLE public.daily_summaries DROP CONSTRAINT IF EXISTS daily_summaries_tenant_id_summary_date_key;
+      CREATE INDEX IF NOT EXISTS idx_daily_summaries_tenant_date ON public.daily_summaries(tenant_id, summary_date);
       ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS total_emails_processed INTEGER DEFAULT 0;
       ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS last_email_id_processed INTEGER DEFAULT 0;
       ALTER TABLE public.daily_summaries ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;

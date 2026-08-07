@@ -619,7 +619,7 @@ async function startServer() {
   app.get("/api/dynamic-filters", async (req, res) => {
     try {
       const { dbGetDynamicFilters } = await import("./src/services/dbManager");
-      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : 1;
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
       const filters = await dbGetDynamicFilters(tenantId);
       res.json({ success: true, filters });
     } catch (err: any) {
@@ -630,7 +630,7 @@ async function startServer() {
   app.post("/api/dynamic-filters", async (req, res) => {
     try {
       const { dbSaveDynamicFilter } = await import("./src/services/dbManager");
-      const tenantId = req.body.tenant_id ? Number(req.body.tenant_id) : 1;
+      const tenantId = req.body.tenant_id ? Number(req.body.tenant_id) : undefined;
       await dbSaveDynamicFilter({ ...req.body, tenant_id: tenantId }, tenantId);
       res.json({ success: true, message: "Berhasil menyimpan aturan Dynamic Filter." });
     } catch (err: any) {
@@ -641,9 +641,67 @@ async function startServer() {
   app.delete("/api/dynamic-filters/:id", async (req, res) => {
     try {
       const { dbDeleteDynamicFilter } = await import("./src/services/dbManager");
-      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : 1;
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
       await dbDeleteDynamicFilter(Number(req.params.id), tenantId);
       res.json({ success: true, message: "Aturan Dynamic Filter berhasil dihapus." });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Isolated POP3 config endpoint per tenant (Phase 3)
+  app.get("/api/pop3-config", async (req, res) => {
+    try {
+      const { dbGetMailConfigs, dbGetTenantById } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
+      if (!tenantId) {
+        return res.json({ success: true, data: null });
+      }
+      const configs = await dbGetMailConfigs(tenantId);
+      if (configs && configs.length > 0) {
+        const c = configs[0];
+        return res.json({
+          success: true,
+          data: {
+            host: c.host,
+            port: c.port,
+            user: c.username,
+            pass: c.password,
+            email_address: c.email_address
+          }
+        });
+      }
+      const tenant = await dbGetTenantById(tenantId);
+      if (tenant && (tenant.pop3_host || tenant.pop3_user)) {
+        return res.json({
+          success: true,
+          data: {
+            host: tenant.pop3_host || '',
+            port: tenant.pop3_port || 110,
+            user: tenant.pop3_user || '',
+            pass: tenant.pop3_pass || ''
+          }
+        });
+      }
+      return res.json({ success: true, data: null });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // Isolated RBAC permissions endpoint per tenant (Phase 3)
+  app.get("/api/rbac-permissions", async (req, res) => {
+    try {
+      const { dbGetTenantById } = await import("./src/services/dbManager");
+      const tenantId = req.query.tenant_id ? Number(req.query.tenant_id) : undefined;
+      if (!tenantId) {
+        return res.json({ success: true, data: null });
+      }
+      const tenant = await dbGetTenantById(tenantId);
+      if (!tenant || !tenant.permissions) {
+        return res.json({ success: true, data: null });
+      }
+      return res.json({ success: true, data: tenant.permissions });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err) });
     }
@@ -730,13 +788,15 @@ async function startServer() {
 
   const handleSingleBulkSummaryGenerate = async (req: any, res: any) => {
     try {
+      const { emailQueue, pushTenantLog } = await import("./src/config/queue");
       const { generateDailySummary } = await import("./src/services/aiProcessingService");
-      const { getDbService, dbGetDailySummaries } = await import("./src/services/dbManager");
+      const { getDbService, dbGetDailySummaries, dbGetDailySummaryByDate } = await import("./src/services/dbManager");
       
       const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.body?.tenant_id;
       const raw_target_date = req.body?.target_date || req.query?.target_date || req.body?.date || req.query?.date;
       const is_merge = Boolean(req.body?.is_merge);
       const force_refresh = Boolean(req.body?.force_refresh);
+      const force_reprocess = Boolean(req.body?.force_reprocess || force_refresh || is_merge);
 
       if (!tenant_id) {
         return res.status(400).json({ success: false, message: "tenant_id wajib disertakan.", data: null });
@@ -744,7 +804,6 @@ async function startServer() {
 
       const tenantIdNum = Number(tenant_id);
 
-      // INSTRUKSI 1: VALIDASI TANGGAL (MAX 2 HARI BACKDATE & TIDAK BOLEH MASA DEPAN)
       const now = new Date();
       const getYYYYMMDD = (d: Date) => {
         const year = d.getFullYear();
@@ -777,118 +836,44 @@ async function startServer() {
         });
       }
 
-      // Check cache in database first using explicit string query or dbGetDailySummaryByDate ($2::date)
-      const { dbGetDailySummaryByDate } = await import("./src/services/dbManager");
+      // Check cache in database first
       const cachedSummary = await dbGetDailySummaryByDate(tenantIdNum, target_date);
 
-      // INSTRUKSI 2: LOGIKA BACKEND CACHE & INCREMENTAL DETECTION
-      const dbService = await getDbService();
-      let emailCountNow = 0;
-      if (dbService.type === 'postgres' && dbService.pgPool) {
-        const cntRes = await dbService.pgPool.query(
-          `SELECT COUNT(*)::int as cnt FROM public.emails WHERE tenant_id = $1 AND DATE("date") = $2::date`,
-          [tenantIdNum, target_date]
-        );
-        emailCountNow = Number(cntRes.rows[0]?.cnt || 0);
-      } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
-        const startOfDay = new Date(target_date);
-        startOfDay.setHours(0,0,0,0);
-        const endOfDay = new Date(target_date);
-        endOfDay.setHours(23,59,59,999);
-        emailCountNow = await dbService.mongoDb.collection('emails').countDocuments({
-          tenant_id: tenantIdNum,
-          $or: [{ received_at: { $gte: startOfDay, $lte: endOfDay } }, { date: { $gte: startOfDay, $lte: endOfDay } }]
-        });
-      }
-
-      const isPastDate = target_date < todayStr;
-
-      // Kondisi A: Tanggal Masa Lalu -> Return Cache tanpa AI
-      if (isPastDate && cachedSummary && !force_refresh) {
+      if (cachedSummary && !force_reprocess) {
+        const cachePayload = {
+          ...cachedSummary,
+          summary_text: cachedSummary.content_text,
+          summary_text_short: cachedSummary.content_text_short || '',
+          generated_at: cachedSummary.created_at,
+          referenced_emails: cachedSummary.source_emails,
+          history: cachedSummary.history || []
+        };
         return res.json({
           success: true,
           cached: true,
           has_new_emails: false,
           new_emails_count: 0,
-          message: `Rangkuman tanggal ${target_date} dimuat dari cache database.`,
-          data: {
-             ...cachedSummary,
-             summary_text: cachedSummary.content_text,
-             generated_at: cachedSummary.created_at,
-             referenced_emails: cachedSummary.source_emails
-          }
+          message: `Rangkuman harian tanggal ${target_date} sudah tersedia (cached).`,
+          cached_data: cachePayload,
+          data: cachePayload
         });
       }
 
-      // Kondisi B: Hari Ini / Incremental Check
-      if (!isPastDate && cachedSummary && !force_refresh && !is_merge) {
-        const processedCount = Number((cachedSummary as any).total_emails_processed || (cachedSummary.source_email_ids ? cachedSummary.source_email_ids.length : 0));
-        const newEmailsCount = Math.max(0, emailCountNow - processedCount);
+      // Add task to Redis BullMQ Queue and return immediately
+      await emailQueue.add('DailyBulkSummary', {
+        tenantId: tenantIdNum,
+        targetDate: target_date
+      });
 
-        if (newEmailsCount > 0) {
-          return res.json({
-            success: true,
-            cached: true,
-            has_new_emails: true,
-            new_emails_count: newEmailsCount,
-            total_emails_now: emailCountNow,
-            total_emails_processed: processedCount,
-            message: `Terdeteksi ${newEmailsCount} email baru sejak rangkuman terakhir. Klik 'Merge New Emails' untuk memperbarui.`,
-            data: {
-               ...cachedSummary,
-               summary_text: cachedSummary.content_text,
-               generated_at: cachedSummary.created_at,
-               referenced_emails: cachedSummary.source_emails
-            }
-          });
-        } else {
-          return res.json({
-            success: true,
-            cached: true,
-            has_new_emails: false,
-            new_emails_count: 0,
-            message: "Rangkuman harian sudah paling baru (cached).",
-            data: {
-               ...cachedSummary,
-               summary_text: cachedSummary.content_text,
-               generated_at: cachedSummary.created_at,
-               referenced_emails: cachedSummary.source_emails
-            }
-          });
-        }
-      }
+      await pushTenantLog(tenantIdNum, `[DailyBulkSummary] Job added to BullMQ Queue for date ${target_date}.`, 'INFO', 0, 'DailyBulkSummary');
 
-      // Otherwise, generate/merge with Core AI
-      const estimated_seconds = Math.max(4, Math.ceil((emailCountNow || 5) * 0.4));
-      
-      try {
-        const summary = await generateDailySummary(tenantIdNum, target_date);
-        return res.json({
-          success: true,
-          cached: false,
-          has_new_emails: false,
-          new_emails_count: 0,
-          estimated_seconds,
-          message: is_merge 
-            ? `Berhasil menggabungkan ${emailCountNow} email ke dalam Executive Summary.`
-            : `Summary berhasil digenerate untuk tanggal ${target_date}.`,
-          data: {
-             ...summary,
-             summary_text: summary.content_text,
-             generated_at: summary.created_at,
-             referenced_emails: summary.source_emails
-          }
-        });
-      } catch (err: any) {
-        if (err.message && err.message.includes('Tidak ada email masuk')) {
-           return res.json({
-             success: false,
-             message: err.message,
-             data: null
-           });
-        }
-        throw err;
-      }
+      return res.json({
+        success: true,
+        message: "Task queued",
+        queued: true,
+        tenantId: tenantIdNum,
+        targetDate: target_date
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message || String(err), data: null });
     }
@@ -896,6 +881,123 @@ async function startServer() {
 
   app.post("/api/daily-summaries/trigger", handleBulkSummaryTrigger);
   app.post("/api/bulk-summary/generate", handleSingleBulkSummaryGenerate);
+
+  // Endpoint untuk POP3 Background Sync via Redis Queue
+  app.post(["/api/emails/sync", "/api/fetch-emails"], async (req, res) => {
+    try {
+      const { emailQueue, pushTenantLog } = await import("./src/config/queue");
+      const reqUser = (req as any).user;
+      const tenantId = req.body?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id || 1;
+      const tenantIdNum = Number(tenantId);
+
+      await emailQueue.add('SyncPOP3', { tenantId: tenantIdNum });
+      await pushTenantLog(tenantIdNum, `[SyncPOP3] POP3 email sync job queued in BullMQ for Tenant #${tenantIdNum}.`, 'INFO', 0, 'SyncPOP3');
+
+      res.json({
+        success: true,
+        message: "Task queued",
+        queued: true,
+        tenantId: tenantIdNum
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  // ==========================================
+  // SUPERADMIN REDIS TENANT LOG MONITORING API
+  // ==========================================
+  app.get("/api/admin/active-redis-tenants", async (req, res) => {
+    try {
+      const { redisConnection } = await import("./src/config/queue");
+      const { dbGetTenants } = await import("./src/services/dbManager");
+
+      let registeredTenants: any[] = [];
+      try {
+        registeredTenants = await dbGetTenants();
+      } catch (e) {
+        console.warn("[Admin API] Failed fetching registered tenants:", e);
+      }
+
+      const tenantMap = new Map<number, string>();
+      if (Array.isArray(registeredTenants)) {
+        registeredTenants.forEach(t => {
+          const id = Number(t.id || t.tenant_id);
+          const name = t.name || t.tenant_name || `Tenant #${id}`;
+          if (id) tenantMap.set(id, name);
+        });
+      }
+
+      // Fallback defaults if DB is empty
+      if (!tenantMap.has(1)) tenantMap.set(1, "COS - Cabang KUDUS (Tenant 1)");
+      if (!tenantMap.has(2)) tenantMap.set(2, "COS - Cabang PALEMBANG (Tenant 2)");
+
+      let keys: string[] = [];
+      try {
+        keys = await redisConnection.keys("system_logs:tenant:*");
+      } catch (e) {
+        console.warn("[Admin API] Redis keys scan warning:", e);
+      }
+
+      const activeTenantIds = new Set<number>();
+      keys.forEach(k => {
+        const parts = k.split("system_logs:tenant:");
+        if (parts[1]) {
+          const id = Number(parts[1]);
+          if (!isNaN(id)) activeTenantIds.add(id);
+        }
+      });
+
+      activeTenantIds.forEach(id => {
+        if (!tenantMap.has(id)) {
+          tenantMap.set(id, `Tenant #${id}`);
+        }
+      });
+
+      const tenantsList = Array.from(tenantMap.entries()).map(([id, name]) => ({
+        id,
+        name,
+        hasActiveLogs: activeTenantIds.has(id)
+      }));
+
+      res.json({
+        success: true,
+        tenants: tenantsList
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
+
+  app.get("/api/admin/redis-logs/:tenantId", async (req, res) => {
+    try {
+      const tenantId = req.params.tenantId;
+      const { redisConnection } = await import("./src/config/queue");
+      const rawLogs = await redisConnection.lrange(`system_logs:tenant:${tenantId}`, 0, 100);
+
+      const logs = rawLogs.map(str => {
+        try {
+          return JSON.parse(str);
+        } catch (e) {
+          return {
+            timestamp: new Date().toISOString(),
+            message: str,
+            status: "INFO",
+            progress: 0,
+            jobType: "System"
+          };
+        }
+      });
+
+      res.json({
+        success: true,
+        tenantId: Number(tenantId),
+        logs
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || String(err) });
+    }
+  });
 
 
   app.post("/api/emails/update-status", async (req, res) => {
@@ -929,7 +1031,8 @@ async function startServer() {
     try {
       const { getDbService } = await import("./src/services/dbManager");
       const dbService = await getDbService();
-      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const reqUser = (req as any).user;
+      const tenant_id = reqUser?.tenantId || reqUser?.tenant_id || req.query?.tenant_id;
       const tenantId = tenant_id ? Number(tenant_id) : undefined;
       
       let emails = [];
@@ -965,7 +1068,8 @@ async function startServer() {
   app.get("/api/bulk-summary/today", async (req, res) => {
     try {
       const { dbGetDailySummaries, dbGetDailySummaryByDate, getDbService } = await import("./src/services/dbManager");
-      const tenant_id = req.user?.tenantId || req.user?.tenant_id || req.query?.tenant_id;
+      const reqUser = (req as any).user;
+      const tenant_id = reqUser?.tenantId || reqUser?.tenant_id || req.query?.tenant_id;
       const target_date = req.query?.target_date || req.query?.date;
       const tenantId = tenant_id ? Number(tenant_id) : undefined;
       
@@ -1024,8 +1128,10 @@ async function startServer() {
         data: matchedSummary ? {
           ...matchedSummary,
           summary_text: matchedSummary.content_text,
+          summary_text_short: matchedSummary.content_text_short || '',
           generated_at: matchedSummary.created_at,
-          referenced_emails: matchedSummary.source_emails
+          referenced_emails: matchedSummary.source_emails,
+          history: (matchedSummary as any).history || []
         } : null,
         summaries: latestSummaries
       });
@@ -1160,7 +1266,8 @@ async function startServer() {
 
       if (!retried) {
         const emailId = req.body?.email_id || jobId;
-        const tenantId = req.body?.tenant_id || 1;
+        const reqUser = (req as any).user;
+        const tenantId = req.body?.tenant_id || reqUser?.tenantId || reqUser?.tenant_id;
         await emailQueue.add('process-email', { email_id: emailId, tenant_id: tenantId }, { attempts: 3 });
       }
 
@@ -1523,7 +1630,7 @@ async function startServer() {
 
         await activeQueue.add('process-email', {
           message_id: messageId,
-          tenant_id: email.tenant_id ? Number(email.tenant_id) : (tenantId || 1),
+          tenant_id: email.tenant_id ? Number(email.tenant_id) : tenantId,
           subject: email.subject || '',
           body: email.body || email.body_text || email.html_body || '', // WAJIB ADA
           sender: email.sender || email.sender_email || '',
@@ -1565,7 +1672,8 @@ async function startServer() {
   app.post("/api/ai/resummary-tenant", async (req, res) => {
     try {
       const { tenant_id, account_email } = req.body || {};
-      const userTenantId = req.user?.tenantId || req.user?.tenant_id || tenant_id;
+      const reqUser = (req as any).user;
+      const userTenantId = reqUser?.tenantId || reqUser?.tenant_id || tenant_id;
       const tenantId = userTenantId ? Number(userTenantId) : 1;
       const accountEmail = account_email ? String(account_email).trim() : '';
 

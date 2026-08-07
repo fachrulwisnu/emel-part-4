@@ -22,6 +22,7 @@ export interface Email {
   sender: string;
   receiver: string;
   date: string;
+  body?: string;
   body_text: string;
   html_body: string;
   tags: string[];
@@ -48,6 +49,7 @@ export interface Email {
   extracted_notes?: string;
   currency?: string;
   denomination_suggestion?: number;
+  denomination_breakdown?: any;
   total_amount?: number;
   ai_status?: string;
   is_summarized?: boolean;
@@ -2397,6 +2399,7 @@ export async function dbUpdateEmailFields(
     tags?: string[];
     is_important?: boolean;
     urgency_level?: string;
+    tag_type?: string;
     suggested_tag?: string;
     summary?: string;
     action_required?: boolean;
@@ -2407,6 +2410,7 @@ export async function dbUpdateEmailFields(
     ai_status?: string;
     currency?: string;
     denomination_suggestion?: number;
+    denomination_breakdown?: any;
     total_amount?: number;
     is_summarized?: boolean;
   }
@@ -3507,7 +3511,7 @@ export async function dbBackfillFolders(): Promise<{ success: boolean; totalProc
     for (const email of emails) {
       let matchedFilter: any = null;
       for (const filter of filters) {
-        if (filter.tenant_id && filter.tenant_id !== 1 && email.tenant_id && filter.tenant_id !== email.tenant_id) {
+        if (filter.tenant_id && email.tenant_id && filter.tenant_id !== email.tenant_id) {
           continue;
         }
         const senderText = email.sender || (email as any).sender_email || '';

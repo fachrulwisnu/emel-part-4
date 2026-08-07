@@ -131,10 +131,12 @@ export interface DailySummary {
   tenant_id: number;
   summary_date: string;
   content_text: string;
+  content_text_short?: string;
   is_sent_to_wa?: boolean;
   source_email_ids?: string[];
   source_emails?: any[];
   created_at?: Date | string;
+  history?: DailySummary[];
 }
 
 let lastActiveDriver: 'mongodb' | 'postgres' | null = null;
@@ -910,6 +912,39 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
           payload.id
         ]);
         tenantRow = res.rows[0];
+
+        // UPDATE data user di tabel users (BUKAN INSERT!) saat edit tenant
+        if (payload.admin_email) {
+          if (payload.admin_password && payload.admin_password.trim()) {
+            const hash = bcrypt.hashSync(payload.admin_password, 10);
+            const userUpd = await client.query(`
+              UPDATE public.users 
+              SET email = $1, password_hash = $2 
+              WHERE tenant_id = $3 AND role = 'TENANT_ADMIN'
+              RETURNING id;
+            `, [payload.admin_email, hash, payload.id]);
+            if (userUpd.rows.length === 0) {
+              await client.query(`
+                INSERT INTO public.users (tenant_id, email, password_hash, role)
+                VALUES ($1, $2, $3, 'TENANT_ADMIN')
+              `, [payload.id, payload.admin_email, hash]);
+            }
+          } else {
+            const userUpd = await client.query(`
+              UPDATE public.users 
+              SET email = $1 
+              WHERE tenant_id = $2 AND role = 'TENANT_ADMIN'
+              RETURNING id;
+            `, [payload.admin_email, payload.id]);
+            if (userUpd.rows.length === 0) {
+              const defaultHash = bcrypt.hashSync('12345678', 10);
+              await client.query(`
+                INSERT INTO public.users (tenant_id, email, password_hash, role)
+                VALUES ($1, $2, $3, 'TENANT_ADMIN')
+              `, [payload.id, payload.admin_email, defaultHash]);
+            }
+          }
+        }
       } else {
         const query = `
           INSERT INTO public.tenants (name, ai_primary_model, ai_fallback_model, ai_models, feature_individual_parsing, feature_bulk_summary, pop3_host, pop3_port, pop3_user, pop3_pass, wa_phone, permissions)
@@ -931,24 +966,19 @@ export async function dbSaveTenant(payload: Partial<Tenant> & { admin_email?: st
           permissionsJson
         ]);
         tenantRow = res.rows[0];
-      }
 
-      if (!tenantRow) {
-        throw new Error('Gagal menyimpan atau memperbarui data divisi tenant.');
-      }
-
-      // Handle Admin User Creation / Update in Transaction
-      if (payload.admin_email && payload.admin_password) {
-        const hash = bcrypt.hashSync(payload.admin_password, 10);
-        const userQuery = `
-          INSERT INTO public.users (tenant_id, email, password_hash, role)
-          VALUES ($1, $2, $3, 'TENANT_ADMIN')
-          ON CONFLICT (email) DO UPDATE SET
-            password_hash = EXCLUDED.password_hash,
-            tenant_id = EXCLUDED.tenant_id,
-            role = 'TENANT_ADMIN';
-        `;
-        await client.query(userQuery, [tenantRow.id, payload.admin_email, hash]);
+        if (payload.admin_email && payload.admin_password) {
+          const hash = bcrypt.hashSync(payload.admin_password, 10);
+          const userQuery = `
+            INSERT INTO public.users (tenant_id, email, password_hash, role)
+            VALUES ($1, $2, $3, 'TENANT_ADMIN')
+            ON CONFLICT (email) DO UPDATE SET
+              password_hash = EXCLUDED.password_hash,
+              tenant_id = EXCLUDED.tenant_id,
+              role = 'TENANT_ADMIN';
+          `;
+          await client.query(userQuery, [tenantRow.id, payload.admin_email, hash]);
+        }
       }
 
       await client.query('COMMIT');
@@ -1110,12 +1140,14 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
       const now = new Date();
       const res = await col.insertOne({
         ...summary,
+        content_text_short: summary.content_text_short || '',
         source_email_ids: sourceIds,
         created_at: now
       });
       savedSummary = {
         id: res.insertedId as any,
         ...summary,
+        content_text_short: summary.content_text_short || '',
         created_at: now.toISOString()
       };
       console.log(`[dbManager] Saved Daily Summary in MongoDB for Tenant ID: ${summary.tenant_id}`);
@@ -1125,14 +1157,15 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = `
-        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, is_sent_to_wa, source_email_ids)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.daily_summaries (tenant_id, summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids)
+        VALUES ($1, $2::date, $3, $4, $5, $6)
         RETURNING *;
       `;
       const res = await dbService.pgPool.query(query, [
         summary.tenant_id,
         summary.summary_date,
         summary.content_text,
+        summary.content_text_short || '',
         !!summary.is_sent_to_wa,
         JSON.stringify(sourceIds)
       ]);
@@ -1141,8 +1174,9 @@ export async function dbSaveDailySummary(summary: DailySummary): Promise<DailySu
         savedSummary = {
           id: row.id,
           tenant_id: row.tenant_id,
-          summary_date: row.summary_date,
+          summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
@@ -1190,6 +1224,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
         tenant_id: r.tenant_id,
         summary_date: formatYYYYMMDD(r.summary_date),
         content_text: r.content_text,
+        content_text_short: r.content_text_short || '',
         is_sent_to_wa: !!r.is_sent_to_wa,
         source_email_ids: Array.isArray(r.source_email_ids) ? r.source_email_ids : [],
         created_at: r.created_at
@@ -1200,8 +1235,8 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
   } else if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = tenantId
-        ? 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries WHERE tenant_id = $1 ORDER BY created_at DESC'
-        : 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries ORDER BY created_at DESC';
+        ? 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries WHERE tenant_id = $1 ORDER BY created_at DESC'
+        : 'SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at FROM public.daily_summaries ORDER BY created_at DESC';
       const values = tenantId ? [tenantId] : [];
       const res = await dbService.pgPool.query(query, values);
       rawSummaries = res.rows.map((row: any) => {
@@ -1216,6 +1251,7 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
           tenant_id: row.tenant_id,
           summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
@@ -1265,81 +1301,85 @@ export async function dbGetDailySummaries(tenantId?: number): Promise<DailySumma
 
 /**
  * Get Daily Summary specifically by tenant_id and summary_date ($2::date)
+ * Returns the latest summary and includes all historical versions for that date.
  */
 export async function dbGetDailySummaryByDate(tenantId: number, targetDate: string): Promise<DailySummary | null> {
   const dbService = await getDbService();
   const cleanTargetDate = String(targetDate || '').trim().split('T')[0];
   if (!cleanTargetDate) return null;
 
-  let foundSummary: DailySummary | null = null;
+  let allVersions: DailySummary[] = [];
 
   if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const q = `
-        SELECT id, tenant_id, summary_date::text AS summary_date, content_text, is_sent_to_wa, source_email_ids, created_at 
+        SELECT id, tenant_id, summary_date::text AS summary_date, content_text, content_text_short, is_sent_to_wa, source_email_ids, created_at 
         FROM public.daily_summaries 
         WHERE tenant_id = $1 AND summary_date = $2::date
-        ORDER BY created_at DESC
-        LIMIT 1;
+        ORDER BY created_at DESC;
       `;
       const res = await dbService.pgPool.query(q, [tenantId, cleanTargetDate]);
-      if (res.rows.length > 0) {
-        const row = res.rows[0];
+      allVersions = res.rows.map((row: any) => {
         let sourceIds: string[] = [];
         if (Array.isArray(row.source_email_ids)) {
           sourceIds = row.source_email_ids;
         } else if (typeof row.source_email_ids === 'string') {
           try { sourceIds = JSON.parse(row.source_email_ids); } catch { sourceIds = []; }
         }
-        foundSummary = {
+        return {
           id: row.id,
           tenant_id: row.tenant_id,
           summary_date: formatYYYYMMDD(row.summary_date),
           content_text: row.content_text,
+          content_text_short: row.content_text_short || '',
           is_sent_to_wa: !!row.is_sent_to_wa,
           source_email_ids: sourceIds,
           created_at: row.created_at
         };
-      }
+      });
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summary by Date from PostgreSQL:', err);
     }
   } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('daily_summaries');
-      const res = await col.findOne({
+      const resList = await col.find({
         tenant_id: Number(tenantId),
         $or: [{ summary_date: cleanTargetDate }, { summary_date: new Date(cleanTargetDate) }]
-      }, { sort: { created_at: -1 } });
-      if (res) {
-        foundSummary = {
-          id: res._id as any,
-          tenant_id: res.tenant_id,
-          summary_date: formatYYYYMMDD(res.summary_date),
-          content_text: res.content_text,
-          is_sent_to_wa: !!res.is_sent_to_wa,
-          source_email_ids: Array.isArray(res.source_email_ids) ? res.source_email_ids : [],
-          created_at: res.created_at
-        };
-      }
+      }).sort({ created_at: -1 }).toArray();
+      allVersions = resList.map((res: any) => ({
+        id: res._id as any,
+        tenant_id: res.tenant_id,
+        summary_date: formatYYYYMMDD(res.summary_date),
+        content_text: res.content_text,
+        content_text_short: res.content_text_short || '',
+        is_sent_to_wa: !!res.is_sent_to_wa,
+        source_email_ids: Array.isArray(res.source_email_ids) ? res.source_email_ids : [],
+        created_at: res.created_at
+      }));
     } catch (err) {
       console.error('[dbManager] Failed to get Daily Summary by Date from MongoDB:', err);
     }
   }
 
-  if (!foundSummary) {
-    const mem = inMemoryDailySummaries.find(s => s.tenant_id === tenantId && formatYYYYMMDD(s.summary_date) === cleanTargetDate);
-    if (mem) {
-      foundSummary = { ...mem, summary_date: formatYYYYMMDD(mem.summary_date) };
-    }
+  // Fallback check memory
+  if (allVersions.length === 0) {
+    const memList = inMemoryDailySummaries.filter(s => s.tenant_id === tenantId && formatYYYYMMDD(s.summary_date) === cleanTargetDate);
+    allVersions = memList.map(s => ({ ...s, summary_date: formatYYYYMMDD(s.summary_date) }));
   }
 
-  if (foundSummary && foundSummary.source_email_ids && foundSummary.source_email_ids.length > 0) {
+  if (allVersions.length === 0) {
+    return null;
+  }
+
+  const foundSummary = { ...allVersions[0], history: allVersions };
+
+  if (foundSummary.source_email_ids && foundSummary.source_email_ids.length > 0) {
     try {
       const { dbGetAllEmails } = await import('../database-service');
       const allTenantEmails = await dbGetAllEmails(foundSummary.tenant_id);
       foundSummary.source_emails = allTenantEmails.filter(e => 
-        foundSummary!.source_email_ids.includes(e.message_id) || foundSummary!.source_email_ids.includes(String(e.id))
+        foundSummary!.source_email_ids!.includes(e.message_id) || foundSummary!.source_email_ids!.includes(String(e.id))
       );
     } catch (err) {
       console.error(`[dbManager] Failed to populate source_emails for summary ${foundSummary.id}:`, err);
@@ -1591,7 +1631,7 @@ export async function dbGetDynamicFilters(tenantId?: number): Promise<DynamicFil
   if (dbService.type === 'postgres' && dbService.pgPool) {
     try {
       const query = tenantId 
-        ? 'SELECT * FROM public.dynamic_filters WHERE tenant_id = $1 OR tenant_id IS NULL ORDER BY region ASC, branch ASC'
+        ? 'SELECT * FROM public.dynamic_filters WHERE tenant_id = $1 ORDER BY region ASC, branch ASC'
         : 'SELECT * FROM public.dynamic_filters ORDER BY region ASC, branch ASC';
       const values = tenantId ? [tenantId] : [];
       const res = await dbService.pgPool.query(query, values);
@@ -1609,7 +1649,7 @@ export async function dbGetDynamicFilters(tenantId?: number): Promise<DynamicFil
   } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
     try {
       const col = dbService.mongoDb.collection('dynamic_filters');
-      const query = tenantId ? { $or: [{ tenant_id: Number(tenantId) }, { tenant_id: null }] } : {};
+      const query = tenantId ? { tenant_id: Number(tenantId) } : {};
       const res = await col.find(query).sort({ region: 1, branch: 1 }).toArray();
       filters = res.map((r: any) => ({
         id: r._id as any,
@@ -1663,14 +1703,14 @@ export async function dbSeedDynamicFilters(tenantId?: number): Promise<void> {
 
 export async function dbSaveDynamicFilter(rule: DynamicFilterRule, tenantId?: number): Promise<void> {
   const dbService = await getDbService();
-  const targetTenantId = rule.tenant_id || tenantId || 1;
+  const targetTenantId = rule.tenant_id || tenantId;
 
   if (dbService.type === 'postgres' && dbService.pgPool) {
     if (rule.id) {
       await dbService.pgPool.query(`
         UPDATE public.dynamic_filters
         SET emails = $1, region = $2, branch = $3
-        WHERE id = $4 AND (tenant_id = $5 OR tenant_id IS NULL)
+        WHERE id = $4 AND tenant_id = $5
       `, [rule.emails, rule.region, rule.branch, rule.id, targetTenantId]);
     } else {
       await dbService.pgPool.query(`
@@ -1690,10 +1730,10 @@ export async function dbSaveDynamicFilter(rule: DynamicFilterRule, tenantId?: nu
 
 export async function dbDeleteDynamicFilter(id: number, tenantId?: number): Promise<void> {
   const dbService = await getDbService();
-  const targetTenantId = tenantId || 1;
+  const targetTenantId = tenantId;
 
   if (dbService.type === 'postgres' && dbService.pgPool) {
-    await dbService.pgPool.query('DELETE FROM public.dynamic_filters WHERE id = $1 AND (tenant_id = $2 OR tenant_id IS NULL)', [id, targetTenantId]);
+    await dbService.pgPool.query('DELETE FROM public.dynamic_filters WHERE id = $1 AND tenant_id = $2', [id, targetTenantId]);
   } else if (dbService.type === 'mongodb' && dbService.mongoDb) {
     const col = dbService.mongoDb.collection('dynamic_filters');
     await col.deleteOne({ _id: id as any, tenant_id: targetTenantId });
@@ -1710,14 +1750,14 @@ export async function dbGetPendingEmails(tenantId?: number): Promise<any[]> {
       let query = `SELECT message_id, tenant_id, subject, COALESCE(body_text, html_body, '') as body, sender, date, created_at FROM emails WHERE (ai_status = 'PENDING' OR is_summarized = false OR summary IS NULL OR summary = '' OR summary = 'Belum dianalisis (Menunggu AI...)')`;
       const params: any[] = [];
       if (tenantId) {
-        query += ` AND (tenant_id = $1 OR tenant_id IS NULL)`;
+        query += ` AND tenant_id = $1`;
         params.push(tenantId);
       }
       query += ` ORDER BY date DESC`;
       const res = await dbService.pgPool.query(query, params);
       return res.rows.map(r => ({
         message_id: r.message_id,
-        tenant_id: r.tenant_id || tenantId || 1,
+        tenant_id: r.tenant_id || tenantId,
         subject: r.subject || '',
         body: r.body || '',
         body_text: r.body || '',
@@ -1735,7 +1775,7 @@ export async function dbGetPendingEmails(tenantId?: number): Promise<any[]> {
       const rows = await col.find(filter).sort({ date: -1 }).toArray();
       return rows.map(r => ({
         message_id: r.message_id,
-        tenant_id: r.tenant_id || tenantId || 1,
+        tenant_id: r.tenant_id || tenantId,
         subject: r.subject || '',
         body: r.body_text || r.body || r.html_body || '',
         body_text: r.body_text || r.body || r.html_body || '',
